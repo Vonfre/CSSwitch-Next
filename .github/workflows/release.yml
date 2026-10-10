@@ -46,9 +46,10 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
+      - name: Check Runner Python
+        run: |
+          python3 --version
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), "Release validation requires Python 3.11+"'
       - name: Check Release Version
         id: version
         shell: bash

@@ -6,7 +6,7 @@ import unittest
 import sys
 
 if sys.version_info < (3, 11):
-    raise unittest.SkipTest("Release validation uses Python 3.11+; CI installs Python 3.12")
+    raise unittest.SkipTest("Release validation uses Python 3.11+ on CI")
 
 spec = importlib.util.spec_from_file_location("release_version", Path(__file__).resolve().parents[1] / "scripts/check-release-version.py")
 release = importlib.util.module_from_spec(spec)

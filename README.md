@@ -48,7 +48,7 @@ Science 的本地虚拟登录和启动行为继承 CSSwitch；不提供官方账
 
 ## 开发
 
-需要 macOS、Xcode Command Line Tools、Rust、Node.js/npm 和 Python 3。发布版本校验使用 Python 3.11+（CI 自动安装 Python 3.12）；网关运行不需要升级本机 Python。运行安装包不需要 Node.js。
+需要 macOS、Xcode Command Line Tools、Rust、Node.js/npm 和 Python 3。发布版本校验使用 Python 3.11+（CI 使用构建机预装的 Python）；网关运行不需要升级本机 Python。运行安装包不需要 Node.js。
 
 ```bash
 npm ci --prefix desktop

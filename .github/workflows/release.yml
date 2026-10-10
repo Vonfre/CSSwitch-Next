@@ -73,6 +73,11 @@ jobs:
           npm run prepare:assets --prefix desktop
           npm run check --prefix desktop
       - name: Python, Node and Shell Tests
+        timeout-minutes: 5
+        env:
+          # Avoid slow macOS system proxy discovery in loopback-only tests.
+          no_proxy: '127.0.0.1,localhost,::1'
+          NO_PROXY: '127.0.0.1,localhost,::1'
         run: bash test/run_all.sh
       - name: Rust Tests
         run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib

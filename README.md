@@ -67,8 +67,8 @@ GitHub Actions 在推送 `v*` 标签或发布 GitHub Release 时，从对应标�
 发布前统一修改 `desktop/package.json`、`desktop/package-lock.json`、`desktop/src-tauri/Cargo.toml`、`desktop/src-tauri/Cargo.lock`、`desktop/src-tauri/tauri.conf.json` 的版本，提交并推送源码，再打同版本标签，例如：
 
 ```bash
-git tag v0.4.1
-git push origin v0.4.1
+git tag v0.4.2
+git push origin v0.4.2
 ```
 
 流程会检查标签与版本一致性，执行 Python/Node/Shell、Rust 和 Playwright 测试；测试或任一架构打包失败时不会自动创建正式 Release。DMG 完整性和 App 签名在上传前检查。普通 `main` 推送和 Pull Request 只运行测试，不发布应用。

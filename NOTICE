@@ -1,0 +1,16 @@
+CSSwitch Next
+
+Derived from CSSwitch (https://github.com/visail/CSswitch).
+Original CSSwitch code retains the MIT license and copyright in LICENSE-MIT.
+Original CSSwitch Next additions are licensed under Apache-2.0 in LICENSE,
+consistent with the destination repository's existing license.
+
+Architectural references (no Swift or SciPort source copied):
+AIUsage: https://github.com/sylearn/AIUsage (Apache-2.0)
+SciPort: https://github.com/Vonfre/claude-science-api (Apache-2.0 / MIT upstream)
+CC Switch: https://github.com/farion1231/cc-switch (MIT), UI workflow reference;
+no React component source copied.
+
+Lucide icons retain their ISC license in desktop/src/assets/lucide-LICENSE.txt.
+Claude Science and Anthropic names belong to their respective owners.
+This project is not affiliated with or endorsed by Anthropic.

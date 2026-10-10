@@ -1,0 +1,187 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build (for example v0.4.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHONDONTWRITEBYTECODE: '1'
+  BUILD_TAG: ${{ github.event.release.tag_name || inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+
+jobs:
+  test:
+    name: Version Check and Tests
+    runs-on: macos-15
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.BUILD_TAG && format('refs/tags/{0}', env.BUILD_TAG) || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Check Release Version
+        id: version
+        shell: bash
+        run: |
+          python3 scripts/check-release-version.py --tag "$BUILD_TAG" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$BUILD_TAG" >> "$GITHUB_OUTPUT"
+      - name: Prepare Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+      - name: Install Frontend Dependencies
+        run: |
+          npm ci --prefix desktop
+          npm run prepare:assets --prefix desktop
+          npm run check --prefix desktop
+      - name: Python, Node and Shell Tests
+        run: bash test/run_all.sh
+      - name: Rust Tests
+        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib
+      - name: Browser Tests
+        run: |
+          npm exec --prefix desktop -- playwright install chromium
+          npm run test:ui --prefix desktop
+
+  build:
+    name: Build macOS (${{ matrix.arch }})
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            arch: arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      RELEASE_VERSION: ${{ needs.test.outputs.version }}
+      RUST_TARGET: ${{ matrix.target }}
+      RELEASE_ARCH: ${{ matrix.arch }}
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.test.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Prepare Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$RUST_TARGET"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: release-${{ matrix.target }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+      - name: Build App and DMG
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run prepare:assets
+          npm run tauri -- build --ci --target "$RUST_TARGET" --bundles app,dmg -- --locked
+      - name: Verify and Package
+        shell: bash
+        run: |
+          BUNDLE="desktop/src-tauri/target/$RUST_TARGET/release/bundle"
+          APP="$BUNDLE/macos/CSSwitch Next.app"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          DMGS=("$BUNDLE"/dmg/*.dmg)
+          test "${#DMGS[@]}" -eq 1
+          test -f "${DMGS[0]}"
+          hdiutil verify "${DMGS[0]}"
+          mkdir -p release-assets
+          cp "${DMGS[0]}" "release-assets/CSSwitch-Next-$RELEASE_VERSION-$RELEASE_ARCH.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "release-assets/CSSwitch-Next-$RELEASE_VERSION-$RELEASE_ARCH.app.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: [test, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.test.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: macos-*
+          merge-multiple: true
+          path: release-assets
+      - name: Verify Assets and Generate Checksums
+        working-directory: release-assets
+        run: |
+          for arch in arm64 x64; do
+            test -s "CSSwitch-Next-$RELEASE_VERSION-$arch.dmg"
+            test -s "CSSwitch-Next-$RELEASE_VERSION-$arch.app.zip"
+          done
+          sha256sum *.dmg *.zip > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+      - name: Publish Assets
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "CSSwitch Next $RELEASE_VERSION" --generate-notes --notes "macOS: arm64 for Apple Silicon; x64 for Intel. DMG installers and App ZIPs are built from the tagged source by GitHub Actions. SHA256SUMS.txt is included. Ad-hoc signed, not Apple notarized. Requires official Claude Science and Python 3 installed locally."
+          fi

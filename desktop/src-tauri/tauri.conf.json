@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CSSwitch Next",
+  "version": "0.4.1",
+  "identifier": "com.csswitch.next",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "CSSwitch Next",
+        "width": 980,
+        "height": 720,
+        "minWidth": 360,
+        "minHeight": 560,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "visible": true,
+        "center": true,
+        "focus": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../../proxy": "proxy",
+      "../../scripts": "scripts",
+      "../../LICENSE": "LICENSE",
+      "../../LICENSE-MIT": "LICENSE-MIT",
+      "../../NOTICE": "NOTICE"
+    },
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
+}

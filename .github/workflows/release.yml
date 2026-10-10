@@ -106,7 +106,7 @@ jobs:
 
   build:
     name: Build macOS (${{ matrix.arch }})
-    needs: [test, rust-test]
+    needs: test
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
@@ -175,7 +175,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: [test, build]
+    needs: [test, rust-test, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

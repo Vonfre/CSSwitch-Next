@@ -32,6 +32,8 @@ hkdf = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 tauri-plugin-updater = "2.13.3"
+# Enable macOS system proxy discovery for the updater's reqwest client via feature unification.
+reqwest = { version = "0.13", default-features = false, features = ["system-proxy"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

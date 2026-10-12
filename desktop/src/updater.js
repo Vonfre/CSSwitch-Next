@@ -60,7 +60,8 @@ async function downloadAppUpdate() {
 
 async function installAppUpdate() {
   if (updateState.phase !== 'downloaded') return;
-  await refreshRuntime();
+  try { await refreshRuntime(); }
+  catch (e) { updateState.error = String(e.message || e); renderUpdater(); return; }
   if (state.runtime.proxy === 'green') {
     updateState.error = '请先在提供商页面停止网关与 Science，结束研究任务后再安装更新。'; renderUpdater(); return;
   }

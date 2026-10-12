@@ -780,6 +780,7 @@ dependencies = [
  "aes-gcm",
  "base64 0.22.1",
  "hkdf",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

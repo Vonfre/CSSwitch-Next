@@ -6,7 +6,10 @@ async function setup(page, mode = 'available') {
     window.__TAURI__ = { core: { Channel: class {}, invoke: async (cmd, args) => {
       window.updateCalls.push(cmd);
       if (cmd === 'get_config') return { provider: '', connections: [], mode: 'proxy', proxy_port: 18992, sandbox_port: 8991 };
-      if (cmd === 'status') return { proxy: window.proxyRunning ? 'green' : 'amber', sandbox: 'amber' };
+      if (cmd === 'status') {
+        if (window.runtimeFailure) throw new Error('读取运行状态失败，请重试');
+        return { proxy: window.proxyRunning ? 'green' : 'amber', sandbox: 'amber' };
+      }
       if (cmd === 'app_version') return '0.5.0';
       if (cmd === 'diagnostics') return { version: '0.5.0', platform: 'macOS' };
       if (cmd === 'check_update') {
@@ -47,6 +50,10 @@ test('running gateway blocks installation; cancel and install failure keep the v
   await setup(page);
   await page.getByRole('button', { name: '下载更新', exact: true }).click();
   await expect(page.getByRole('button', { name: '安装并重启' })).toBeVisible();
+  await page.evaluate(() => { window.runtimeFailure = true; });
+  await page.getByRole('button', { name: '安装并重启' }).click();
+  await expect(page.locator('#updateCard')).toContainText('读取运行状态失败');
+  await page.evaluate(() => { window.runtimeFailure = false; });
   await page.evaluate(() => { window.proxyRunning = true; });
   await page.getByRole('button', { name: '安装并重启' }).click();
   await expect(page.locator('#updateCard')).toContainText('请先在提供商页面停止');

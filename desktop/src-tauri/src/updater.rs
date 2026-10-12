@@ -107,7 +107,7 @@ mod tests {
         let signature = std::fs::read_to_string(format!("{archive}.sig")).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let manifest = json!({"version": "0.5.0", "platforms": {
+        let manifest = json!({"version": env!("CARGO_PKG_VERSION"), "platforms": {
             "darwin-aarch64": {"url": format!("{base}/archive"), "signature": signature.trim()},
             "darwin-x86_64": {"url": format!("{base}/archive"), "signature": signature.trim()}
         }}).to_string().into_bytes();

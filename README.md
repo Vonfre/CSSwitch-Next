@@ -7,5 +7,7 @@
 - 在官方模式与第三方 API 之间切换，沿用本机对话记录。
 - 支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
 - 查看模型用量和运行日志。
+- 管理本地与远程 MCP，内置 OpenScience 科研数据库连接器。
+- 在应用内检查、下载并安装更新。
 
 [下载 DMG 安装包](https://github.com/Vonfre/CSSwitch-Next/releases/latest)

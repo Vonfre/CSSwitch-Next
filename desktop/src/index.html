@@ -9,14 +9,17 @@
     <link rel="stylesheet" href="./styles.css" />
     <script src="./assets/lucide.min.js" defer></script>
     <script src="./providers.js" defer></script>
+    <script src="./mcp.js" defer></script>
+    <script src="./updater.js" defer></script>
     <script src="./main.js" defer></script>
   </head>
   <body>
     <div class="shell">
       <aside class="sidebar">
-        <div class="brand"><img src="./assets/app-icon.png" alt="" width="32" height="32" /><div>CSSwitch<span>Next <small>0.4</small></span></div></div>
+        <div class="brand"><img src="./assets/app-icon.png" alt="" width="32" height="32" /><div>CSSwitch<span>Next <small>0.5</small></span></div></div>
         <nav aria-label="导航">
           <button class="nav-item active" data-view="workbench"><i data-lucide="plug-zap"></i>提供商</button>
+          <button class="nav-item" data-view="mcp"><i data-lucide="network"></i>MCP 管理</button>
           <button class="nav-item" data-view="usage"><i data-lucide="chart-no-axes-combined"></i>用量记录</button>
           <button class="nav-item" data-view="logs"><i data-lucide="terminal"></i>运行日志</button>
           <button class="nav-item" data-view="settings"><i data-lucide="settings-2"></i>设置</button>
@@ -24,12 +27,13 @@
         <div class="sidebar-bottom"><div class="local-label"><span class="dot"></span>本地工作空间</div><div class="sidebar-actions"><span>CSSwitch Next</span><button class="icon-btn" id="quitBtn" title="退出应用" aria-label="退出应用"><i data-lucide="log-out"></i></button></div></div>
       </aside>
       <main>
-        <header class="topbar"><div><div class="eyebrow">CLAUDE SCIENCE</div><h1 id="pageTitle">提供商</h1></div><div class="top-actions"><span id="previewLabel" class="badge" hidden>浏览器预览</span><button class="icon-btn" id="themeBtn" title="切换深浅主题" aria-label="切换深浅主题"><i data-lucide="sun-moon"></i></button><button class="icon-btn" id="refreshBtn" title="刷新状态" aria-label="刷新状态"><i data-lucide="refresh-cw"></i></button></div></header>
+        <header class="topbar"><div><div class="eyebrow">CLAUDE SCIENCE</div><h1 id="pageTitle">提供商</h1></div><div class="top-actions"><button class="btn" id="updateBadge" hidden></button><span id="previewLabel" class="badge" hidden>浏览器预览</span><button class="icon-btn" id="themeBtn" title="切换深浅主题" aria-label="切换深浅主题"><i data-lucide="sun-moon"></i></button><button class="icon-btn" id="refreshBtn" title="刷新状态" aria-label="刷新状态"><i data-lucide="refresh-cw"></i></button></div></header>
         <div id="notice" class="notice" role="status" hidden></div>
         <div id="content" aria-busy="true"><div class="empty">正在读取本地配置...</div></div>
       </main>
     </div>
     <dialog id="providerDialog" class="provider-dialog" aria-labelledby="providerTitle"><div id="editor"></div></dialog>
+    <dialog id="mcpDialog" class="mcp-dialog" aria-labelledby="mcpTitle"></dialog>
     <dialog id="modelDialog" class="model-dialog" aria-labelledby="modelTitle"><div class="dialog-heading"><div><h2 id="modelTitle">选择模型</h2><span id="modelCount" class="subtle"></span></div><button type="button" class="icon-btn" id="closeModels" title="关闭模型列表" aria-label="关闭模型列表"><i data-lucide="x"></i></button></div><div class="model-searchbar"><div class="search"><i data-lucide="search"></i><input id="modelSearch" type="search" placeholder="搜索名称或模型 ID" aria-label="搜索模型" autocomplete="off" /></div><button type="button" id="pickerRefresh" class="icon-btn outlined" title="刷新模型列表" aria-label="刷新模型列表"><i data-lucide="refresh-cw"></i></button></div><div id="pickerStatus" class="catalog-status" role="status"></div><div id="modelOptions" class="model-options" role="listbox" aria-label="可用模型"></div></dialog>
     <dialog id="confirmDialog" aria-labelledby="confirmTitle"><form method="dialog"><h2 id="confirmTitle"></h2><p id="confirmBody"></p><div class="dialog-actions"><button value="cancel" class="btn">取消</button><button value="confirm" class="btn primary">确认</button></div></form></dialog>
   </body>

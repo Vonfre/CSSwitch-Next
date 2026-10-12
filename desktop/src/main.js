@@ -153,7 +153,7 @@ function renderLogs() {
 
 function renderSettings() {
   const d = state.diagnostics;
-  $('#content').innerHTML = `<section class="settings-section"><h2>本地服务端口</h2><form id="settingsForm"><div class="form-grid"><div class="field"><label for="proxyPort">网关端口</label><input id="proxyPort" name="proxy_port" type="number" min="1024" max="65535" value="${state.config.proxy_port}" required /></div><div class="field"><label for="sandboxPort">Science 端口</label><input id="sandboxPort" name="sandbox_port" type="number" min="1024" max="65535" value="${state.config.sandbox_port}" required /></div></div><p class="hint">更改端口需要先停止服务。Science 可使用原端口 8765。</p><div class="actions"><button class="btn primary" type="submit">${icon('save')}保存端口</button></div></form></section><section class="settings-section"><h2>环境检查</h2>${d ? [['Claude Science', d.science_installed ? '已安装' : '未找到'], ['Python 3', d.python || '未找到'], ['配置目录', d.config_dir], ['对话数据目录', d.science_data_dir], ['本地认证目录', d.science_auth_dir], ['旧隔离目录（保留）', d.legacy_sandbox_home], ['应用版本', `${d.version} · ${d.platform}`]].map(([label, value]) => `<div class="diagnostic-row"><span>${esc(label)}</span><code>${esc(value)}</code></div>`).join('') : '<div class="empty">请在桌面应用中检查运行环境。</div>'}</section><section class="settings-section"><h2>本地存储</h2><p class="hint">API Key 以明文保存在配置文件中，权限为 0600。用量记录不保存对话内容。验证连接会向所选 API 发送一个最小请求，可能产生少量费用。</p></section>`;
+  $('#content').innerHTML = `<section class="settings-section" id="updateCard"></section><section class="settings-section"><h2>本地服务端口</h2><form id="settingsForm"><div class="form-grid"><div class="field"><label for="proxyPort">网关端口</label><input id="proxyPort" name="proxy_port" type="number" min="1024" max="65535" value="${state.config.proxy_port}" required /></div><div class="field"><label for="sandboxPort">Science 端口</label><input id="sandboxPort" name="sandbox_port" type="number" min="1024" max="65535" value="${state.config.sandbox_port}" required /></div></div><p class="hint">更改端口需要先停止服务。Science 可使用原端口 8765。</p><div class="actions"><button class="btn primary" type="submit">${icon('save')}保存端口</button></div></form></section><section class="settings-section" id="environmentCard"><h2>环境检查</h2>${d ? [['Claude Science', d.science_installed ? '已安装' : '未找到'], ['Python 3', d.python || '未找到'], ['配置目录', d.config_dir], ['对话数据目录', d.science_data_dir], ['本地认证目录', d.science_auth_dir], ['旧隔离目录（保留）', d.legacy_sandbox_home], ['应用版本', `${d.version} · ${d.platform}`]].map(([label, value]) => `<div class="diagnostic-row"><span>${esc(label)}</span><code>${esc(value)}</code></div>`).join('') : '<div class="empty">请在桌面应用中检查运行环境。</div>'}</section><section class="settings-section"><h2>本地存储</h2><p class="hint">API Key 以明文保存在配置文件中，权限为 0600。用量记录不保存对话内容。验证连接会向所选 API 发送一个最小请求，可能产生少量费用。</p></section>`;
   $('#settingsForm').onsubmit = (e) => { e.preventDefault(); action(async () => {
     const values = Object.fromEntries(new FormData(e.target));
     const proxy_port = Number(values.proxy_port), sandbox_port = Number(values.sandbox_port);
@@ -169,8 +169,9 @@ function renderSettings() {
   if (d?.science_history) {
     const row = document.createElement('div'); row.className = 'diagnostic-row';
     row.innerHTML = `<span>本地历史总计</span><code>${fmt(d.science_history.projects)} 项目 · ${fmt(d.science_history.conversations)} 主会话 · ${fmt(d.science_history.messages)} 消息</code>`;
-    document.querySelectorAll('.settings-section')[1].append(row);
+    $('#environmentCard').append(row);
   }
+  renderUpdater();
   icons();
 }
 
@@ -183,7 +184,11 @@ async function showView(view) {
   state.view = view;
   $('.nav-item.active')?.classList.remove('active');
   $(`[data-view="${view}"]`).classList.add('active');
-  $('#pageTitle').textContent = { workbench: '提供商', usage: '用量记录', logs: '运行日志', settings: '设置' }[view];
+  $('#pageTitle').textContent = { workbench: '提供商', mcp: 'MCP 管理', usage: '用量记录', logs: '运行日志', settings: '设置' }[view];
+  if (view === 'mcp') {
+    $('#content').innerHTML = '<div class="empty">正在读取 Science 连接器…</div>';
+    await action(async () => { await loadMcp(); renderMcp(); }); return;
+  }
   try {
     if (native()) {
       if (view === 'usage') state.usage = (await call('read_usage')).entries;
@@ -204,6 +209,7 @@ $('#quitBtn').onclick = () => action(() => call('quit_app'));
 $('#refreshBtn').onclick = () => action(async () => {
   if (state.dirty) { notice('请先保存连接配置，再刷新。', true); return; }
   await loadConfig(); await refreshRuntime();
+  if (state.view === 'mcp') { await loadMcp(); renderMcp(); return; }
   if (state.view === 'usage') state.usage = (await call('read_usage')).entries;
   if (state.view === 'logs') state.logs = await call('read_logs');
   if (state.view === 'settings') state.diagnostics = await call('diagnostics');
@@ -220,6 +226,7 @@ async function init() {
       state.selected = '';
     }
     $('#content').setAttribute('aria-busy', 'false'); renderWorkbench();
+    initUpdater();
   } catch (e) { $('#content').innerHTML = '<div class="empty">无法读取配置，请检查本地配置文件。</div>'; notice(String(e), true); }
 }
 init();

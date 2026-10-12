@@ -14,3 +14,8 @@ no React component source copied.
 Lucide icons retain their ISC license in desktop/src/assets/lucide-LICENSE.txt.
 Claude Science and Anthropic names belong to their respective owners.
 This project is not affiliated with or endorsed by Anthropic.
+
+OpenScience database adapters are vendored under Apache-2.0 in mcp/openscience.
+Copyright 2026 InkVell Inc. (Synthetic Sciences). See its LICENSE and NOTICE.
+The generated MCP service bundles Undici and Zod under their MIT licenses;
+see scripts/openscience-mcp for license copies.

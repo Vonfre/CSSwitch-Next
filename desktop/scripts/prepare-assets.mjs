@@ -8,3 +8,5 @@ for (const [source, target] of [
   ['node_modules/lucide/LICENSE', 'lucide-LICENSE.txt'],
   ['src-tauri/icons/128x128.png', 'app-icon.png'],
 ]) copyFileSync(fileURLToPath(new URL(source, root)), fileURLToPath(new URL(target, assets)));
+
+await import('./build-mcp.mjs');

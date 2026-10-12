@@ -6,6 +6,8 @@ mod config;
 mod oauth_forge;
 mod proc;
 mod science_shared;
+mod mcp;
+mod updater;
 
 use std::path::{Path, PathBuf};
 use std::io::Write;
@@ -18,6 +20,16 @@ use serde_json::json;
 use tauri::{Manager, State};
 
 const SCIENCE_BIN: &str = "/Applications/Claude Science.app/Contents/Resources/bin/claude-science";
+
+#[tauri::command]
+async fn mcp_manage(app: tauri::AppHandle, operation: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let root = asset_root(&app).ok_or("无法定位 MCP 管理资源。")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = RUNTIME_OPERATION.lock().unwrap_or_else(|e| e.into_inner());
+        mcp::manage(&root, &operation, params.unwrap_or(json!({})))
+    })
+        .await.map_err(|_| "MCP 管理任务异常。".to_string())?
+}
 
 fn science_bin() -> PathBuf {
     science_shared::preferred_binary(science_shared::home().ok().as_deref(), Path::new(SCIENCE_BIN))
@@ -993,13 +1005,13 @@ fn app_version() -> String {
 /// 打开 GitHub Releases 页（检查更新时用系统浏览器打开，浏览器走用户自己的代理）。
 #[tauri::command]
 fn open_release_page() -> Result<(), String> {
-    open_in_browser("https://github.com/SuperJJ007/CSswitch/releases/latest")
+    open_in_browser("https://github.com/Vonfre/CSSwitch-Next/releases/latest")
 }
 
 /// 打开「报 bug」页（预填 bug 模板）；用系统浏览器，走用户自己的代理。
 #[tauri::command]
 fn report_bug() -> Result<(), String> {
-    open_in_browser("https://github.com/SuperJJ007/CSswitch/issues/new?template=bug_report.yml")
+    open_in_browser("https://github.com/Vonfre/CSSwitch-Next/issues/new?template=bug_report.yml")
 }
 
 /// 在访达里打开日志目录 `~/.csswitch/logs`，方便用户附到 bug 反馈里（先自查有无密钥）。
@@ -1031,8 +1043,14 @@ fn quit_app(app: tauri::AppHandle, state: State<'_, Mutex<AppState>>) -> Result<
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::UpdateState::default())
         .manage(Mutex::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
+            updater::check_update,
+            updater::download_update,
+            updater::install_update,
+            mcp_manage,
             get_config,
             save_connection,
             select_connection,

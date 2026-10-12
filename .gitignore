@@ -35,3 +35,6 @@ docs/superpowers/
 # 每日巡检运行产物：全是本机运行态（报告/版本基线/日志/锁），只保留空目录占位
 findings/auto-maint/*
 !findings/auto-maint/.gitkeep
+
+# Generated standalone MCP bundle (built before Tauri dev/build)
+scripts/openscience-mcp/server.mjs

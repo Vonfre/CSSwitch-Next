@@ -103,6 +103,7 @@ jobs:
             ~/.cargo/git
             desktop/src-tauri/target
           key: test-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: test-${{ runner.os }}-${{ runner.arch }}-
       - name: Rust Tests
         run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib
 
@@ -149,6 +150,7 @@ jobs:
             ~/.cargo/git
             desktop/src-tauri/target
           key: release-${{ matrix.target }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: release-${{ matrix.target }}-
       - name: Build App and DMG
         working-directory: desktop
         env:

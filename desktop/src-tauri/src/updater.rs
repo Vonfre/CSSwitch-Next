@@ -1,9 +1,75 @@
 //! Only native code handles release URLs, signed downloads and installation.
 use std::time::{Duration, Instant};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{ipc::Channel, Manager, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
+
+const RELEASE_API: &str = "https://api.github.com/repos/Vonfre/CSSwitch-Next/releases";
+
+#[derive(Deserialize)]
+struct Release {
+    assets: Vec<Asset>,
+}
+
+#[derive(Deserialize)]
+struct Asset {
+    id: u64,
+    name: String,
+}
+
+fn asset_url(asset: &Asset) -> String {
+    format!("{RELEASE_API}/assets/{}", asset.id)
+}
+
+fn archive_api_url(release: &Release, original: &url::Url) -> Result<url::Url, String> {
+    let filename = original.path_segments().and_then(|mut p| p.next_back())
+        .ok_or("更新包地址无效。")?;
+    let archive = release.assets.iter().find(|a| a.name == filename)
+        .ok_or("Release 中缺少当前架构的更新包。")?;
+    asset_url(archive).parse().map_err(|_| "更新包地址无效。".to_string())
+}
+
+/// Public API needs no GitHub login. Use it when the github.com download domain is unreachable.
+/// The same pinned key and signed-version checks still validate the actual downloaded bytes.
+async fn check_via_api<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Option<Update>, String> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(20))
+        .user_agent("CSSwitch-Next-Updater").build().map_err(|e| e.to_string())?;
+    let release: Release = client.get(format!("{RELEASE_API}/latest"))
+        .send().await.map_err(|e| e.to_string())?.error_for_status().map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+    let manifest = release.assets.iter().find(|a| a.name == "latest.json")
+        .ok_or("Release 中缺少更新清单。")?;
+    let mut update = app.updater_builder().timeout(Duration::from_secs(20))
+        .configure_client(|client| client.connect_timeout(Duration::from_secs(10)).read_timeout(Duration::from_secs(30)))
+        .endpoints(vec![asset_url(manifest).parse().map_err(|_| "更新地址无效。")?])
+        .map_err(|e| e.to_string())?.header("Accept", "application/octet-stream")
+        .map_err(|e| e.to_string())?.build().map_err(|e| e.to_string())?
+        .check().await.map_err(|e| e.to_string())?;
+    if let Some(update) = &mut update {
+        // Resolve the selected architecture's archive through the same public API.
+        update.download_url = archive_api_url(&release, &update.download_url)?;
+    }
+    Ok(update)
+}
+
+async fn verified_download(update: &Update, channel: &Channel<Progress>) -> Result<Vec<u8>, String> {
+    let mut downloaded = 0;
+    let mut last = Instant::now();
+    let _ = channel.send(Progress { downloaded: 0, total: None });
+    update.download(|chunk, total| {
+        downloaded += chunk as u64;
+        if last.elapsed() >= Duration::from_millis(100) || Some(downloaded) == total {
+            let _ = channel.send(Progress { downloaded, total });
+            last = Instant::now();
+        }
+    }, || {}).await.map_err(|e| e.to_string()).inspect(|_| {
+        let _ = channel.send(Progress { downloaded, total: Some(downloaded) });
+    })
+}
 
 #[derive(Default)]
 pub struct UpdateState(tauri::async_runtime::Mutex<Pending>);
@@ -32,9 +98,14 @@ fn metadata(pending: &Pending) -> Value {
 #[tauri::command]
 pub async fn check_update(app: tauri::AppHandle, state: State<'_, UpdateState>) -> Result<Value, String> {
     let mut pending = state.0.try_lock().map_err(|_| "更新操作正在进行，请稍后重试。")?;
-    let update = app.updater_builder().timeout(Duration::from_secs(20)).build()
-        .map_err(|e| format!("初始化更新失败：{e}"))?.check().await
-        .map_err(|e| format!("无法检查更新，请检查网络或系统代理后重试：{e}"))?;
+    let direct = app.updater_builder().timeout(Duration::from_secs(10))
+        .configure_client(|client| client.connect_timeout(Duration::from_secs(10)).read_timeout(Duration::from_secs(30))).build()
+        .map_err(|e| format!("初始化更新失败：{e}"))?.check().await;
+    let update = match direct {
+        Ok(update) => update,
+        Err(_) => check_via_api(&app).await
+            .map_err(|e| format!("无法检查更新，请检查网络或系统代理后重试：{e}"))?,
+    };
     // Keep an already verified download if this is still the same release.
     if pending.update.as_ref().map(|u| (&u.version, &u.signature))
         != update.as_ref().map(|u| (&u.version, &u.signature)) {
@@ -45,20 +116,25 @@ pub async fn check_update(app: tauri::AppHandle, state: State<'_, UpdateState>) 
 }
 
 #[tauri::command]
-pub async fn download_update(state: State<'_, UpdateState>, on_progress: Channel<Progress>) -> Result<Value, String> {
+pub async fn download_update(app: tauri::AppHandle, state: State<'_, UpdateState>, on_progress: Channel<Progress>) -> Result<Value, String> {
     let mut pending = state.0.try_lock().map_err(|_| "更新操作正在进行，请稍后重试。")?;
     let mut update = pending.update.clone().ok_or("请先检查更新。")?;
     update.timeout = Some(Duration::from_secs(600));
-    let mut downloaded = 0;
-    let mut last = Instant::now();
-    let bytes = update.download(|chunk, total| {
-        downloaded += chunk as u64;
-        if last.elapsed() >= Duration::from_millis(100) || Some(downloaded) == total {
-            let _ = on_progress.send(Progress { downloaded, total });
-            last = Instant::now();
+    let bytes = match verified_download(&update, &on_progress).await {
+        Ok(bytes) => bytes,
+        Err(first_error) => {
+            let fallback = check_via_api(&app).await.ok().flatten()
+                .filter(|u| u.version == update.version && u.signature == update.signature);
+            let Some(mut fallback) = fallback else {
+                return Err(format!("下载或签名验证失败，未安装更新：{first_error}"));
+            };
+            fallback.timeout = Some(Duration::from_secs(600));
+            let bytes = verified_download(&fallback, &on_progress).await
+                .map_err(|e| format!("下载或签名验证失败，未安装更新：{e}"))?;
+            pending.update = Some(fallback);
+            bytes
         }
-    }, || {}).await.map_err(|e| format!("下载或签名验证失败，未安装更新：{e}"))?;
-    let _ = on_progress.send(Progress { downloaded, total: Some(downloaded) });
+    };
     pending.bytes = Some(bytes);
     Ok(metadata(&pending))
 }
@@ -96,6 +172,38 @@ pub async fn install_update(app: tauri::AppHandle, state: State<'_, UpdateState>
 mod tests {
     use super::*;
     use std::{io::{Read, Write}, net::TcpListener};
+
+    #[test]
+    fn public_api_resolves_only_the_selected_archive() {
+        let release: Release = serde_json::from_value(json!({"assets": [
+            {"id": 10, "name": "app-arm64.app.tar.gz"},
+            {"id": 20, "name": "app-x64.app.tar.gz"}
+        ]})).unwrap();
+        let url = |name| format!("https://github.com/owner/repo/releases/download/v1.0.0/{name}").parse().unwrap();
+        assert_eq!(archive_api_url(&release, &url("app-arm64.app.tar.gz")).unwrap().as_str(),
+            format!("{RELEASE_API}/assets/10"));
+        assert_eq!(archive_api_url(&release, &url("app-x64.app.tar.gz")).unwrap().as_str(),
+            format!("{RELEASE_API}/assets/20"));
+        assert!(archive_api_url(&release, &url("missing.app.tar.gz")).is_err());
+        assert!(serde_json::from_value::<Release>(json!({"message": "rate limited"})).is_err());
+    }
+
+    #[test]
+    #[ignore = "uses the live public GitHub release API without authentication"]
+    fn live_public_api_fallback_download() {
+        let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        context.config_mut().plugins = serde_json::from_value(config["plugins"].clone()).unwrap();
+        let app = tauri::test::mock_builder().plugin(tauri_plugin_updater::Builder::new().build())
+            .build(context).unwrap();
+        tauri::async_runtime::block_on(async {
+            let mut update = check_via_api(app.handle()).await.unwrap().unwrap();
+            assert_eq!(update.download_url.host_str(), Some("api.github.com"));
+            update.timeout = Some(Duration::from_secs(60));
+            let bytes = update.download(|_, _| {}, || {}).await.unwrap();
+            assert!(!bytes.is_empty());
+        });
+    }
 
     /// Exercises the actual plugin and native macOS installer against an isolated app copy.
     /// No production app, account, gateway or Science process is touched.

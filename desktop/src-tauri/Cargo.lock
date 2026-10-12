@@ -775,12 +775,13 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
  "hkdf",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

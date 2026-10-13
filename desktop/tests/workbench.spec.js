@@ -210,7 +210,7 @@ test('validation moves to the invalid tab and tests neither save nor activate', 
 
 test('logs, usage export, shared history settings, ports and official mode remain functional', async ({ page }) => {
   await fixture(page); await page.goto('/');
-  await page.getByRole('button', { name: '用量记录', exact: true }).click(); await expect(page.locator('table')).toContainText('121');
+  await page.getByRole('button', { name: '用量统计', exact: true }).click(); await expect(page.locator('table').first()).toContainText('121');
   const download = page.waitForEvent('download'); await page.getByRole('button', { name: '导出用量 CSV', exact: true }).click();
   expect((await download).suggestedFilename()).toBe('csswitch-usage.csv');
   await page.getByRole('button', { name: '运行日志', exact: true }).click(); await expect(page.locator('#logText')).toContainText('<unsafe-tag>');

@@ -484,7 +484,7 @@ class H(BaseHTTPRequestHandler):
 
     def _record(self, started, usage=None, ok=True):
         try:
-            record(USAGE_PATH, route()["provider"], self.target_model, started, usage, ok)
+            record(USAGE_PATH, route()["provider"], self.target_model, started, usage, ok, prov()["mode"])
         except OSError:
             log("Usage journal unavailable")
 

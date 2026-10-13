@@ -21,3 +21,7 @@ npm run test:ui
 ## 应用更新
 
 0.5.0 起可在「设置 → 应用更新」检查、下载及安装新版；启动时也会自动检查。下载包通过签名校验后才能安装，安装前请结束任务并停止本地网关。详见 [应用内更新](../docs/UPDATES.md)。
+
+## 管理工作空间
+
+新增的 Skills、用量和会话页面分别在 `src/skills.js`、`src/usage.js`、`src/sessions.js`。`workspace.rs` / `scripts/science-workspace.py` 处理只读历史、本地技能 / 仓库发现及 CSSwitch 设置；`mcp.rs` / `scripts/science-mcp-manage.py` 处理 Science 拥有的 MCP 和 Skills 操作。完整功能边界及测试命令见 [管理工作空间](../docs/MANAGEMENT.md)。

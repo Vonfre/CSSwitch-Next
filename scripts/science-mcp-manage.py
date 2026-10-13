@@ -5,6 +5,7 @@ No arbitrary request URLs/routes, redirects, external cookies, shell evaluation,
 or persistent cookie jar. Science remains responsible for policy and MCP OAuth.
 """
 import http.cookiejar
+import base64
 import ipaddress
 import json
 import re
@@ -46,7 +47,7 @@ class Bridge:
         if not any(c.name == 'operon_csrf' for c in self.jar):
             raise BridgeError('无法获取 Science CSRF 凭据，请刷新后重试。')
 
-    def request(self, path, data=None, method=None):
+    def request(self, path, data=None, method=None, content_type=None):
         if not path.startswith('/api/') or '://' in path or '#' in path:
             raise BridgeError('不支持的管理接口。')
         headers = {'Origin': self.base}
@@ -54,8 +55,9 @@ class Bridge:
         if csrf:
             headers['x-operon-csrf'] = csrf
         if data is not None:
-            headers['Content-Type'] = 'application/json'
-        req = urllib.request.Request(self.base + path, data=json.dumps(data).encode() if data is not None else None, headers=headers, method=method)
+            headers['Content-Type'] = content_type or 'application/json'
+        body = data if isinstance(data, bytes) else json.dumps(data).encode() if data is not None else None
+        req = urllib.request.Request(self.base + path, data=body, headers=headers, method=method)
         try:
             with self.opener.open(req, timeout=15) as response:
                 body = response.read(2 * 1024 * 1024 + 1)
@@ -64,8 +66,11 @@ class Bridge:
             hint = {401: '本地认证已失效，请刷新重试。', 403: 'Science 策略或授权禁止此操作。',
                     404: '连接器或接口不存在；请刷新并检查 Science 版本。',
                     400: '参数被 Science 拒绝，请检查名称、传输方式和地址。',
-                    409: '连接器名称已存在，请选择其他名称。'}.get(e.code, '请在 Science 中检查连接器状态。')
-            raise BridgeError(f'Science HTTP {e.code}：{hint}') from None
+                    409: '名称已存在，请选择其他名称。',
+                    503: 'Science 目录或服务暂不可用，请恢复连接后刷新。'}.get(e.code, '请在 Science 中检查连接器状态。')
+            status = e.code
+            e.close()
+            raise BridgeError(f'Science HTTP {status}：{hint}') from None
         if len(body) > 2 * 1024 * 1024:
             raise BridgeError('Science 管理响应过大。')
         if not body or path == '/api/auth/nonce':
@@ -84,6 +89,8 @@ class Bridge:
         return data
 
     def run(self, operation, params):
+        if operation.startswith('skills_'):
+            return self.skills(operation, params)
         if operation == 'list':
             connectors = [public_connector(c) for c in self.connectors()]
             health = None
@@ -176,11 +183,48 @@ class Bridge:
             raise BridgeError('不支持的 MCP 管理操作。')
         return {'ok': True}
 
+    def skills(self, operation, params):
+        if operation == 'skills_list':
+            return self.request('/api/skills/catalog')
+        if operation == 'skills_import':
+            filename = params.get('filename', '')
+            if not re.fullmatch(r'[A-Za-z0-9_. -]{1,160}\.(zip|skill|md)', filename, re.I):
+                raise BridgeError('请选择 ZIP、.skill 或 Markdown Skill 文件。')
+            try:
+                content = base64.b64decode(params.get('bundle', ''), validate=True)
+            except (ValueError, TypeError):
+                raise BridgeError('Skill 文件编码无效。') from None
+            if not content or len(content) > 4 * 1024 * 1024:
+                raise BridgeError('Skill 文件必须在 4 MB 以内。')
+            # Random boundary cannot appear in the encoded transport framing.
+            import secrets
+            boundary = 'csswitch-' + secrets.token_hex(24)
+            body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()
+                    + content + f'\r\n--{boundary}--\r\n'.encode())
+            result = self.request('/api/skills/import', body, 'POST', 'multipart/form-data; boundary=' + boundary)
+            return {'name': result.get('name'), 'message': 'Skill 已导入 Science，默认审批由 Science 管理。'}
+        name = params.get('name')
+        if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', name):
+            raise BridgeError('Skill 名称无效。')
+        sid = urllib.parse.quote(name, safe='')
+        if operation == 'skills_content':
+            return self.request(f'/api/skills/catalog/{sid}/content?path=SKILL.md')
+        if operation == 'skills_enabled':
+            if not isinstance(params.get('enabled'), bool):
+                raise BridgeError('Skill 开关必须是布尔值。')
+            self.request(f'/api/skills/catalog/{sid}/enabled', {'enabled': params['enabled']}, 'PUT')
+            return {'message': 'Skill 状态已更新。'}
+        if operation == 'skills_remove':
+            # Science verifies source, policy, and published ownership before deleting.
+            self.request(f'/api/skills/{sid}/full', method='DELETE')
+            return {'message': 'Skill 已卸载。'}
+        raise BridgeError('不支持的 Skills 管理操作。')
+
 
 def main():
     signal.alarm(85)
     try:
-        data = json.loads(sys.stdin.read(256 * 1024))
+        data = json.loads(sys.stdin.read(6 * 1024 * 1024))
         value = Bridge(data['base'], data['nonce']).run(data['operation'], data.get('params', {}))
         print(json.dumps({'ok': True, 'value': value}, ensure_ascii=False))
     except BridgeError as e:

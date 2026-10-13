@@ -1,0 +1,73 @@
+# 管理工作空间
+
+MCP、Skills、用量和会话管理的导航、列表筛选和视觉风格参考 [cc-switch](https://github.com/farion1231/cc-switch)。本轮参考版本为 `d9a62313c8a276216ed40245c638753606831e95`。功能面向 Claude Science，使用本项目的 HTML / CSS / JavaScript、Tauri 命令和 Science 管理接口实现。
+
+## MCP 管理
+
+启动「提供商 → 第三方 API」管理的 Science 后，可搜索连接器，按来源或绑定状态筛选，添加本地 stdio / 远程 HTTPS 服务，管理 Science 绑定、工具权限及 OAuth 授权。
+
+添加窗口提供 Filesystem、Memory、Fetch 快速配置。Filesystem 的允许目录需要自行填写；npm / uvx 软件包及其运行环境需要先安装。本地命令支持绝对路径或 `npx`、`uvx` 等已安装命令，桌面端会解析可执行文件路径。
+
+「导入 JSON」接受标准配置：
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    "research": {
+      "url": "https://example.com/mcp",
+      "type": "http"
+    }
+  }
+}
+```
+
+一次导入 1 至 30 个服务，先校验全部配置，再逐项导入。同名服务跳过；部分失败时保留成功项并逐项展示结果。完成后清空含环境变量的 JSON 草稿。远程配置中的静态 `headers` 需要改用添加窗口的 Science `headers_helper`，避免静默丢弃认证。
+
+## Skills 管理
+
+「已安装」读取 Science 技能目录，可查看并导出 SKILL.md、启停技能和卸载可管理的技能。必需技能和组织策略由 Science 验证，组织禁用项显示为不可操作。
+
+「发现」扫描本机 `~/.codex/skills`、`~/.agents/skills`、`~/.claude/skills`，并展示已添加 GitHub 仓库中的技能。服务停止时仍可发现本地技能；安装、启停和读取 Science 技能内容需要启动第三方 Science。
+
+仓库管理支持公开 GitHub `owner/repo` 或仓库 URL、分支、手动同步及移除。仓库 ZIP 下载上限 16 MB，解压内容上限 64 MB；扫描和打包不会执行技能代码。安装所选技能时包含其 references、scripts 等辅助文件，跳过本地隐藏文件、依赖目录和符号链接。单个技能包上限 4 MB / 1000 文件。
+
+也可直接导入 `.zip`、`.skill`、`.md` 文件。Science 会检查包结构、技能名称、同名冲突及组织策略；CSSwitch 不覆盖同名技能。Science 目录处于 degraded 状态时，导入及卸载按钮禁用并说明原因；恢复目录连接后刷新即可重试。移除仓库保留 Science 中已安装的技能和惰性 ZIP 缓存。
+
+## 用量统计
+
+用量来自 CSSwitch 本地网关，最多读取最近 2000 条记录。总览包含请求、输入 / 输出 Tokens、缓存读取、平均耗时、成功率、每日趋势和模型汇总。请求列表每页 25 条；CSV 导出完整的当前筛选结果。可按今天、7 天、30 天、全部记录、提供商和模型筛选。
+
+模型定价按 USD / 百万 Tokens 配置输入、输出、缓存读取和写入单价，保存在 CSSwitch 配置目录的 `workspace.json`。预估费用随定价更改重新计算；未定价的请求不计入费用并显示缺失数量。OpenAI Chat / Responses 输入中包含的缓存 Tokens 会从普通输入计费中扣除，Anthropic 缓存用量单独计价。新记录保存调用时协议和缓存写入计数，旧记录协议使用当前提供商配置推断。
+
+统计仅覆盖通过网关的请求，不包含官方模式或绕过网关的调用；预估费用不代表服务商账单。趋势在「全部记录」中显示最近一次记录之前的 14 天，在其他时间范围中显示截止今天的最近 14 天（7 天和今天分别显示 7 天和 1 天）。
+
+## 会话管理
+
+读取 Science `data_dir/orgs/*/operon-cli.db` 的主会话、项目和消息。数据库以 SQLite `mode=ro` / `query_only` 打开，服务停止时也可浏览。支持标题 / 项目 / 模型搜索、项目筛选、时间或项目分组、每页 25 个会话。
+
+点开会话后分批读取 100 条消息，显示文本和工具调用 / 结果。导出 Markdown 时逐批获取整段会话，每条消息最多 60,000 字符，截断时明确标记；图片等附件保留类型提示，不导出二进制数据。
+
+收藏、归档和显示名称只写入 CSSwitch 的 `workspace.json`，原始 Science 数据库保持完整。每个组织最多扫描最近 5000 个主会话；不可读或版本不兼容的数据库显示警告，其他组织的可用记录仍可浏览。
+
+## 验证
+
+```bash
+cd desktop
+npm run check
+npm run test:ui
+cd src-tauri
+cargo test --lib
+cd ../..
+python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+python3 -m unittest discover -s test -p 'test_*.py'
+```
+
+UI 回归覆盖筛选、启停、导入、仓库失败恢复、会话分页 / 导出 / 收藏 / 归档、自定义定价、缓存计费、桌面及窄窗口、深色模式和内容转义。Python 测试覆盖只读数据库、路径和符号链接检查、ZIP 安全、辅助文件打包、定价持久化和 Science Cookie / CSRF / multipart 请求。
+
+本轮验证：30 项 UI 测试通过；66 项 Rust 测试通过（3 项可选集成测试未运行）；71 项 Python 测试通过（1 项可选测试跳过）。隔离的真实 Science 实例验证了技能目录读取、目录不可用时 HTTP 503 导入保护、实际数据库会话列表 / 阅读及 CSSwitch 会话设置。原生 Skill 导入成功路径通过 Cookie / CSRF / multipart 协议测试，隔离实例的目录断连状态未验证成功安装。
+
+本地 Apple Silicon 安装包已构建，App ad-hoc 签名及 DMG 完整性校验通过；此本地构建未生成供自动更新发布的签名归档。

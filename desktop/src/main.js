@@ -122,20 +122,6 @@ function renderRuntime() {
 }
 
 
-function renderUsage() {
-  const entries = state.usage;
-  const input = entries.reduce((n, e) => n + e.input_tokens, 0), output = entries.reduce((n, e) => n + e.output_tokens, 0);
-  const failures = entries.filter((e) => !e.ok).length;
-  $('#content').innerHTML = `<div class="metrics">${[['记录请求', entries.length], ['输入 Tokens', input], ['输出 Tokens', output], ['失败请求', failures]].map(([label, n]) => `<div class="metric"><div class="caption">${label}</div><div class="number">${fmt(n)}</div></div>`).join('')}</div><div class="section-heading"><h2>最近请求<span class="label-count">最多 2000 条本地记录</span></h2><button class="icon-btn" id="exportUsageBtn" title="导出用量 CSV" aria-label="导出用量 CSV">${icon('download')}</button></div>${entries.length ? `<div class="table-wrap"><table><thead><tr><th>时间</th><th>连接 / 模型</th><th>输入</th><th>输出</th><th>耗时</th><th>状态</th></tr></thead><tbody>${entries.slice(0, 100).map((e) => `<tr><td>${esc(new Date(e.time * 1000).toLocaleTimeString('zh-CN'))}</td><td>${esc(state.config.connections.find((p) => p.id === e.provider)?.name || e.provider)}<div class="connection-model">${esc(e.model)}</div></td><td class="numeric">${fmt(e.input_tokens)}</td><td class="numeric">${fmt(e.output_tokens)}</td><td class="numeric">${fmt(e.latency_ms)} ms</td><td><span class="dot ${e.ok ? 'green' : 'red'}"></span> ${e.ok ? '成功' : '失败'}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">${icon('chart-no-axes-combined')}暂无请求记录</div>`}`;
-  $('#exportUsageBtn').disabled = !entries.length;
-  $('#exportUsageBtn').onclick = () => {
-    const columns = ['time', 'provider', 'model', 'input_tokens', 'output_tokens', 'cache_read_input_tokens', 'latency_ms', 'ok'];
-    const csv = [columns.join(','), ...entries.map((e) => columns.map((c) => `"${String(e[c] ?? '').replace(/^[=+@-]/, "'$&").replace(/"/g, '""')}"`).join(','))].join('\r\n');
-    download('csswitch-usage.csv', '\uFEFF' + csv, 'text/csv');
-  };
-  icons();
-}
-
 function download(name, data, type) {
   const url = URL.createObjectURL(new Blob([data], { type }));
   const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -184,19 +170,19 @@ async function showView(view) {
   state.view = view;
   $('.nav-item.active')?.classList.remove('active');
   $(`[data-view="${view}"]`).classList.add('active');
-  $('#pageTitle').textContent = { workbench: '提供商', mcp: 'MCP 管理', usage: '用量记录', logs: '运行日志', settings: '设置' }[view];
-  if (view === 'mcp') {
-    $('#content').innerHTML = '<div class="empty">正在读取 Science 连接器…</div>';
-    await action(async () => { await loadMcp(); renderMcp(); }); return;
+  $('#pageTitle').textContent = { workbench: '提供商', mcp: 'MCP 管理', skills: 'Skills 管理', sessions: '会话管理', usage: '用量统计', logs: '运行日志', settings: '设置' }[view];
+  if (['mcp', 'skills', 'sessions'].includes(view)) {
+    $('#content').innerHTML = '<div class="empty">正在读取管理数据…</div>';
+    await action(async () => { await ({ mcp: loadMcp, skills: loadSkills, sessions: loadSessions })[view](); ({ mcp: renderMcp, skills: renderSkills, sessions: renderSessions })[view](); }); return;
   }
-  try {
+  await action(async () => {
     if (native()) {
-      if (view === 'usage') state.usage = (await call('read_usage')).entries;
+      if (view === 'usage') await loadUsage();
       if (view === 'logs') state.logs = await call('read_logs');
       if (view === 'settings') state.diagnostics = await call('diagnostics');
     }
     ({ workbench: renderWorkbench, usage: renderUsage, logs: renderLogs, settings: renderSettings })[view]();
-  } catch (e) { notice(String(e), true); }
+  });
 }
 
 document.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => showView(b.dataset.view); });
@@ -205,12 +191,14 @@ $('#themeBtn').onclick = () => {
   document.documentElement.dataset.theme = theme; localStorage.setItem('csswitch-theme', theme);
 };
 document.documentElement.dataset.theme = localStorage.getItem('csswitch-theme') || 'light';
+$('#workspaceDialog').oncancel = e => { if (state.busy) e.preventDefault(); };
+$('#workspaceDialog').onclose = () => { if (!$('#workspaceDialog').open) $('#workspaceDialog').innerHTML = ''; };
 $('#quitBtn').onclick = () => action(() => call('quit_app'));
 $('#refreshBtn').onclick = () => action(async () => {
   if (state.dirty) { notice('请先保存连接配置，再刷新。', true); return; }
   await loadConfig(); await refreshRuntime();
-  if (state.view === 'mcp') { await loadMcp(); renderMcp(); return; }
-  if (state.view === 'usage') state.usage = (await call('read_usage')).entries;
+  if (['mcp', 'skills', 'sessions'].includes(state.view)) { await ({ mcp: loadMcp, skills: loadSkills, sessions: loadSessions })[state.view](); ({ mcp: renderMcp, skills: renderSkills, sessions: renderSessions })[state.view](); return; }
+  if (state.view === 'usage') await loadUsage();
   if (state.view === 'logs') state.logs = await call('read_logs');
   if (state.view === 'settings') state.diagnostics = await call('diagnostics');
   ({ workbench: renderWorkbench, usage: renderUsage, logs: renderLogs, settings: renderSettings })[state.view]();

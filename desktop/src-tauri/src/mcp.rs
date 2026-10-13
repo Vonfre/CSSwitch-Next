@@ -17,10 +17,23 @@ pub fn manage(root: &Path, operation: &str, mut params: Value) -> Result<Value, 
         "tools",
         "grant",
         "authorize",
+        "skills_list",
+        "skills_content",
+        "skills_enabled",
+        "skills_import",
+        "skills_remove",
     ]
     .contains(&operation)
     {
         return Err("不支持的 MCP 管理操作。".into());
+    }
+    if operation == "add_local" {
+        if let Some(command) = params.get("command").and_then(Value::as_str) {
+            if !Path::new(command).is_absolute() {
+                let executable = super::proc::find_exe(command).ok_or("找不到 MCP 可执行文件，请安装或填写绝对路径。")?;
+                params["command"] = json!(executable);
+            }
+        }
     }
     let session = super::science_shared::load(&super::shared_root())?
         .ok_or("请先在提供商页面启动第三方 Science。")?;

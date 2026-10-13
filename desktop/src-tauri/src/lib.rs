@@ -8,6 +8,7 @@ mod proc;
 mod science_shared;
 mod mcp;
 mod updater;
+mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::io::Write;
@@ -20,6 +21,13 @@ use serde_json::json;
 use tauri::{Manager, State};
 
 const SCIENCE_BIN: &str = "/Applications/Claude Science.app/Contents/Resources/bin/claude-science";
+
+#[tauri::command]
+async fn workspace_manage(app: tauri::AppHandle, operation: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let root = asset_root(&app).ok_or("无法定位本地管理资源。")?;
+    tauri::async_runtime::spawn_blocking(move || workspace::manage(&root, &operation, params.unwrap_or(json!({}))))
+        .await.map_err(|_| "本地管理任务异常。".to_string())?
+}
 
 #[tauri::command]
 async fn mcp_manage(app: tauri::AppHandle, operation: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
@@ -1047,6 +1055,7 @@ pub fn run() {
         .manage(updater::UpdateState::default())
         .manage(Mutex::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
+            workspace_manage,
             updater::check_update,
             updater::download_update,
             updater::install_update,

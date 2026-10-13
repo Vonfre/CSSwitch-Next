@@ -8,14 +8,16 @@ from collections import deque
 LOCK = threading.Lock()
 
 
-def record(path, provider, model, started, usage=None, ok=True):
+def record(path, provider, model, started, usage=None, ok=True, protocol=None):
     if not path:
         return
     usage = usage or {}
     entry = {"time": int(time.time()), "provider": provider, "model": model,
              "latency_ms": round((time.monotonic() - started) * 1000), "ok": ok,
              "input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0),
-             "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0)}
+             "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+             "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+             "protocol": protocol}
     with LOCK:
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(path, flags, 0o600)

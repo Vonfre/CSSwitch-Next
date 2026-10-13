@@ -10,7 +10,7 @@
 - 搜索、阅读和导出 Science 本地会话，在 CSSwitch 中收藏、归档和调整显示名称。
 - 管理 Science Skills，从本地及 GitHub 仓库发现并安装技能。
 - 查看运行日志。
-- 管理本地与远程 MCP，支持预设、筛选和标准 JSON 导入，内置 OpenScience 科研数据库连接器。
+- 管理本地与远程 MCP，支持预设、筛选和标准 JSON 导入，内置科研数据库连接器。
 - 在应用内检查、下载并安装更新。
 
 [下载 DMG 安装包](https://github.com/Vonfre/CSSwitch-Next/releases/latest)

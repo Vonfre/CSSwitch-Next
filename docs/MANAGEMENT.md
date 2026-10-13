@@ -35,7 +35,9 @@ MCP、Skills、用量和会话管理的导航、列表筛选和视觉风格参�
 
 仓库管理支持公开 GitHub `owner/repo` 或仓库 URL、分支、手动同步及移除。仓库 ZIP 下载上限 16 MB，解压内容上限 64 MB；扫描和打包不会执行技能代码。安装所选技能时包含其 references、scripts 等辅助文件，跳过本地隐藏文件、依赖目录和符号链接。单个技能包上限 4 MB / 1000 文件。
 
-也可直接导入 `.zip`、`.skill`、`.md` 文件。Science 会检查包结构、技能名称、同名冲突及组织策略；CSSwitch 不覆盖同名技能。Science 目录处于 degraded 状态时，导入及卸载按钮禁用并说明原因；恢复目录连接后刷新即可重试。移除仓库保留 Science 中已安装的技能和惰性 ZIP 缓存。
+也可直接导入 `.zip`、`.skill`、`.md` 文件。Science 会检查包结构、技能名称、同名冲突及组织策略；CSSwitch 不覆盖同名技能。0.6.1 起，Science 云端目录处于 degraded 状态时，导入自动使用本地技能草稿目录 `data_dir/orgs/<当前组织>/skills`。支持 Markdown / ZIP / .skill，保留 references 和 scripts；SKILL.md 必须包含唯一的 name 与非空 description，名称符合 Science 的小写字母 / 数字 / 短横线规则（最多 64 位）。安装前核对组织策略，拒绝覆盖已有目录、内置技能及发布缓存；不生成 `.catalog_stamp` 或伪造发布来源。安装后由 Science 原生接口核验草稿和内容并绑定 OPERON，绑定失败撤销本次安装。隐藏来源标记、路径穿越、符号链接、特殊文件及过大的压缩包会被拒绝。
+
+已安装列表同时展示本地草稿，并只读查询 Science 的启停状态。CSSwitch 自己安装的本地技能可在目录断连时卸载，先由 Science 解绑代理，再删除其本地文件；其他技能的删除继续交由 Science 校验。云端发布仍需有效官方登录。移除仓库保留 Science 中已安装的技能和惰性 ZIP 缓存。
 
 ## 用量统计
 
@@ -71,3 +73,5 @@ UI 回归覆盖筛选、启停、导入、仓库失败恢复、会话分页 / �
 本轮验证：30 项 UI 测试通过；66 项 Rust 测试通过（3 项可选集成测试未运行）；71 项 Python 测试通过（1 项可选测试跳过）。隔离的真实 Science 实例验证了技能目录读取、目录不可用时 HTTP 503 导入保护、实际数据库会话列表 / 阅读及 CSSwitch 会话设置。原生 Skill 导入成功路径通过 Cookie / CSRF / multipart 协议测试，隔离实例的目录断连状态未验证成功安装。
 
 本地 Apple Silicon 安装包已构建，App ad-hoc 签名及 DMG 完整性校验通过；此本地构建未生成供自动更新发布的签名归档。
+
+0.6.1 修复验证：32 项 UI 测试通过；隔离真实 Science 实例在云端目录断连时验证了 Markdown / ZIP 本地导入、辅助文件读取、OPERON 绑定、启停及卸载。

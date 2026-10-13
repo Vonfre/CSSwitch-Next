@@ -16,7 +16,7 @@ npm run test:ui
 
 `CSSWITCH_DATA_DIR` 可将测试数据指向临时目录；`CSSWITCH_REPO` 仅用于显式指定开发资源目录。正式 App 使用自身 Resources 中的脚本。
 
-“MCP 管理”可安装移植自 OpenScience 的 43 个科研数据库适配器，也可添加本地 stdio / 远程 HTTPS MCP，管理绑定、授权和工具权限。科研服务需要 Node.js 22+，管理桥接需要 Python 3；Tauri dev/build 会自动构建科研服务并打包所需许可证。使用及验证说明见 [MCP 管理](../docs/MCP.md)。
+“MCP 管理”可安装 43 个科研数据库适配器，也可添加本地 stdio / 远程 HTTPS MCP，管理绑定、授权和工具权限。科研服务需要 Node.js 22+，管理桥接需要 Python 3；Tauri dev/build 会自动构建科研服务并打包所需许可证。使用及验证说明见 [MCP 管理](../docs/MCP.md)。
 
 ## 应用更新
 

@@ -1,16 +1,21 @@
 // Science owns installed skills; CSSwitch discovers and packages local/repository skills.
-const skillsState = { tab: 'installed', search: '', source: 'all', installed: [], discovered: [], repos: [], error: '', degraded: false, warnings: [] };
-const skillSources = { anthropic: 'Science 内置', bundled: 'Science 内置', personal: '个人 Skill', organization: '组织 Skill', imported: '已导入', local: '本地 Skill', codex: 'Codex 本地', agents: '共享本地', claude: 'Claude 本地', github: 'GitHub 仓库' };
+const skillsState = { tab: 'installed', search: '', source: 'all', installed: [], discovered: [], repos: [], error: '', degraded: false, localImportAvailable: false, customAllowed: true, warnings: [] };
+const skillSources = { anthropic: 'Science 内置', bundled: 'Science 内置', personal: '个人 Skill', organization: '组织 Skill', imported: '已导入', 'csswitch-local': 'Science 本地', draft: '本地草稿', local: '本地 Skill', codex: 'Codex 本地', agents: '共享本地', claude: 'Claude 本地', github: 'GitHub 仓库' };
 const workspaceCall = (operation, params = {}) => call('workspace_manage', { operation, params });
 
+function skillsImportBlocked() { return !native() || skillsState.error || !skillsState.customAllowed || (skillsState.degraded && !skillsState.localImportAvailable); }
+
 async function loadSkills() {
-  skillsState.error = ''; skillsState.degraded = false; skillsState.warnings = []; skillsState.installed = []; skillsState.discovered = []; skillsState.repos = [];
+  skillsState.error = ''; skillsState.degraded = false; skillsState.localImportAvailable = false; skillsState.customAllowed = true; skillsState.warnings = []; skillsState.installed = []; skillsState.discovered = []; skillsState.repos = [];
   if (!native()) { skillsState.error = '请在桌面应用中管理 Skills。'; return; }
   const [catalog, discovery] = await Promise.allSettled([mcpCall('skills_list'), workspaceCall('skills_discover')]);
   if (catalog.status === 'fulfilled') {
     skillsState.installed = (catalog.value.skills || []).filter(s => !s.userHidden);
     skillsState.degraded = Boolean(catalog.value.degraded);
-    if (skillsState.degraded) skillsState.warnings.push('Science 技能目录暂不可用，无法核验已发布技能。Science 暂停导入与卸载；请恢复目录连接后刷新。');
+    skillsState.localImportAvailable = Boolean(catalog.value.localImportAvailable);
+    skillsState.customAllowed = catalog.value.customAllowed !== false;
+    if (skillsState.degraded) skillsState.warnings.push(skillsState.localImportAvailable ? 'Science 云端目录暂不可用，本地 Skills 仍可安装并绑定到 OPERON。云端技能的导入与卸载需要恢复官方登录。' : (catalog.value.localImportReason || 'Science 目录暂不可用，当前无法导入；请启动第三方 Science 或升级应用后刷新。'));
+    if (!skillsState.customAllowed) skillsState.warnings.push('Science 组织策略禁止添加自定义 Skills。');
   } else skillsState.error = String(catalog.reason.message || catalog.reason);
   if (discovery.status === 'fulfilled') {
     skillsState.discovered = discovery.value.skills || []; skillsState.repos = discovery.value.repos || [];
@@ -21,7 +26,7 @@ function renderSkills() {
   const installed = skillsState.tab === 'installed';
   const rows = installed ? skillsState.installed : skillsState.discovered;
   const sources = [...new Set(rows.map(s => s.source))];
-  $('#content').innerHTML = `<div class="page-intro"><div><h2>让 Science 学会更多工作方式</h2><p>管理已安装技能，或从本机与 GitHub 仓库发现新的 Skills。</p></div><div class="actions"><button class="btn" id="skillRepos">${icon('git-branch')}仓库管理</button><button class="btn primary" id="importSkill" ${!native() || skillsState.error || skillsState.degraded ? 'disabled' : ''}>${icon('upload')}导入 Skill</button><input id="skillFile" type="file" accept=".zip,.skill,.md" hidden /></div></div>
+  $('#content').innerHTML = `<div class="page-intro"><div><h2>让 Science 学会更多工作方式</h2><p>管理已安装技能，或从本机与 GitHub 仓库发现新的 Skills。</p></div><div class="actions"><button class="btn" id="skillRepos">${icon('git-branch')}仓库管理</button><button class="btn primary" id="importSkill" ${skillsImportBlocked() ? 'disabled' : ''}>${icon('upload')}导入 Skill</button><input id="skillFile" type="file" accept=".zip,.skill,.md" hidden /></div></div>
     ${skillsState.error ? `<div class="mcp-note">${icon('info')} ${esc(skillsState.error)} · 已安装技能需要启动第三方 Science；本地发现仍可使用。</div>` : ''}
     ${skillsState.warnings.map(w => `<div class="mcp-note">${esc(w)}</div>`).join('')}
     <div class="management-toolbar"><div class="segmented" role="group" aria-label="Skills 视图"><button data-skill-tab="installed" class="${installed ? 'active' : ''}">已安装 <span class="label-count">${skillsState.installed.length}</span></button><button data-skill-tab="discover" class="${!installed ? 'active' : ''}">发现 <span class="label-count">${skillsState.discovered.length}</span></button></div><span class="subtle">安装到 Claude Science</span></div>
@@ -48,7 +53,7 @@ function renderSkillRows() {
   const rows = (installed ? skillsState.installed : skillsState.discovered).filter(s => (skillsState.source === 'all' || s.source === skillsState.source) && `${s.name} ${s.description || ''} ${s.repo || ''}`.toLowerCase().includes(q));
   $('#skillRows').innerHTML = rows.map((s, i) => {
     const exists = skillsState.installed.some(v => v.name === s.name || v.name === s.directory?.split('/').pop());
-    return `<article class="management-row" data-skill-index="${i}"><span class="tile-icon">${icon('book-open')}</span><div class="row-detail"><h3>${esc(s.displayName || s.name)} <span class="badge">${esc(skillSources[s.source] || s.source)}</span></h3><p>${esc(s.description || '暂无描述')}</p><span class="subtle">${installed ? esc(s.admin_blocked ? '组织策略禁用' : s.enabled === false ? '已停用' : '已启用') : esc(s.repo || s.path || s.source)}${s.attachedAgents?.length ? ` · ${esc(s.attachedAgents.join(', '))}` : ''}</span></div><div class="actions">${installed ? `<button class="btn" data-skill-action="content">查看内容</button><button class="switch" role="switch" aria-label="启用 ${esc(s.name)}" aria-checked="${s.enabled !== false}" data-skill-action="enabled" ${s.admin_blocked ? 'disabled' : ''}><span></span></button>${['local', 'draft', 'personal', 'imported', 'custom'].includes(s.source) ? `<button class="icon-btn danger" data-skill-action="remove" ${skillsState.degraded || s.admin_blocked ? 'disabled' : ''} aria-label="卸载 ${esc(s.name)}">${icon('trash-2')}</button>` : ''}` : `<button class="btn ${exists ? '' : 'primary'}" data-skill-action="install" ${exists || skillsState.error || skillsState.degraded || !native() ? 'disabled' : ''}>${icon(exists ? 'check' : 'download')}${exists ? '已安装' : '安装到 Science'}</button>`}</div></article>`;
+    return `<article class="management-row" data-skill-index="${i}"><span class="tile-icon">${icon('book-open')}</span><div class="row-detail"><h3>${esc(s.displayName || s.name)} <span class="badge">${esc(skillSources[s.source] || s.source)}</span></h3><p>${esc(s.description || '暂无描述')}</p><span class="subtle">${installed ? esc(s.admin_blocked ? '组织策略禁用' : s.enabled === false ? '已停用' : '已启用') : esc(s.repo || s.path || s.source)}${s.attachedAgents?.length ? ` · ${esc(s.attachedAgents.join(', '))}` : ''}</span></div><div class="actions">${installed ? `<button class="btn" data-skill-action="content">查看内容</button><button class="switch" role="switch" aria-label="启用 ${esc(s.name)}" aria-checked="${s.enabled !== false}" data-skill-action="enabled" ${s.admin_blocked ? 'disabled' : ''}><span></span></button>${['csswitch-local', 'local', 'draft', 'personal', 'imported', 'custom'].includes(s.source) ? `<button class="icon-btn danger" data-skill-action="remove" ${(s.source !== 'csswitch-local' && skillsState.degraded) || s.admin_blocked || !skillsState.customAllowed ? 'disabled' : ''} aria-label="卸载 ${esc(s.name)}">${icon('trash-2')}</button>` : ''}` : `<button class="btn ${exists ? '' : 'primary'}" data-skill-action="install" ${exists || skillsImportBlocked() ? 'disabled' : ''}>${icon(exists ? 'check' : 'download')}${exists ? '已安装' : '安装到 Science'}</button>`}</div></article>`;
   }).join('') || `<div class="empty">${icon('book-open')}<strong>${q ? '没有匹配的 Skills' : installed ? '暂无可用技能' : '没有发现新技能'}</strong><span>${installed ? '启动 Science 后刷新，或导入 ZIP / SKILL.md。' : '扫描 ~/.codex/skills、~/.agents/skills、~/.claude/skills；也可在仓库管理中添加 GitHub 仓库。'}</span></div>`;
   document.querySelectorAll('[data-skill-action]').forEach(b => b.onclick = () => action(async () => {
     const s = rows[Number(b.closest('[data-skill-index]').dataset.skillIndex)], op = b.dataset.skillAction;

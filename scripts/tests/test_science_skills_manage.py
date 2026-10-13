@@ -5,6 +5,8 @@ import importlib.util
 import json
 from pathlib import Path
 import threading
+import sqlite3
+import tempfile
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -30,8 +32,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/api/csrf': return self.respond(204, cookie='operon_csrf=test-csrf; Path=/')
         self.authenticated()
-        if self.path == '/api/skills/catalog': return self.respond(200, {'skills': [{'name': 'test-skill', 'source': 'local', 'enabled': True}], 'degraded': False})
+        if self.path == '/api/skills/catalog': return self.respond(200, {'skills': [{'name': 'test-skill', 'source': 'local', 'enabled': True}], 'degraded': self.server.degraded})
+        if self.path == '/api/org-policy': return self.respond(200, {'caps': {'operon_custom_skills': {'allowed': self.server.allowed}}})
+        if self.path == '/api/skills/drafts': return self.respond(200, {'drafts': [p.name for p in self.server.skills_root.iterdir() if p.is_dir() and (p/'SKILL.md').is_file()]})
+        if self.path == '/api/me': return self.respond(200, {'user_id': 'fixture-user'})
+        if self.path == '/api/agents': return self.respond(200, [{'name': 'OPERON', 'skillNames': self.server.attached}])
         if self.path == '/api/skills/catalog/test-skill/content?path=SKILL.md': return self.respond(200, {'content': '# Skill\n<untrusted>'})
+        if self.path.startswith('/api/skills/catalog/') and self.path.endswith('/content?path=SKILL.md'):
+            name = self.path.split('/')[4]
+            path = self.server.skills_root/name/'SKILL.md'
+            if path.is_file(): return self.respond(200, {'content': path.read_text()})
         self.respond(404, {'error': 'private-error-must-not-leak'})
 
     def do_POST(self):
@@ -40,6 +50,10 @@ class Handler(BaseHTTPRequestHandler):
             assert json.loads(body)['nonce'] == 'fixture-nonce'
             return self.respond(200, {}, cookie='operon_auth=test-auth; Path=/')
         self.authenticated()
+        if self.path == '/api/agents/OPERON/skills':
+            if self.server.attach_fails: return self.respond(403, {})
+            self.server.attached.append(json.loads(body)['skill_name'])
+            return self.respond(200, {'name': 'OPERON', 'skillNames': self.server.attached})
         if self.path == '/api/skills/import':
             parsed = BytesParser(policy=default).parsebytes(('Content-Type: ' + self.headers['Content-Type'] + '\r\nMIME-Version: 1.0\r\n\r\n').encode() + body)
             parts = list(parsed.iter_parts())
@@ -50,10 +64,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         self.authenticated()
         self.server.enabled = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        if self.path.startswith('/api/skills/catalog/'):
+            with sqlite3.connect(self.server.dbpath) as db:
+                db.execute('INSERT OR REPLACE INTO capability_settings VALUES (?,?,?,?)', ('fixture-user','skill',self.path.split('/')[4],int(self.server.enabled['enabled'])))
         self.respond(200, {})
 
     def do_DELETE(self):
         self.authenticated()
+        if self.path.startswith('/api/agents/OPERON/skills/'):
+            name = self.path.split('/')[-1]
+            self.server.attached = [s for s in self.server.attached if s != name]
+            return self.respond(200, {})
         if self.path == '/api/skills/test-skill/full': return self.respond(200, {})
         self.respond(403, {'error': 'private-error-must-not-leak'})
 
@@ -70,6 +91,75 @@ class SkillsBridgeTests(unittest.TestCase):
         cls.server.shutdown(); cls.server.server_close(); cls.thread.join()
 
     def client(self): return bridge.Bridge(self.server.base, 'fixture-nonce')
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+        self.data, self.auth = self.root/'data', self.root/'auth'
+        self.auth.mkdir()
+        (self.auth/'active-org.json').write_text(json.dumps({'org_uuid':'12345678-1234-1234-1234-123456789abc'}))
+        self.server.skills_root = self.data/'orgs/12345678-1234-1234-1234-123456789abc/skills'
+        self.server.skills_root.mkdir(parents=True)
+        self.server.dbpath = self.server.skills_root.parent/'operon-cli.db'
+        with sqlite3.connect(self.server.dbpath) as db:
+            db.execute('CREATE TABLE capability_settings(user_id TEXT,kind TEXT,key TEXT,enabled INTEGER,PRIMARY KEY(user_id,kind,key))')
+        self.server.allowed = True
+        self.server.degraded = False
+        self.server.attach_fails = False
+        self.server.attached = []
+
+    def tearDown(self): self.temp.cleanup()
+
+    def local_client(self): return bridge.Bridge(self.server.base, 'fixture-nonce', str(self.data), str(self.auth))
+
+    def local_params(self, name='local-fixture'):
+        text = f'---\nname: {name}\ndescription: Local fixture\n---\n# Read locally\n'
+        return {'filename':'local.md','bundle':base64.b64encode(text.encode()).decode()}
+
+    def test_degraded_catalog_imports_real_files_verifies_draft_and_attaches(self):
+        self.server.degraded = True
+        client = self.local_client()
+        self.assertTrue(client.run('skills_list', {})['localImportAvailable'])
+        result = client.run('skills_import', self.local_params())
+        self.assertEqual(result['name'], 'local-fixture')
+        self.assertTrue((self.server.skills_root/'local-fixture/SKILL.md').is_file())
+        self.assertEqual(self.server.attached, ['local-fixture'])
+        item = next(s for s in client.run('skills_list', {})['skills'] if s['name']=='local-fixture')
+        self.assertEqual(item['source'], 'csswitch-local')
+        self.assertEqual(item['attachedAgents'], ['OPERON'])
+        client.run('skills_enabled', {'name':'local-fixture','enabled':False})
+        item = next(s for s in client.run('skills_list', {})['skills'] if s['name']=='local-fixture')
+        self.assertFalse(item['enabled'])
+        client.run('skills_remove', {'name':'local-fixture'})
+        self.assertFalse((self.server.skills_root/'local-fixture').exists())
+        self.assertEqual(self.server.attached, [])
+
+    def test_local_import_respects_policy_and_missing_native_paths(self):
+        self.server.degraded = True
+        self.server.allowed = False
+        with self.assertRaisesRegex(bridge.BridgeError, '组织策略'):
+            self.local_client().run('skills_import', self.local_params())
+        self.server.allowed = True
+        with self.assertRaisesRegex(bridge.BridgeError, '安装新版'):
+            self.client().run('skills_import', self.local_params())
+        self.assertFalse((self.server.skills_root/'local-fixture').exists())
+
+    def test_failed_native_attachment_rolls_back_local_files(self):
+        self.server.degraded = True
+        self.server.attach_fails = True
+        with self.assertRaisesRegex(bridge.BridgeError, '403'):
+            self.local_client().run('skills_import', self.local_params())
+        self.assertFalse((self.server.skills_root/'local-fixture').exists())
+
+    def test_local_import_never_overwrites_existing_or_catalog_skills(self):
+        self.server.degraded = True
+        with self.assertRaisesRegex(bridge.BridgeError, '冲突'):
+            self.local_client().run('skills_import', self.local_params('test-skill'))
+        client = self.local_client()
+        client.run('skills_import', self.local_params())
+        original = (self.server.skills_root/'local-fixture/SKILL.md').read_bytes()
+        with self.assertRaises(bridge.BridgeError): client.run('skills_import', self.local_params())
+        self.assertEqual((self.server.skills_root/'local-fixture/SKILL.md').read_bytes(), original)
 
     def test_catalog_and_content_use_authenticated_science_routes(self):
         self.assertEqual(self.client().run('skills_list', {})['skills'][0]['name'], 'test-skill')

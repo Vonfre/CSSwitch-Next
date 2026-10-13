@@ -14,6 +14,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import importlib.util
+from pathlib import Path
+
+_local_spec = importlib.util.spec_from_file_location('science_local_skills', Path(__file__).with_name('science-local-skills.py'))
+local_skills = importlib.util.module_from_spec(_local_spec)
+_local_spec.loader.exec_module(local_skills)
 
 
 class BridgeError(Exception):
@@ -33,13 +39,15 @@ def public_connector(value):
 
 
 class Bridge:
-    def __init__(self, base, nonce):
+    def __init__(self, base, nonce, data_dir=None, auth_dir=None):
         u = urllib.parse.urlsplit(base)
         if u.scheme != 'http' or u.hostname != '127.0.0.1' or not u.port or u.username or u.password or u.path or u.query or u.fragment:
             raise BridgeError('管理接口必须是 CSSwitch 所拥有的本地 Science 服务。')
         if not isinstance(nonce, str) or not nonce:
             raise BridgeError('缺少 Science 本地会话凭据。')
         self.base = base
+        # These paths come from the owned native session, never frontend params.
+        self.data_dir, self.auth_dir = data_dir, auth_dir
         self.jar = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), urllib.request.HTTPCookieProcessor(self.jar))
         self.request('/api/auth/nonce', {'nonce': nonce, 'dest': '/'})
@@ -185,8 +193,38 @@ class Bridge:
 
     def skills(self, operation, params):
         if operation == 'skills_list':
-            return self.request('/api/skills/catalog')
+            return self.skill_catalog()
         if operation == 'skills_import':
+            catalog = self.skill_catalog()
+            if not catalog.get('customAllowed'):
+                raise BridgeError('Science 组织策略禁止添加自定义 Skills。')
+            if catalog.get('degraded'):
+                if not catalog.get('localImportAvailable'):
+                    raise BridgeError(catalog.get('localImportReason') or '本地技能安装暂不可用。')
+                store = self.local_store()
+                try:
+                    name, _, files = local_skills.unpack(params.get('filename'), params.get('bundle'))
+                    reserved = {s['name'] for s in catalog['skills']}
+                    store.install(name, files, reserved)
+                    try:
+                        if name not in self.request('/api/skills/drafts').get('drafts', []):
+                            raise BridgeError('Science 未识别本地技能，安装已撤销。')
+                        content = self.request(f'/api/skills/catalog/{name}/content?path=SKILL.md')
+                        if content.get('content') != files['SKILL.md'].decode('utf-8'):
+                            raise BridgeError('Science 未能读取本地技能，安装已撤销。')
+                        attached = self.request('/api/agents/OPERON/skills', {'skill_name': name})
+                        if name not in attached.get('skillNames', []):
+                            raise BridgeError('Science 未能绑定本地技能，安装已撤销。')
+                    except Exception:
+                        try:
+                            self.request(f'/api/agents/OPERON/skills/{name}', method='DELETE')
+                        except BridgeError:
+                            pass
+                        store.remove(name)
+                        raise
+                    return {'name': name, 'message': 'Skill 已安装到 Science 本地并绑定 OPERON，无需官方目录登录。'}
+                except local_skills.LocalSkillError as error:
+                    raise BridgeError(str(error)) from None
             filename = params.get('filename', '')
             if not re.fullmatch(r'[A-Za-z0-9_. -]{1,160}\.(zip|skill|md)', filename, re.I):
                 raise BridgeError('请选择 ZIP、.skill 或 Markdown Skill 文件。')
@@ -215,17 +253,82 @@ class Bridge:
             self.request(f'/api/skills/catalog/{sid}/enabled', {'enabled': params['enabled']}, 'PUT')
             return {'message': 'Skill 状态已更新。'}
         if operation == 'skills_remove':
+            store = self.local_store(optional=True)
+            try:
+                managed = store.info(name) if store else None
+                if managed:
+                    catalog = self.skill_catalog()
+                    if not catalog.get('customAllowed'):
+                        raise BridgeError('Science 组织策略禁止管理自定义 Skills。')
+                    # Refuse published or reclassified content even if its marker survived.
+                    entry = next((s for s in catalog['skills'] if s['name'] == name), {})
+                    if entry.get('source') != 'csswitch-local':
+                        raise BridgeError('此技能已由 Science 目录管理，未删除本地文件。')
+                    for agent in entry.get('attachedAgents', []):
+                        self.request(f'/api/agents/{urllib.parse.quote(agent, safe="")}/skills/{sid}', method='DELETE')
+                    store.remove(name)
+                    return {'message': 'Science 本地 Skill 已卸载。'}
+            except local_skills.LocalSkillError as error:
+                raise BridgeError(str(error)) from None
             # Science verifies source, policy, and published ownership before deleting.
             self.request(f'/api/skills/{sid}/full', method='DELETE')
             return {'message': 'Skill 已卸载。'}
         raise BridgeError('不支持的 Skills 管理操作。')
+
+    def local_store(self, optional=False):
+        if not self.data_dir or not self.auth_dir:
+            if optional:
+                return None
+            raise BridgeError('缺少本地技能管理资源，请安装新版 CSSwitch。')
+        try:
+            return local_skills.LocalSkills(self.data_dir, self.auth_dir)
+        except local_skills.LocalSkillError as error:
+            if optional:
+                return None
+            raise BridgeError(str(error)) from None
+
+    def skill_catalog(self):
+        catalog = self.request('/api/skills/catalog')
+        policy = self.request('/api/org-policy')
+        catalog['customAllowed'] = policy.get('caps', {}).get('operon_custom_skills', {}).get('allowed') is True
+        catalog['localImportAvailable'] = False
+        catalog['localImportReason'] = ''
+        try:
+            drafts = self.request('/api/skills/drafts').get('drafts', [])
+        except BridgeError:
+            drafts = []
+            catalog['localImportReason'] = '当前 Science 版本无法验证本地草稿，请升级 Science。'
+        try:
+            store = self.local_store()
+        except BridgeError as error:
+            store = None
+            catalog['localImportReason'] = str(error)
+        if store and not catalog['localImportReason']:
+            me = self.request('/api/me')
+            try:
+                disabled = store.disabled(me['user_id'])
+                raw = self.request('/api/agents')
+                agents = raw if isinstance(raw, list) else raw.get('agents', [])
+                existing = {s['name'] for s in catalog.get('skills', [])}
+                for name in drafts:
+                    if name in existing or not isinstance(name, str) or not local_skills.NAME.fullmatch(name):
+                        continue
+                    info = store.info(name) or {'name': name, 'source': 'draft', 'description': 'Science 本地技能草稿'}
+                    info.update(enabled=name not in disabled, attachedAgents=[a['name'] for a in agents if name in a.get('skillNames', [])])
+                    catalog.setdefault('skills', []).append(info)
+                catalog['localImportAvailable'] = catalog['customAllowed']
+            except local_skills.LocalSkillError as error:
+                catalog['localImportReason'] = str(error)
+        if not catalog['customAllowed']:
+            catalog['localImportReason'] = 'Science 组织策略禁止添加自定义 Skills。'
+        return catalog
 
 
 def main():
     signal.alarm(85)
     try:
         data = json.loads(sys.stdin.read(6 * 1024 * 1024))
-        value = Bridge(data['base'], data['nonce']).run(data['operation'], data.get('params', {}))
+        value = Bridge(data['base'], data['nonce'], data.get('data_dir'), data.get('auth_dir')).run(data['operation'], data.get('params', {}))
         print(json.dumps({'ok': True, 'value': value}, ensure_ascii=False))
     except BridgeError as e:
         print(json.dumps({'ok': False, 'message': str(e)}, ensure_ascii=False))

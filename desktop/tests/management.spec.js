@@ -16,11 +16,11 @@ async function setup(page, offline = false) {
       if (cmd === 'mcp_manage') {
         const { operation: op, params: p } = args;
         if (offline && op.startsWith('skills_')) throw new Error('请先启动第三方 Science。');
-        if (op === 'skills_list') return { skills: structuredClone(skills), degraded: Boolean(window.catalogDegraded) };
+        if (op === 'skills_list') return { skills: structuredClone(skills), degraded: Boolean(window.catalogDegraded), localImportAvailable: Boolean(window.localImportAvailable), customAllowed: !window.customSkillsBlocked };
         if (op === 'skills_content') return { content: '---\nname: ' + p.name + '\n---\n<unsafe-content>\n# Methods' };
         if (op === 'skills_enabled') skills.find(s => s.name === p.name).enabled = p.enabled;
         if (op === 'skills_remove') skills = skills.filter(s => s.name !== p.name);
-        if (op === 'skills_import') { if (window.importFails) throw new Error('Science HTTP 409：同名技能已存在。'); skills.push({ name: p.filename.replace(/\.zip|\.md/g, ''), source: 'local', description: '新技能' }); return { message: 'Skill 已导入 Science。' }; }
+        if (op === 'skills_import') { if (window.importFails) throw new Error('Science HTTP 409：同名技能已存在。'); skills.push({ name: p.filename.replace(/\.zip|\.md/g, ''), source: window.catalogDegraded ? 'csswitch-local' : 'local', description: '新技能' }); return { message: 'Skill 已导入 Science。' }; }
         if (op === 'list') return { connectors: structuredClone(connectors), customAllowed: true };
         if (op === 'add_local' || op === 'add_remote') connectors.push({ id: 'local:' + p.name, name: p.name, source: op === 'add_local' ? 'local-stdio' : 'custom', transport: op === 'add_local' ? 'stdio' : p.transport, attachedAgents: p.attach ? ['OPERON'] : [] });
         return { message: '已更新。' };
@@ -92,12 +92,36 @@ test('file Skill import uses native API and failed imports are visible', async (
 test('degraded Science catalog disables import and uninstall while preserving discovery and toggles', async ({ page }) => {
   await setup(page); await page.evaluate(() => { window.catalogDegraded = true; });
   await page.getByRole('button', { name: 'Skills 管理', exact: true }).click();
-  await expect(page.locator('#content')).toContainText('Science 暂停导入与卸载');
+  await expect(page.locator('#content')).toContainText('当前无法导入');
   await expect(page.getByRole('button', { name: '导入 Skill', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: '卸载 paper-reader', exact: true })).toBeDisabled();
   await expect(page.getByRole('switch', { name: '启用 paper-reader', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: '发现', exact: false }).click();
   await expect(page.locator('.management-row')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: '安装到 Science', exact: true })).toBeDisabled();
+});
+
+test('degraded cloud catalog allows verified local installation and uninstall', async ({ page }) => {
+  await setup(page); await page.evaluate(() => { window.catalogDegraded = true; window.localImportAvailable = true; });
+  await page.getByRole('button', { name: 'Skills 管理', exact: true }).click();
+  await expect(page.locator('#content')).toContainText('本地 Skills 仍可安装');
+  await expect(page.getByRole('button', { name: '导入 Skill', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '卸载 paper-reader', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '发现', exact: false }).click();
+  await page.getByRole('button', { name: '安装到 Science', exact: true }).click();
+  await page.getByRole('button', { name: '已安装', exact: false }).first().click();
+  await expect(page.getByRole('button', { name: '卸载 lab-notes', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: '卸载 lab-notes', exact: true }).click();
+  await page.getByRole('button', { name: '确认', exact: true }).click();
+  await expect(page.locator('#skillRows')).not.toContainText('lab-notes');
+});
+
+test('local import remains disabled when Science policy blocks custom skills', async ({ page }) => {
+  await setup(page); await page.evaluate(() => { window.catalogDegraded = true; window.localImportAvailable = true; window.customSkillsBlocked = true; });
+  await page.getByRole('button', { name: 'Skills 管理', exact: true }).click();
+  await expect(page.getByRole('button', { name: '导入 Skill', exact: true })).toBeDisabled();
+  await expect(page.locator('#content')).toContainText('组织策略禁止');
+  await page.getByRole('button', { name: '发现', exact: false }).click();
   await expect(page.getByRole('button', { name: '安装到 Science', exact: true })).toBeDisabled();
 });
 

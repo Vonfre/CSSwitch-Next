@@ -83,7 +83,7 @@ pub fn manage(root: &Path, operation: &str, mut params: Value) -> Result<Value, 
         for key in ["NO_PROXY", "no_proxy"] {
             values.insert(key.into(), json!("127.0.0.1,localhost,::1"));
         }
-        params = json!({"name": "csswitch-openscience", "description": "OpenScience scientific databases (Apache-2.0)",
+        params = json!({"name": "csswitch-openscience", "description": "科研数据库 MCP 服务",
             "command": node, "args": [script], "env": env, "attach": true});
     }
     // Generate a fresh nonce for this exact owned instance; it never reaches JS.
@@ -117,7 +117,9 @@ pub fn manage(root: &Path, operation: &str, mut params: Value) -> Result<Value, 
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| "无法启动 MCP 管理组件。")?;
-    let input = json!({"base": format!("http://127.0.0.1:{}", session.port), "nonce": nonce, "operation": operation, "params": params});
+    let input = json!({"base": format!("http://127.0.0.1:{}", session.port), "nonce": nonce,
+        "data_dir": session.data_dir, "auth_dir": session.config.parent().unwrap().join("auth"),
+        "operation": operation, "params": params});
     let bytes = serde_json::to_vec(&input).map_err(|_| "MCP 参数无效。")?;
     if let Err(_) = child.stdin.take().unwrap().write_all(&bytes) {
         let _ = child.kill();

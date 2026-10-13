@@ -78,7 +78,7 @@ test('local add validates JSON, retains errors, and clears secret drafts after s
 
 test('install and remote HTTPS setup use distinct commands', async ({ page }) => {
   await setup(page);
-  await page.getByRole('button', { name: '安装科研 MCP', exact: true }).click();
+  await page.getByRole('button', { name: '安装科研数据库服务', exact: true }).click();
   await page.getByRole('button', { name: '安装并绑定', exact: true }).click();
   await expect(page.getByRole('button', { name: '科研服务已安装' })).toBeDisabled();
   await page.getByRole('button', { name: '添加 MCP', exact: true }).click();
@@ -103,7 +103,7 @@ test('stopped Science and organization policy have clear unavailable states', as
 test('organization policy prevents adding custom MCP', async ({ page }) => {
   await setup(page, false, true);
   await expect(page.getByRole('button', { name: '添加 MCP', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '安装科研 MCP', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '安装科研数据库服务', exact: true })).toBeDisabled();
 });
 
 test('MCP page and installation form fit narrow windows and dark mode', async ({ page }) => {
@@ -112,7 +112,7 @@ test('MCP page and installation form fit narrow windows and dark mode', async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: '切换深浅主题' }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole('button', { name: '安装科研 MCP', exact: true }).click();
+  await page.getByRole('button', { name: '安装科研数据库服务', exact: true }).click();
   await expect(page.locator('#mcpDialog')).toBeVisible();
   expect(await page.locator('#mcpDialog').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   await page.screenshot({ path: '../artifacts/mcp-mobile.png', fullPage: true });

@@ -1,6 +1,6 @@
 # CSSwitch MCP 管理
 
-在 CSSwitch 的“提供商”页启动第三方 Science，然后进入“MCP 管理” → “安装科研 MCP” → “安装并绑定”。需要 Python 3 和 Node.js 22 或以上。
+在 CSSwitch 的“提供商”页启动第三方 Science，然后进入“MCP 管理” → “安装科研数据库服务” → “安装并绑定”。需要 Python 3 和 Node.js 22 或以上。
 
 科研服务移植自 [OpenScience](https://github.com/synthetic-sciences/openscience/tree/a7b9fa3a8c1bd52a9a0c171de58bc14759a0f850/backend/cli/src/science/connectors)，保留 Apache-2.0 许可和来源。源码在 `mcp/openscience`，构建时生成 `scripts/openscience-mcp/server.mjs`，依赖均打入单文件。
 

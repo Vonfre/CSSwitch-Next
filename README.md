@@ -11,6 +11,8 @@
 - 从本地及 GitHub 发现 Skills，批量安装、启停和卸载，多文件 / 多技能 ZIP 导入，检查并更新已管理的技能。
 - 查看运行日志。
 - 管理本地与远程 MCP，支持预设、筛选和标准 JSON 导入，内置科研数据库连接器。
+- 第三方模式使用本机 MCP，排除需要 Claude 登录的托管科研连接器。
+- 可开关的 Science 页面汉化插件，本地词库翻译界面并保留对话正文。
 - 在应用内检查、下载并安装更新。
 
 [下载 DMG 安装包](https://github.com/Vonfre/CSSwitch-Next/releases/latest)

@@ -18,15 +18,17 @@ function renderMcp() {
   const rows = data.connectors || [];
   const installed = rows.some(c => c.name === 'csswitch-openscience');
   const directoryUnavailable = data.directoryHealth && !data.directoryHealth.ok;
+  const mcpPolicyNote = data.localMcpActive ? '本机 MCP 策略已生效，Claude 托管的科研连接器已停用。' : '下次启动 Science 将停用 Claude 托管的科研连接器。';
   $('#content').innerHTML = `<section class="mcp-intro"><div><h2>科研数据库与自定义 MCP</h2><p>安装科研数据库服务后，可在 Science 对话中检索 PubMed、UniProt、ChEMBL 等数据源。需要 Node.js 22 或以上，部分数据库需要单独的 API Key。</p></div><button class="btn primary" id="installScienceMcp" ${!data.customAllowed || installed ? 'disabled' : ''}>${icon('download')}${installed ? '科研服务已安装' : '安装科研数据库服务'}</button></section>
+    ${state.config.science_local_mcp !== false || data.localMcpActive ? `<div class="mcp-note">${mcpPolicyNote}请把所需服务绑定到 Science；工具审批和服务商授权仍由 Science 管理。可在设置中关闭此策略。</div>` : ''}
     ${directoryUnavailable ? `<div class="mcp-note">Claude 官方目录当前不可用${data.directoryHealth.status ? `（HTTP ${esc(data.directoryHealth.status)}）` : ''}。下面的本地和自定义 MCP 使用各自的连接与授权，不依赖 Claude 目录登录。</div>` : ''}
     ${!data.customAllowed ? '<div class="notice error">Science 组织策略禁止自定义连接器。</div>' : ''}
     <div class="section-heading"><h2>连接器 <span class="label-count">${rows.length} 个</span></h2><div class="actions"><button class="btn" id="importMcp" ${!data.customAllowed ? 'disabled' : ''}>${icon('file-json')}导入 JSON</button><button class="btn primary" id="addMcp" ${!data.customAllowed ? 'disabled' : ''}>${icon('plus')}添加 MCP</button></div></div><div class="filter-toolbar mcp-filters"><div class="search">${icon('search')}<input id="mcpSearch" type="search" aria-label="搜索 MCP" placeholder="搜索连接器名称、描述" value="${esc(mcpState.search)}" /></div><select id="mcpSource" aria-label="MCP 来源"><option value="all">全部来源</option>${[...new Set(rows.map(c => c.source))].map(source => `<option value="${esc(source)}" ${mcpState.source === source ? 'selected' : ''}>${esc(mcpSources[source] || source)}</option>`).join('')}</select><select id="mcpBound" aria-label="MCP 绑定状态"><option value="all">全部绑定状态</option><option value="bound" ${mcpState.bound === 'bound' ? 'selected' : ''}>已绑定 Science</option><option value="unbound" ${mcpState.bound === 'unbound' ? 'selected' : ''}>未绑定 Science</option></select></div>
     <div class="mcp-list">${rows.map(c => {
       const manageable = ['custom', 'local-stdio', 'antmcp'].includes(c.source);
       const bound = (c.attachedAgents || []).includes('OPERON');
-      const blocked = c.admin_blocked || (manageable && !data.customAllowed);
-      const status = c.admin_blocked ? '策略禁用' : c.enabled === false ? '已停用' : mcpStatuses[c.connectionStatus] || (c.authState === 'unauthorized' ? '需要授权' : bound ? '已绑定 Science' : '未绑定 Science');
+      const blocked = c.admin_blocked || c.policyDisabled || (manageable && !data.customAllowed);
+      const status = c.policyDisabled ? '第三方策略停用' : c.admin_blocked ? '策略禁用' : c.enabled === false ? '已停用' : mcpStatuses[c.connectionStatus] || (c.authState === 'unauthorized' ? '需要授权' : bound ? '已绑定 Science' : '未绑定 Science');
       return `<article class="mcp-row" data-mcp-id="${esc(c.id)}"><div class="mcp-meta"><h3>${esc(c.displayName || c.name)} <span class="badge">${esc(mcpSources[c.source] || c.source)}</span></h3><p>${esc(c.description || c.name)}</p><span class="subtle">${esc(status)} · ${esc(c.transport)}${c.attachedAgents?.length ? ` · 绑定：${esc(c.attachedAgents.join(', '))}` : ''}</span></div><div class="actions">
         <button class="btn" data-mcp-op="tools">工具</button>
         ${manageable ? `<button class="btn" data-mcp-op="${bound ? 'detach' : 'attach'}" ${blocked ? 'disabled' : ''}>${bound ? '解绑 Science' : '绑定 Science'}</button>` : ''}

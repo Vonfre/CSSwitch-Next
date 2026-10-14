@@ -1,12 +1,24 @@
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "proxy"))
 import csswitch_proxy as cs
 
 
 class ScienceUpdateRouting(unittest.TestCase):
+    def test_expected_official_probes_are_combined_without_changing_blocking(self):
+        cs._BLOCKED_LOGS.clear()
+        try:
+            with patch.object(cs, 'log') as log, patch.object(cs.time, 'monotonic', side_effect=[10, 11, 12, 311]):
+                for _ in range(4): cs.log_blocked_connect('claude.ai')
+                self.assertEqual(log.call_count, 2)
+                self.assertIn('已合并 2 次重复请求', log.call_args.args[0])
+                self.assertTrue(cs._is_blocked_host('hcls.mcp.claude.com'))
+                self.assertFalse(cs._is_blocked_host('eutils.ncbi.nlm.nih.gov'))
+        finally:
+            cs._BLOCKED_LOGS.clear()
     def test_public_update_downloads_are_not_blocked(self):
         self.assertFalse(cs._is_blocked_host("storage.googleapis.com"))
         self.assertFalse(cs._is_blocked_host("STORAGE.GOOGLEAPIS.COM."))

@@ -140,6 +140,21 @@ pub fn manage(root: &Path, operation: &str, mut params: Value) -> Result<Value, 
             .into());
     }
     let mut value = data.get("value").cloned().unwrap_or(json!({}));
+    if operation == "list" {
+        let active = super::science_ui::running_policy(&session.config).unwrap_or(false);
+        value["localMcpActive"] = json!(active);
+        if active {
+            if let Some(connectors) = value["connectors"].as_array_mut() {
+                for c in connectors {
+                    if c["source"] == "bundled" && ["pubmed", "biorxiv", "chembl", "clinical-trials"].iter().any(|name| c["name"] == *name) {
+                        c["policyDisabled"] = json!(true);
+                        c["enabled"] = json!(false);
+                        c["connectionStatus"] = json!("disabled");
+                    }
+                }
+            }
+        }
+    }
     if operation == "authorize" {
         if let Some(link) = value.get("authorizeUrl").and_then(Value::as_str) {
             let url = url::Url::parse(link).map_err(|_| "授权地址无效。")?;

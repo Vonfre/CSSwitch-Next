@@ -24,6 +24,7 @@ import select
 import socket
 import sys
 import time
+import threading
 import urllib.request
 import urllib.error
 from contextvars import ContextVar
@@ -142,6 +143,23 @@ _DATE_SUFFIX = re.compile(r"-\d{8}$")
 #     无 `treating as logged-out`）。
 # 虚拟登录本就该表现为「未登录」，故用 401。详见 findings/switching-organization-hang.md。
 _BLOCKED_SUFFIXES = ("anthropic.com", "claude.ai", "claude.com")
+_BLOCKED_LOGS = {}
+_BLOCKED_LOG_LOCK = threading.Lock()
+
+
+def log_blocked_connect(host):
+    """Rate-limit expected official-account probes; never hide tunnel failures."""
+    now = time.monotonic()
+    with _BLOCKED_LOG_LOCK:
+        previous, skipped = _BLOCKED_LOGS.get(host, (-float('inf'), 0))
+        if now - previous < 300:
+            _BLOCKED_LOGS[host] = (previous, skipped + 1)
+            return
+        if len(_BLOCKED_LOGS) >= 128 and host not in _BLOCKED_LOGS:
+            _BLOCKED_LOGS.pop(next(iter(_BLOCKED_LOGS)))
+        _BLOCKED_LOGS[host] = (now, 0)
+    suffix = f"；已合并 {skipped} 次重复请求" if skipped else ''
+    log(f"官方服务 {host} 在第三方模式下不可用（401）；本机 MCP 使用独立连接{suffix}")
 
 
 def _is_blocked_host(host):
@@ -502,7 +520,7 @@ class H(BaseHTTPRequestHandler):
         host = target.rsplit(":", 1)[0].strip("[]").lower()
         if _is_blocked_host(host):
             # 401（未登录）而非 403（禁止）：让 operon 判 logged-out 秒过，而非当组织问题反复重试。
-            log(f"CONNECT {target} -> 401 未登录（Anthropic 域名 fast-fail）")
+            log_blocked_connect(host)
             self._connect_reply(401)
             return
         try:

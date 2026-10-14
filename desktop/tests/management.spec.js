@@ -7,6 +7,7 @@ async function setup(page, offline = false) {
     let skills = [{ name: 'paper-reader', description: '阅读科学文献并提取方法', source: 'local', enabled: true }, { name: 'data-analysis', description: '处理实验数据', source: 'anthropic', enabled: true }, { name: 'blocked', description: '<unsafe-skill>', source: 'organization', admin_blocked: true, enabled: false }];
     window.addManagedFixture = (file = false) => skills.push({name:'lab-notes',description:'实验笔记',source:'csswitch-local',sourceKey:file ? null : 'agents:lab-notes',fingerprint:'old-content',enabled:false,attachedAgents:['OPERON']});
     let connectors = [{ id: 'local:memory', name: 'memory', description: '知识记忆', source: 'local-stdio', transport: 'stdio', attachedAgents: ['OPERON'] }, { id: 'remote', name: 'remote', description: '远程数据库', source: 'custom', transport: 'streamable_http', attachedAgents: [] }];
+    window.addHostedFixture = () => connectors.push({id:'bundled:pubmed',name:'pubmed',source:'bundled',transport:'streamable_http',enabled:false,policyDisabled:true,attachedAgents:['OPERON']});
     const sessions = Array.from({ length: 28 }, (_, i) => ({ key: 'org:session-' + i, id: 'session-' + i, org: 'org', title: i === 0 ? '蛋白质结构研究' : i === 1 ? '<unsafe-session>' : '文献分析 ' + i, project_id: i % 2 ? 'papers' : 'proteins', project_name: i % 2 ? '文献综述' : '蛋白研究', messages: i === 0 ? 101 : 1, model: 'gpt-research', status: 'completed', preview:'首条提问 '+i,last_preview:'研究结果摘要 '+i,created_at:now*1000-i*86400000-600000,updated_at: now * 1000 - i * 86400000 }));
     window.useDesignPreview = () => {
       skills = [['paper-reader','阅读科学文献，提取研究问题、方法与核心结论。','csswitch-local'],['pubmed-search','检索 PubMed 文献，整理证据与引用。','csswitch-local'],['data-analysis','探索实验数据，进行统计检验并生成图表。','anthropic'],['protein-structure','分析蛋白质结构、置信度与关键结合位点。','csswitch-local'],['lab-notes','整理实验笔记，记录步骤、观察和后续计划。','csswitch-local'],['literature-review','系统梳理文献，构建研究问题与证据框架。','csswitch-local']].map(([name,description,source],i)=>({name,description,source,enabled:i!==4}));
@@ -14,9 +15,11 @@ async function setup(page, offline = false) {
       sessions.splice(5); sessions.forEach((r,i)=>{r.project_id='design-'+(i===0?0:i<4?1:2);r.project_name=i===0?'蛋白研究':i<4?'单细胞图谱':'文献综述';r.last_preview='已整理分析步骤、数据处理方法和后续验证方案。';r.title=titles[i%titles.length];r.preview=i===0?'比较 AlphaFold 预测结构和实验结构，整理验证方案。':'整理研究步骤、数据处理方法与验证思路。';});
     };
     const repos = []; const pricing = { 'gpt-research': { input: 2, output: 8, cache_read: 0.2, cache_write: 2.5 } };
+    let features = {science_local_mcp:true, science_zh:false};
     window.testCalls = []; window.__TAURI__ = { core: { invoke: async (cmd, args = {}) => {
       window.testCalls.push({ cmd, args });
-      if (cmd === 'get_config') return { provider: 'test', mode: 'proxy', proxy_port: 18992, sandbox_port: 8991, connections: [{ id: 'test', name: '研究 API', protocol: 'responses', model: 'gpt-research', base_url: 'https://example.com', has_key: true }] };
+      if (cmd === 'get_config') return { ...features, provider: 'test', mode: 'proxy', proxy_port: 18992, sandbox_port: 8991, connections: [{ id: 'test', name: '研究 API', protocol: 'responses', model: 'gpt-research', base_url: 'https://example.com', has_key: true }] };
+      if (cmd === 'set_science_features') { features={science_local_mcp:args.localMcp, science_zh:args.zh};return {message:'插件设置已保存。'}; }
       if (cmd === 'status') return { proxy: 'amber', sandbox: 'amber' };
       if (cmd === 'read_usage') return { entries: Array.from({ length: 31 }, (_, i) => ({ time: now - i * 3600, provider: i === 30 ? 'other' : 'test', model: i === 30 ? 'unpriced' : 'gpt-research', protocol: 'responses', input_tokens: 1000, output_tokens: 250, cache_read_input_tokens: 400, latency_ms: 850, ok: i !== 1 })) };
       if (cmd === 'mcp_manage') {
@@ -330,4 +333,27 @@ test('session execution timeline pairs tool results, preserves failures, expands
   await page.getByRole('button',{name:'对话',exact:true}).click();await expect(page.locator('.execution-timeline')).toHaveCount(0);await expect(page.locator('.markdown h2')).toHaveText('更新完成');
   await page.evaluate(()=>{window.timelineFixture[5].text='## 刷新后的回复\n\n继续验证。';});
   await page.getByRole('button',{name:'刷新当前会话',exact:true}).click();await expect(page.locator('.markdown h2')).toHaveText('刷新后的回复');
+});
+
+test('Science plugin switches persist independently and stay reversible', async ({ page }) => {
+  await setup(page); await page.getByRole('button',{name:'设置',exact:true}).click();
+  await expect(page.getByRole('switch',{name:'使用本机 MCP'})).toHaveAttribute('aria-checked','true');
+  await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','false');
+  await page.getByRole('switch',{name:'Science 页面汉化'}).click();
+  await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','true');
+  await page.getByRole('switch',{name:'使用本机 MCP'}).click();
+  await expect(page.getByRole('switch',{name:'使用本机 MCP'})).toHaveAttribute('aria-checked','false');
+  await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','true');
+  await page.getByRole('switch',{name:'Science 页面汉化'}).click();
+  await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','false');
+});
+
+
+test('Claude hosted MCP blocked by launch policy is clearly labeled and cannot be enabled', async ({ page }) => {
+  await setup(page); await page.evaluate(()=>window.addHostedFixture());
+  await page.getByRole('button',{name:'MCP 管理',exact:true}).click();
+  const row=page.locator('[data-mcp-id="bundled:pubmed"]');
+  await expect(row).toContainText('第三方策略停用');
+  await expect(row.getByRole('button',{name:'启用',exact:true})).toBeDisabled();
+  await expect(page.locator('[data-mcp-id="local:memory"]').getByRole('button',{name:'解绑 Science',exact:true})).toBeEnabled();
 });

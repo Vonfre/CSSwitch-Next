@@ -101,7 +101,7 @@ echo "  账号     = $EMAIL （本地假账号，不用真实凭证）"
 # 经本地代理 fast-fail。不接这一步，启动时对 claude.ai/api/oauth/profile 的【阻塞】请求
 # 在到不了 claude.ai 的网络上会挂住重试 → UI 卡在 "Switching organization"。
 # 做法：**只设 https_proxy**（那条卡死的 profile 请求是 HTTPS → 走 CONNECT，代理的
-# do_CONNECT 对上述域名立即 403，operon 秒判 logged-out 秒过；其余 HTTPS 隧道透传）。
+# do_CONNECT 对上述域名立即 401，operon 秒判 logged-out 秒过；其余 HTTPS 隧道透传）。
 # 【刻意不设 http_proxy】：代理未实现普通 HTTP 转发（GET http://host/…），若设了 http_proxy
 # 普通 HTTP 的 MCP/下载/包源会撞代理拿 404（修 P2）；不设则普通 HTTP 直连或走用户自己的
 # http_proxy，且无 Anthropic 域名走普通 HTTP，故不影响 fast-fail。

@@ -85,3 +85,15 @@ UI 回归覆盖筛选、启停、导入、仓库失败恢复、会话分页 / �
 0.6.1 修复验证：32 项 UI 测试通过；隔离真实 Science 实例在云端目录断连时验证了 Markdown / ZIP 本地导入、辅助文件读取、OPERON 绑定、启停及卸载。
 
 0.7.1 验证：41 项 UI 回归、48 项管理组件 Python 测试、66 项 Rust 测试（3 项可选集成测试未运行）及核心测试套件全部通过。隔离真实 Science 验证本地 Skill 更新、内容读取、停用状态和 OPERON 绑定保留；文件事务测试覆盖辅助文件替换、验证失败回滚、本地修改保护和来源校验。UI 截图覆盖 1200 / 980 / 390 宽度及深色阅读器。
+
+
+## Science 插件与本机 MCP
+
+0.7.2 在设置中提供两个独立开关：
+
+- **使用本机 MCP** 默认开启。在 CSSwitch 管理的第三方 Science 启动副本中追加 `connectors.disabled`，排除 `pubmed`、`biorxiv`、`chembl`、`clinical-trials` 及两个 Claude 托管 MCP 域名。原生连接器列表未反映此启动屏蔽时，CSSwitch 显示「第三方策略停用」。在 MCP 管理中安装并绑定需要的服务；不自动创建审批豁免，不更改共享数据库的启停、绑定或组织权限。修改开关在下次启动生效，不中断正在运行的研究任务。关闭后按本机原配置生成新启动副本。
+- **Science 页面汉化** 默认关闭。CSSwitch 为第三方 Science 建立回环浏览器入口，将本地词库加载到页面。配置在 3 秒内同步到已打开的入口页面。动态节点采用精确文案匹配，保留 React 节点结构；代码、原生 `.markdown-content` 对话 / 文档、可编辑内容与输入值不会被翻译。未覆盖的界面文案保留英文。关闭时仅恢复仍保持译文的节点，避免覆盖 Science 新渲染的内容。
+
+旧浏览器标签页请从 CSSwitch 再次打开。此插件覆盖该入口中的页面和弹出菜单，不修改官方应用二进制，也不作用于官方原生客户端窗口。页面反向代理固定转发到当前本地 Science 端口，校验 Host / Origin，保留本地认证、CSRF 与工具审批；第三方服务的密钥不会提供给汉化脚本。关闭 CSSwitch 会停止页面入口与模型网关。
+
+验证：`python3.11 -m unittest discover -s scripts/tests`、桌面 Playwright 与 Rust 测试；macOS 可运行 `python3.11 scripts/probe-science-connectors.py --prototype` 和 `python3.11 scripts/probe-science-ui.py`，在独立 HOME、独立端口和仅回环网络的测试实例中检查真实工具调用、页面认证、WebSocket、语言恢复及对话正文保护。

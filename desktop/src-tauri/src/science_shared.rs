@@ -326,6 +326,26 @@ pub fn prepare(home: &Path, root: &Path, port: u16) -> Result<Session, String> {
     })
 }
 
+/// Disable Claude-hosted MCP only in the private launch copy. Native config,
+/// shared capability settings, grants and connector assignments are untouched.
+pub fn apply_mcp_policy(session: &Session, local: bool) -> Result<(), String> {
+    if !local { return Ok(()); }
+    let mut settings: toml::Value = toml::from_str(
+        &read_private(&session.config)?.ok_or("缺少 Science 启动配置。")?
+    ).map_err(|_| "Science 启动配置无效。")?;
+    let connectors = settings.as_table_mut().ok_or("Science 启动配置无效。")?
+        .entry("connectors").or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut().ok_or("Science connectors 设置无效。")?;
+    let disabled = connectors.entry("disabled").or_insert_with(|| toml::Value::Array(vec![]))
+        .as_array_mut().ok_or("Science connectors.disabled 必须为数组。")?;
+    for name in ["pubmed", "biorxiv", "chembl", "clinical-trials", "https://pubmed.mcp.claude.com", "https://hcls.mcp.claude.com"] {
+        if !disabled.iter().any(|v| v.as_str() == Some(name)) {
+            disabled.push(toml::Value::String(name.into()));
+        }
+    }
+    write_private(&session.config, toml::to_string(&settings).map_err(|_| "无法保存 MCP 启动策略。")?.as_bytes())
+}
+
 pub fn marker(root: &Path) -> PathBuf {
     root.join("session.json")
 }
@@ -490,6 +510,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.base);
         }
+    }
+
+    #[test]
+    fn local_mcp_policy_is_private_and_preserves_native_settings() {
+        let f = Fixture::new();
+        f.identity();
+        let native = f.native().join("config.toml");
+        fs::write(&native, "[connectors]\ndisabled = ['user-disabled']\n").unwrap();
+        let before = fs::read(&native).unwrap();
+        let session = prepare(&f.home, &f.root, 8991).unwrap();
+        apply_mcp_policy(&session, true).unwrap();
+        apply_mcp_policy(&session, true).unwrap();
+        let private: toml::Value = toml::from_str(&fs::read_to_string(&session.config).unwrap()).unwrap();
+        let disabled = private["connectors"]["disabled"].as_array().unwrap();
+        assert_eq!(disabled.len(), 7);
+        assert!(disabled.iter().any(|v| v.as_str() == Some("user-disabled")));
+        assert_eq!(fs::read(&native).unwrap(), before);
+        let restored = prepare(&f.home, &f.root, 8991).unwrap();
+        apply_mcp_policy(&restored, false).unwrap();
+        let private: toml::Value = toml::from_str(&fs::read_to_string(&restored.config).unwrap()).unwrap();
+        assert_eq!(private["connectors"]["disabled"].as_array().unwrap().len(), 1);
     }
 
     #[test]

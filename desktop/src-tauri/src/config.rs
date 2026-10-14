@@ -30,6 +30,8 @@ fn default_mode() -> String {
     "proxy".to_string()
 }
 
+fn default_local_mcp() -> bool { true }
+
 /// 单个 provider 的配置。目前只有 key（明文存盘）。
 #[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
 pub struct ProviderCfg {
@@ -140,6 +142,10 @@ pub struct Config {
     /// 官方模式下 CSSwitch 只负责把你交回真实客户端，绝不碰/托管你的官方登录。
     #[serde(default = "default_mode")]
     pub mode: String,
+    #[serde(default = "default_local_mcp")]
+    pub science_local_mcp: bool,
+    #[serde(default)]
+    pub science_zh: bool,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderCfg>,
 }
@@ -152,6 +158,8 @@ impl Default for Config {
             sandbox_port: default_sandbox_port(),
             secret: String::new(),
             mode: default_mode(),
+            science_local_mcp: true,
+            science_zh: false,
             providers: BTreeMap::new(),
         }
     }

@@ -1,0 +1,33 @@
+import { chromium } from 'playwright';
+import {readFileSync,writeFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const {url,config,root}=JSON.parse(readFileSync(process.argv[2],'utf8'));
+const browser=await chromium.launch({headless:true});
+try {
+ const page=await browser.newPage({viewport:{width:1280,height:850}});
+ const errors=[],sockets=[],requests=[];
+ page.on("response",r=>requests.push({path:new URL(r.url()).pathname,status:r.status(),location:r.headers().location?.split("?")[0]}));
+ page.on('pageerror',error=>errors.push(error.message));
+ page.on('websocket',ws=>{const socket={opened:false};socket.path=new URL(ws.url()).pathname;sockets.push(socket);ws.on('framereceived',()=>socket.opened=true);});
+ await page.goto(url);
+ if (await page.locator('form[action*="/api/auth/nonce"] button').count()) await page.locator('form[action*="/api/auth/nonce"] button').click();
+ await page.waitForTimeout(2000);
+ if (await page.getByRole('button',{name:'Open project Example project',exact:true}).count()) await page.getByRole('button',{name:'Open project Example project',exact:true}).click();
+ await page.waitForTimeout(4000);
+ const originalMessages=await page.locator('.markdown-content').allTextContents();
+ const snapshot=await page.locator('body').innerText();
+ writeFileSync(root+'/ui-text.txt',snapshot);
+ writeFileSync(root+'/buttons.json',JSON.stringify(await page.locator('button,[role="tab"],[role="menuitem"],input,textarea').evaluateAll(nodes=>nodes.map(n=>({text:n.textContent?.slice(0,150),title:n.getAttribute('title'),label:n.getAttribute('aria-label'),placeholder:n.getAttribute('placeholder')}))),null,2));
+ assert.ok(await page.evaluate(()=>Boolean(window.__csswitchZh)), 'Translation plugin not loaded');
+ assert.ok(!snapshot.includes('Unable to connect'), 'Native UI cannot connect');
+ writeFileSync(root+'/requests.json',JSON.stringify(requests,null,2));writeFileSync(root+'/sockets.json',JSON.stringify(sockets));
+ assert.ok(sockets.some(s=>s.opened), 'Native WebSocket receives no frames');
+ await page.screenshot({path:root+'/science-zh.png'});
+ writeFileSync(config,'{"science_zh":false}');await page.waitForTimeout(4000);
+ const restored=await page.locator('body').innerText();
+ assert.notEqual(restored,snapshot,'Native UI did not change language');
+ assert.deepEqual(await page.locator('.markdown-content').allTextContents(),originalMessages,'Translation changed conversation content');
+ assert.ok(errors.length===0,'Native React errors: '+errors.join(';'));
+ await page.screenshot({path:root+'/science-en.png'});
+ console.log('PASS native login, bootstrap, WebSocket frames, Chinese UI and live restore; React errors: 0');
+}finally {await browser.close();}

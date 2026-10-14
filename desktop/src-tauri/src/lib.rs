@@ -6,6 +6,7 @@ mod config;
 mod oauth_forge;
 mod proc;
 mod science_shared;
+mod science_ui;
 mod mcp;
 mod updater;
 mod workspace;
@@ -45,6 +46,9 @@ fn science_bin() -> PathBuf {
 
 #[derive(Default)]
 struct AppState {
+    science_ui: Option<Child>,
+    science_ui_port: u16,
+    science_ui_upstream: u16,
     proxy: Option<Child>,
     proxy_port: u16,
     secret: String,
@@ -336,6 +340,7 @@ fn ensure_proxy(
 fn stop_sandbox_inner(_app: &tauri::AppHandle, st: &mut AppState) -> Result<(), String> {
     science_shared::stop_owned(&science_bin(), &shared_root())?;
     kill_child(&mut st.sandbox);
+    kill_child(&mut st.science_ui);
     st.sandbox_url = None;
     st.sandbox_port = 0;
     Ok(())
@@ -361,6 +366,8 @@ fn public_config(cfg: &config::Config) -> serde_json::Value {
         "proxy_port": cfg.proxy_port,
         "sandbox_port": cfg.sandbox_port,
         "mode": cfg.mode,
+        "science_local_mcp": cfg.science_local_mcp,
+        "science_zh": cfg.science_zh,
         "connections": connections,
     })
 }
@@ -809,6 +816,7 @@ fn launch_inner(
         science_shared::stop_owned(bin, &root)?;
         let home = science_shared::home()?;
         let session = science_shared::prepare(&home, &root, sport)?;
+        science_shared::apply_mcp_policy(&session, cfg.science_local_mcp)?;
         science_shared::ensure_port_available(bin, &session)?;
         // A data directory has one daemon. Stop the original before changing its inference route.
         science_shared::stop(bin, &session)?;
@@ -845,7 +853,8 @@ fn launch_inner(
             return Err(format!("共享 Science 启动失败。请关闭原来的 Science 窗口后重试。原有凭据和历史未被替换。清理结果：{cleanup:?}\n{tail}"));
         }
     }
-    let url = sandbox_url(sport);
+    let native_url = sandbox_url(sport);
+    let url = science_ui::entry(&app, &mut lock(&state), sport, &native_url)?;
     {
         let mut st = lock(&state);
         st.sandbox_port = sport;
@@ -974,10 +983,18 @@ async fn set_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_url(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    let url = { lock(&state).sandbox_url.clone() };
-    let url = url.ok_or("还没有 Science URL，请先「一键开始」。")?;
-    open_in_browser(&url)
+async fn open_url(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = RUNTIME_OPERATION.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg = config::load_from(&config::default_dir()).map_err(|e| e.to_string())?;
+        if cfg.mode != "proxy" || !sandbox_running_ours(cfg.sandbox_port) {
+            return Err("请先启动第三方 Science。".into());
+        }
+        let native_url = sandbox_url(cfg.sandbox_port);
+        let state = app.state::<Mutex<AppState>>();
+        let url = science_ui::entry(&app, &mut lock(&state), cfg.sandbox_port, &native_url)?;
+        open_in_browser(&url)
+    }).await.map_err(|_| "打开 Science 页面失败。".to_string())?
 }
 
 #[tauri::command]
@@ -1040,6 +1057,7 @@ fn quit_app(app: tauri::AppHandle, state: State<'_, Mutex<AppState>>) -> Result<
     {
         let mut st = lock(&state);
         kill_child(&mut st.proxy);
+        kill_child(&mut st.science_ui);
         st.secret.clear();
     }
     app.exit(0);
@@ -1060,6 +1078,7 @@ pub fn run() {
             updater::download_update,
             updater::install_update,
             mcp_manage,
+            science_ui::set_science_features,
             get_config,
             save_connection,
             select_connection,
@@ -1104,6 +1123,7 @@ pub fn run() {
                         let state = handle.state::<Mutex<AppState>>();
                         let mut st = lock(&state);
                         kill_child(&mut st.proxy);
+                        kill_child(&mut st.science_ui);
                         st.secret.clear();
                     }
                 });

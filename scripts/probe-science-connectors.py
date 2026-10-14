@@ -51,12 +51,16 @@ binary = str(binary.resolve())
 print('Isolated results:', root, flush=True)
 subprocess.run([node, str(repo / 'scripts/make-virtual-oauth.mjs'), '--auth-dir', str(auth)], check=True, stdout=subprocess.DEVNULL)
 config = root / 'science.toml'
-config.write_text(f'data_dir = {json.dumps(str(auth))}\n[paths]\nauth_dir = {json.dumps(str(auth))}\n[conda]\nauto_install = false\n[sandbox]\nhard_fail = false\n[update]\nauto_update = false\n')
+config.write_text(f'data_dir = {json.dumps(str(auth))}\n[paths]\nauth_dir = {json.dumps(str(auth))}\n[connectors]\ndisabled = ["pubmed", "biorxiv", "chembl", "clinical-trials", "https://pubmed.mcp.claude.com", "https://hcls.mcp.claude.com"]\n[conda]\nauto_install = false\n[sandbox]\nhard_fail = false\n[update]\nauto_update = false\n')
+
+hosted_attempts = []
 
 class Stub(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_CONNECT(self):
         host, _, port = self.path.rpartition(':')
+        if host in ('hcls.mcp.claude.com', 'pubmed.mcp.claude.com'):
+            hosted_attempts.append(host)
         if host not in ('eutils.ncbi.nlm.nih.gov', 'rest.uniprot.org') or port != '443':
             self.send_response(401)
             self.end_headers()
@@ -204,7 +208,9 @@ try:
             raise RuntimeError('Management bridge: ' + value.get('message', 'failed'))
         assert 'operon_auth' not in managed.stdout and private_nonce not in managed.stdout
         return value['value']
-    print('PASS management list', len(manage('list')['connectors']), flush=True)
+    initial_connectors = manage('list')['connectors']
+    assert not hosted_attempts, 'Disabled hosted MCP connected during startup'
+    print('PASS management list and native hosted-MCP exclusion', len(initial_connectors), flush=True)
     created = manage('add_local', {'name': 'csswitch-probe', 'command': '/usr/bin/python3' if args.prototype else node, 'args': [str(repo / 'scripts/science-public-mcp.py' if args.prototype else repo / 'scripts/openscience-mcp/server.mjs')], 'env': {'HTTPS_PROXY': f'http://127.0.0.1:{stub.server_port}', 'https_proxy': f'http://127.0.0.1:{stub.server_port}', 'HTTP_PROXY': f'http://127.0.0.1:{stub.server_port}', 'http_proxy': f'http://127.0.0.1:{stub.server_port}', 'NO_PROXY': '127.0.0.1,localhost,::1', 'no_proxy': '127.0.0.1,localhost,::1'}, 'description': 'Isolated read-only fixture'})
     connector = created['connector']
     sid = connector['id']
@@ -218,9 +224,6 @@ try:
         if isinstance(result, dict) and result.get('status') not in ('pending',): break
         time.sleep(1)
     _, servers = call('/api/agents/OPERON/mcp-servers?include_tools=true', quiet=True)
-    for server in servers:
-        if server.get('source') == 'bundled':
-            call('/api/mcp-servers/connectors/' + urllib.parse.quote(server['id'], safe='') + '/enabled', {'enabled': False}, 'PUT', quiet=True)
     for tool in (('connector_probe', 'pubmed_search', 'uniprot_fetch') if args.prototype else ('science_list_dbs', 'science_search', 'science_fetch')):
         manage('grant', {'id': sid, 'toolName': tool, 'decision': 'allow'})
     _, project = call('/api/projects', {'name': 'isolated-connector-probe'})
@@ -236,6 +239,15 @@ try:
         for _ in range(45):
             _, final = call('/api/frames/' + fid + '?shallow=true', quiet=True)
             status = final.get('status') if isinstance(final, dict) else None
+            # Updated Science asks separately before its local REPL executes.
+            # Approve only this fixture's known mock-generated MCP call, once.
+            pending = (final.get('output_data') or {}).get('pending_input_requests', [])
+            for card in pending:
+                if card.get('kind') != 'local_exec' or card.get('tool') != 'repl' or 'host.mcp("csswitch-probe",' not in card.get('code', ''):
+                    raise RuntimeError('Unexpected approval request in isolated probe')
+                code, _ = call('/api/frames/' + fid + '/resolve-input', {'responses': [{'requestId': card['requestId'], 'action': 'allow_once', 'approved': True}]}, quiet=True)
+                if code != 200:
+                    raise RuntimeError('Isolated REPL approval rejected')
             if status and status != 'processing':
                 break
             time.sleep(1)
@@ -259,7 +271,8 @@ try:
 
     manage('remove', {'id': sid})
     assert all(c['id'] != sid for c in manage('list')['connectors'])
-    print('PASS management remove', flush=True)
+    assert not hosted_attempts, 'Disabled hosted MCP connected during local tool execution'
+    print('PASS management remove and zero hosted-MCP connections', flush=True)
 
 finally:
     stopped = subprocess.run([binary, 'stop', '--data-dir', str(auth), '--config', str(config)], env=env, capture_output=True, text=True, timeout=20)

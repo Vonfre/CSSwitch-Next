@@ -1,56 +1,71 @@
 # CSSwitch MCP 管理
 
-在 CSSwitch 的“提供商”页启动第三方 Science，然后进入“MCP 管理” → “安装科研数据库服务” → “安装并绑定”。需要 Python 3 和 Node.js 22 或以上。
+CSSwitch 0.8.0 接入 Science 安装包已提供的 24 个本机工具实现。当前验证版本为 Science 0.1.62；共 225 个工具。保留工具名、参数、数据源限制及默认审批，不复制或重新分发 Science 实现源码。
 
-科研服务移植自 [OpenScience](https://github.com/synthetic-sciences/openscience/tree/a7b9fa3a8c1bd52a9a0c171de58bc14759a0f850/backend/cli/src/science/connectors)，保留 Apache-2.0 许可和来源。源码在 `mcp/openscience`，构建时生成 `scripts/openscience-mcp/server.mjs`，依赖均打入单文件。
+## 接入与使用
 
-## 对话中使用
+在提供商页启动第三方 Science 后，CSSwitch 自动核对本机资源并接入。也可以进入 MCP 管理，点击“接入 24 个本机连接器” → “接入并绑定”进行修复或配置环境变量。
 
-可以在 Science 中说：“使用 csswitch-openscience 检索 PubMed 中 BRCA1 与乳腺癌的文献，给出 PMID 和链接”，或者“使用这个 MCP 查询 UniProt P04637，报告基因名与物种”。
+20 个原生连接器已有本机实现，继续沿用原来的 ID、绑定、权限、凭据及手动启停状态。PubMed、bioRxiv、ChEMBL、Clinical Trials 的本机版本分别注册为 `csswitch-local-pubmed`、`csswitch-local-biorxiv`、`csswitch-local-chembl`、`csswitch-local-clinical-trials`，直接调用公开数据源。确认本机版本能够加载工具后，停用对应的 Claude 托管版本。模型 API 通过所选第三方网关调用，科研 MCP 不依赖 Claude 目录登录。
 
-Science 会生成 `mcp-csswitch-openscience` skill，模型加载后通过 `repl` 的 `host.mcp` 调用：
+例如在 Science 对话里说“使用本地 PubMed 搜索 BRCA1 乳腺癌文献，给出 PMID”。模型加载相应 MCP skill 后调用：
 
 ```python
-catalog = host.mcp("csswitch-openscience", "science_list_dbs")
-print(catalog)
-papers = host.mcp("csswitch-openscience", "science_search",
-                 db="pubmed", query="BRCA1 breast cancer", limit=3)
-print(papers)
-protein = host.mcp("csswitch-openscience", "science_fetch", db="uniprot", id="P04637")
-print(protein["record"]["genes"])
+papers = host.mcp("csswitch-local-pubmed", "search_articles",
+                  query="BRCA1 breast cancer", max_results=5)
+trial = host.mcp("csswitch-local-clinical-trials", "get_trial_details",
+                 nct_id="NCT04280705")
 ```
 
-应先加载对应 skill。`host.mcp` 在控制平面的 `repl` 中可用，不能直接放到普通 Python / R 科研执行工具。大记录只打印所需字段；Science 可能把完整打印结果保存为工具输出文件，需按其指引读取。模型提供商需要正确支持工具调用与多轮工具结果。
+Ketcher Chemistry 继续使用原生服务 ID，保留互动编辑器及资源读取。连接器名称保持原文，按钮、状态、说明等界面文字继续汉化。
 
-43 个数据库分组为蛋白/结构、基因组、化学、通路、文献与组学，包括 UniProt、RCSB PDB、AlphaFold、Ensembl、ClinVar、ChEMBL、PubChem、Reactome、KEGG、PubMed、Europe PMC、arXiv、GEO、GTEx 等。完整 ID、说明与支持的文件格式由 `science_list_dbs` 返回。注册不保证每个服务实时可用，服务可能限流、维护或要求独立凭证。
+## 本机配置与凭据
 
-安装表单可填写 JSON 环境变量，例如 `BIOGRID_ACCESS_KEY`、`OPENALEX_API_KEY`、`SEMANTIC_SCHOLAR_API_KEY`，以及联系邮箱 `OPENALEX_MAILTO` / `CROSSREF_MAILTO`。未填所需 Key 时会返回配置错误，不会伪造空查询结果。后续更改 Key 需要删除并重新添加服务，保存值不会在 CSSwitch 回显。
+需要已安装完整的 Claude Science 及其 MCP Python 环境；Ketcher Chemistry 的独立配置需要本机 Node.js。管理器会先定位完整运行资源，再将明确的服务入口路径交给 MCP 子进程，兼容 Science 沙箱对目录扫描的限制。再次启动或接入时会修复资源更新后的路径和网关端口。
 
-## 自定义 MCP
+原生 20 个服务的凭据继续在 Science 中管理。新注册的 4 个服务可在接入窗口设置环境变量，例如实际的 `NCBI_EMAIL` 和可选的 `NCBI_API_KEY`。PubMed 元数据获取等工具要求联系邮箱；OpenAlex 等数据源需要各自的 API 密钥。不会编造邮箱、复制原生密钥、跳过数据源的许可限制或自动授予工具权限。再次接入保留已有环境变量，并合并用户填写的新值；列表和报告不回显密钥。
 
-“添加 MCP”支持本地 stdio（可执行文件绝对路径、JSON 参数数组、环境变量）或公共 HTTPS（Streamable HTTP / SSE）。添加后可绑定 OPERON，也可先取消绑定选项，授权和查看工具后再绑定。组织策略禁止时无法添加；CSSwitch 不绕过 Science 策略。
+点击“导出 24 个本机配置”可得到标准 `mcpServers` JSON。导出使用原始服务名，例如 `pubmed` 和 `ketcher-chemistry`；命令指向本机安装资源，适合在同一台机器的其他 MCP 客户端中导入，不包含已保存的 API Key。代理环境变量指向 CSSwitch 网关，调用公开接口时需保持网关运行。
 
-远程服务使用自己的账号授权。“授权”会让 Science 发起服务商 OAuth 并在浏览器打开，完成后点击刷新。需要 client secret 的服务可使用符合该服务要求的本地 MCP 客户端或在 Science 中完成其完整配置；本页没有任意密钥请求头输入，`headers_helper` 沿用 Science 的命令配置。Claude 的目录登录无法替代这些服务商的授权。
+## 工具清单
 
-列表中的“工具”显示实际发现结果和权限，可以设置每次询问、总是允许、禁止或恢复默认审批。新安装保留默认审批；内置服务的“启用/停用”和自定义服务的“绑定/解绑”各自使用正确接口。删除自定义 MCP 会移除保存的连接和授权，并解除所有代理绑定。
+以下数字来自当前运行中的 Science 实例的工具枚举，不表示每个工具都执行了实时查询。
 
-科研服务经过 CSSwitch 网关访问公开数据库。Science 会清除子进程继承的代理变量，因此安装时会显式保存当前网关地址。更改网关端口或移动 App 后，应重新安装科研服务。手动添加其他 stdio 程序时，可在环境变量中设置其支持的 `HTTPS_PROXY`，指向 CSSwitch 网关（默认 `http://127.0.0.1:18992`）。
+| 连接器 | 当前工具数 | Science 接入方式 |
+| --- | ---: | --- |
+| BioMart | 8 | 沿用原生本机服务 |
+| Cancer Models | 6 | 沿用原生本机服务 |
+| CellGuide | 5 | 沿用原生本机服务 |
+| Chemistry | 12 | 沿用原生本机服务 |
+| Clinical Genomics | 20 | 沿用原生本机服务 |
+| Drug Regulatory | 7 | 沿用原生本机服务 |
+| Expression | 12 | 沿用原生本机服务 |
+| Genes & Ontologies | 7 | 沿用原生本机服务 |
+| Genomes | 11 | 沿用原生本机服务 |
+| Human Genetics | 12 | 沿用原生本机服务 |
+| Ketcher Chemistry | 1 | 沿用原生本机服务 |
+| Literature Graph | 9 | 沿用原生本机服务 |
+| Omics Archives | 17 | 沿用原生本机服务 |
+| Protein Annotation | 13 | 沿用原生本机服务 |
+| Regulation | 10 | 沿用原生本机服务 |
+| Research Resources | 5 | 沿用原生本机服务 |
+| RNA | 9 | 沿用原生本机服务 |
+| Structures & Interactions | 16 | 沿用原生本机服务 |
+| Variants | 15 | 沿用原生本机服务 |
+| ZINC | 4 | 沿用原生本机服务 |
+| bioRxiv | 7 | 独立本机 stdio |
+| ChEMBL | 6 | 独立本机 stdio |
+| Clinical Trials | 6 | 独立本机 stdio |
+| PubMed | 7 | 独立本机 stdio |
 
-官方 Directory 的 HTTP 401 可以继续出现；自定义 MCP 有独立的连接状态。外部账号、租户权限、费用和配额仍由相应服务商管理。
+## 旧聚合服务迁移
 
-## 开发验证
+应用不再打包或提供 csswitch-openscience 的安装入口。四个替代服务均就绪后，将旧本地 MCP 配置备份到 `~/.csswitch-next/mcp-migration-backups`（目录权限 0700、文件权限 0600），再移除原先由 CSSwitch 安装的聚合服务。部分接入失败时保留旧配置，报告具体失败项，支持重试。
 
-```sh
-cd desktop
-npm ci
-npm run prepare:assets
-npm run check
-npm run test:ui
-cd ..
-python3 -m unittest discover -s scripts/tests -v
-python3 scripts/probe-science-connectors.py
-```
+## 验证
 
-`probe-science-connectors.py` 使用安装的 Science、独立虚拟账号、本地模拟模型和仅允许 NCBI/UniProt 的 HTTPS 隧道，验证真实 MCP 执行和真实数据响应。不会切换当前配置，结果保留在忽略提交的 `.sandbox/connector-probe-*`，最终停止测试 Science。测试中的 `sandbox.hard_fail=false` 只用于 macOS 嵌套 sandbox-exec 限制；产品配置不改变。`--prototype` 可运行此前的最小 Python 原型。
-
-已验证 Science 0.1.60 中完整的数据库工具调用与管理链路。推理使用模拟模型，不代表已经验证所有第三方模型或 43 个服务的实时可用性。离线测试还覆盖 stdio 工具协议、代理请求、文件格式、参数错误、来源故障与拒绝私网重定向，以及 nonce/cookie/CSRF、密钥不回显和已有名称保护。
+- 当前 Science 实例 24/24 服务已连接，225 个工具加载成功；重复接入没有产生重复服务。
+- 全部 24 个独立进程的 MCP 握手、输入 schema、工具枚举及 Ketcher 资源读取通过。
+- 真实 PubMed、ChEMBL、bioRxiv、ClinicalTrials.gov、UniProt 查询返回有效数据。
+- 独立 HOME 和网络隔离的 Science 实例中，模拟第三方模型通过 skill → repl → host.mcp 完成 PubMed 与 UniProt 调用，未连接 Claude 托管 MCP。此测试不代表已测试所有第三方模型。
+- 汉化及 MCP UI、管理桥接、迁移幂等性、失败保留、私密备份及版本构建通过测试。

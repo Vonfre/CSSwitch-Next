@@ -260,7 +260,7 @@ mod tests {
             assert!(mismatched.download(|_, _| {}, || {}).await.is_err());
             update.install(downloaded).unwrap();
             assert!(!app_path.join("old-build-marker").exists());
-            assert!(app_path.join("Contents/Resources/scripts/openscience-mcp/server.mjs").is_file());
+            assert!(app_path.join("Contents/Resources/scripts/science-connector-run.py").is_file());
             assert!(std::process::Command::new("codesign").args(["--verify", "--deep", "--strict"])
                 .arg(&app_path).status().unwrap().success());
         });

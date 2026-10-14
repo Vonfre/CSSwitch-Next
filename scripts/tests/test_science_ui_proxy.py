@@ -78,6 +78,23 @@ class ProxyTests(unittest.TestCase):
         self.temp.cleanup()
     def request(self, path, **kwargs):
         return self.opener.open(urllib.request.Request(self.base + path, **kwargs), timeout=3)
+    def test_readiness_routes_work_without_native_and_keep_host_origin_checks(self):
+        self.proxy.upstream_port = 0
+        with self.request('/__csswitch/health') as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(json.load(r), {})
+        with self.request('/health', headers={'Host': '127.0.0.1'}) as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(json.load(r), {})
+        for path, headers in [
+            ('/__csswitch/health', {'Host': 'foreign.example'}),
+            ('/__csswitch/health', {'Origin': 'https://foreign.example'}),
+            ('/health', {'Host': '127.0.0.1', 'Origin': 'https://foreign.example'}),
+            ('/', {'Host': '127.0.0.1'}),
+        ]:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(path, headers=headers)
+            self.assertEqual(error.exception.code, 403)
     def test_html_csp_cookie_and_asset(self):
         with self.request('/') as r:
             self.assertIn(ui.BOOTSTRAP.encode(), r.read())

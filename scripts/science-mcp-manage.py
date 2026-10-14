@@ -8,6 +8,8 @@ import http.cookiejar
 import base64
 import ipaddress
 import json
+import os
+import time
 import re
 import signal
 import sys
@@ -20,6 +22,11 @@ from pathlib import Path
 _local_spec = importlib.util.spec_from_file_location('science_local_skills', Path(__file__).with_name('science-local-skills.py'))
 local_skills = importlib.util.module_from_spec(_local_spec)
 _local_spec.loader.exec_module(local_skills)
+
+
+_profiles_spec = importlib.util.spec_from_file_location('science_connectors', Path(__file__).with_name('science-connectors.py'))
+profiles = importlib.util.module_from_spec(_profiles_spec)
+_profiles_spec.loader.exec_module(profiles)
 
 
 class BridgeError(Exception):
@@ -35,11 +42,15 @@ def public_connector(value):
     # Deliberately never return command, args, env, headers, tokens or OAuth state.
     keys = ('id', 'name', 'displayName', 'source', 'description', 'authState',
             'transport', 'enabled', 'connectionStatus', 'admin_blocked', 'attachedAgents')
-    return {k: value[k] for k in keys if k in value}
+    public = {k: value[k] for k in keys if k in value}
+    profile = value.get('name', '').removeprefix(profiles.PREFIX)
+    if profile in profiles.NAMES and value.get('source') == 'local-stdio' and value.get('name', '').startswith(profiles.PREFIX) and value.get('description') == profiles.MARKER + profiles.NAMES.get(profile, ''):
+        public['displayName'] = profiles.NAMES[profile]
+    return public
 
 
 class Bridge:
-    def __init__(self, base, nonce, data_dir=None, auth_dir=None):
+    def __init__(self, base, nonce, data_dir=None, auth_dir=None, home=None):
         u = urllib.parse.urlsplit(base)
         if u.scheme != 'http' or u.hostname != '127.0.0.1' or not u.port or u.username or u.password or u.path or u.query or u.fragment:
             raise BridgeError('管理接口必须是 CSSwitch 所拥有的本地 Science 服务。')
@@ -48,6 +59,7 @@ class Bridge:
         self.base = base
         # These paths come from the owned native session, never frontend params.
         self.data_dir, self.auth_dir = data_dir, auth_dir
+        self.home = home
         self.jar = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), urllib.request.HTTPCookieProcessor(self.jar))
         self.request('/api/auth/nonce', {'nonce': nonce, 'dest': '/'})
@@ -99,6 +111,14 @@ class Bridge:
     def run(self, operation, params):
         if operation.startswith('skills_'):
             return self.skills(operation, params)
+        if operation == 'install':
+            return self.install_science(params)
+        if operation == 'export_science':
+            # Export fresh specs with no stored keys, cookies or auth material.
+            try:
+                return {'mcpServers': {key: {k: v for k, v in profiles.spec(params['home'], key, params['launcher'], params['proxy_port'], params.get('node')).items() if k in ('command', 'args', 'env')} for key in profiles.NAMES}}
+            except (ValueError, KeyError) as e:
+                raise BridgeError(str(e)) from None
         if operation == 'list':
             connectors = [public_connector(c) for c in self.connectors()]
             health = None
@@ -109,8 +129,9 @@ class Bridge:
                 pass
             policy = self.request('/api/org-policy')
             return {'connectors': connectors, 'directoryHealth': health,
-                    'customAllowed': policy.get('caps', {}).get('operon_custom_connectors', {}).get('allowed', False)}
-        if operation in ('add_local', 'add_remote', 'install'):
+                    'customAllowed': policy.get('caps', {}).get('operon_custom_connectors', {}).get('allowed', False),
+                    'scienceProfiles': profiles.catalog(connectors, self.home)}
+        if operation in ('add_local', 'add_remote'):
             name = params.get('name')
             if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', name):
                 raise BridgeError('MCP 名称请使用 1–64 位字母、数字、下划线或短横线。')
@@ -190,6 +211,103 @@ class Bridge:
         else:
             raise BridgeError('不支持的 MCP 管理操作。')
         return {'ok': True}
+
+    def saved_local_env(self, home, name):
+        source = Path(home) / '.claude-science/mcp/local-mcp.json'
+        if source.is_symlink() or not source.is_file():
+            raise BridgeError('无法读取已有本机连接器配置，未覆盖其环境变量。')
+        try:
+            rows = json.loads(source.read_text()).get('servers', [])
+            if isinstance(rows, dict):
+                entry = rows.get(name, {})
+            else:
+                entry = next((row for row in rows if row.get('name') == name), {})
+            if entry.get('description') != profiles.MARKER + profiles.NAMES[name.removeprefix(profiles.PREFIX)]:
+                raise ValueError()
+            env = entry.get('env', {})
+            if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
+                raise ValueError()
+            return dict(env)
+        except (ValueError, KeyError, TypeError):
+            raise BridgeError('已有连接器配置不兼容，未覆盖其环境变量。') from None
+
+    def backup_legacy(self, home):
+        source = Path(home) / '.claude-science/mcp/local-mcp.json'
+        if source.is_symlink() or not source.is_file():
+            raise BridgeError('旧连接器配置无法安全备份。')
+        destination = Path(home) / '.csswitch-next/mcp-migration-backups'
+        if destination.is_symlink():
+            raise BridgeError('旧连接器备份目录无效。')
+        destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(destination, 0o700)
+        path = destination / f'local-mcp-{time.time_ns()}.json'
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, 'wb') as output:
+            output.write(source.read_bytes())
+            output.flush()
+            os.fsync(output.fileno())
+
+    def install_science(self, params):
+        policy = self.request('/api/org-policy')
+        if not policy.get('caps', {}).get('operon_custom_connectors', {}).get('allowed'):
+            raise BridgeError('Science 组织策略禁止自定义连接器。')
+        try:
+            # All 24 profiles must have actual local resources, before any mutation.
+            specs = {key: profiles.spec(params['home'], key, params['launcher'], params['proxy_port'], params.get('node'), params.get('env')) for key in profiles.NAMES}
+        except (ValueError, KeyError) as e:
+            raise BridgeError(str(e)) from None
+        report, complete = [], True
+        for key in profiles.HOSTED:
+            desired = specs[key]
+            existing = next((c for c in self.connectors() if c.get('name') == desired['name']), None)
+            try:
+                if existing:
+                    if existing.get('source') != 'local-stdio' or existing.get('description') != desired['description']:
+                        raise BridgeError('同名连接器不是 CSSwitch 管理的本机版本，请先更名。')
+                    # POST is an upsert in Science 0.1.62. Preserve stored user
+                    # env while repairing executable paths/proxy configuration.
+                    saved = self.saved_local_env(params['home'], desired['name'])
+                    saved.update(params.get('env') or {})
+                    desired['env'] = {**saved, **profiles.proxy_env(params['proxy_port'])}
+                    self.request('/api/mcp-servers/local', {k: v for k, v in desired.items() if k != 'attach'})
+                    if 'OPERON' not in existing.get('attachedAgents', []):
+                        self.run('attach', {'id': existing['id']})
+                    sid = existing['id']
+                else:
+                    added = self.run('add_local', desired)
+                    sid = added['connector']['id']
+                    if not added['attached']:
+                        raise BridgeError(added['message'])
+                tools = self.run('tools', {'id': sid})
+                for _ in range(12):
+                    if tools.get('status') != 'pending':
+                        break
+                    time.sleep(0.25)
+                    tools = self.run('tools', {'id': sid})
+                if tools.get('status') != 'loaded' or not tools.get('tools'):
+                    raise BridgeError('本机服务尚未就绪，未停用对应官方服务；请稍后重新接入。')
+                official = next((c for c in self.connectors() if c.get('source') == 'bundled' and c.get('name') == key), None)
+                if official and official.get('enabled', True):
+                    self.run('enabled', {'id': official['id'], 'enabled': False})
+                report.append({'profile': key, 'displayName': profiles.NAMES[key], 'ok': True, 'tools': len(tools['tools'])})
+            except BridgeError as e:
+                complete = False
+                report.append({'profile': key, 'displayName': profiles.NAMES[key], 'ok': False, 'message': str(e)})
+        # Existing native-local profiles keep their original IDs, credentials,
+        # grants and Ketcher host.app identity. Do not silently enable user-disabled tools.
+        state = profiles.catalog(self.connectors(), params['home'], params.get('node'))
+        if complete:
+            old = next((c for c in self.connectors() if c.get('source') == 'local-stdio' and c.get('name') == 'csswitch-openscience' and c.get('description') == '科研数据库 MCP 服务'), None)
+            if old:
+                try:
+                    self.backup_legacy(params['home'])
+                    self.run('remove', {'id': old['id']})
+                except (BridgeError, OSError, ValueError):
+                    complete = False
+                    report.append({'displayName': '旧聚合服务', 'ok': False, 'message': '旧配置备份或移除失败，已保留；请重新接入重试。'})
+        ready = sum(p['ready'] for p in state)
+        return {'complete': complete, 'report': report, 'scienceProfiles': state,
+                'message': f'本机连接器接入完成：{ready}/24 已连接。' if complete else '部分连接器未就绪，详细结果见接入窗口；可重新接入补齐。'}
 
     def skills(self, operation, params):
         if operation == 'skills_list':
@@ -354,7 +472,7 @@ def main():
     signal.alarm(85)
     try:
         data = json.loads(sys.stdin.read(6 * 1024 * 1024))
-        value = Bridge(data['base'], data['nonce'], data.get('data_dir'), data.get('auth_dir')).run(data['operation'], data.get('params', {}))
+        value = Bridge(data['base'], data['nonce'], data.get('data_dir'), data.get('auth_dir'), data.get('home')).run(data['operation'], data.get('params', {}))
         print(json.dumps({'ok': True, 'value': value}, ensure_ascii=False))
     except BridgeError as e:
         print(json.dumps({'ok': False, 'message': str(e)}, ensure_ascii=False))

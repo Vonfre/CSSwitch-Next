@@ -10,6 +10,15 @@ use std::time::Duration;
 /// 对本地回环代理做 HTTP 探活：`GET /<secret>/health`，响应状态行含 200 即视为健康。
 /// 代理带 path-secret 鉴权时必须带上 secret，否则会拿到 403。
 pub fn http_health(port: u16, secret: Option<&str>, timeout_ms: u64) -> bool {
+    let path = match secret {
+        Some(s) if !s.is_empty() => format!("/{s}/health"),
+        _ => "/health".to_string(),
+    };
+    http_health_path(port, &path, timeout_ms)
+}
+
+/// Probe a service's own loopback health route using its complete authority.
+pub fn http_health_path(port: u16, path: &str, timeout_ms: u64) -> bool {
     let addr = match ("127.0.0.1", port)
         .to_socket_addrs()
         .ok()
@@ -25,11 +34,7 @@ pub fn http_health(port: u16, secret: Option<&str>, timeout_ms: u64) -> bool {
     };
     let _ = stream.set_read_timeout(Some(dur));
     let _ = stream.set_write_timeout(Some(dur));
-    let path = match secret {
-        Some(s) if !s.is_empty() => format!("/{s}/health"),
-        _ => "/health".to_string(),
-    };
-    let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     if stream.write_all(req.as_bytes()).is_err() {
         return false;
     }
@@ -273,6 +278,29 @@ mod tests {
     fn health_false_when_nothing_listening() {
         // 一个几乎肯定没人监听的高端口。
         assert!(!http_health(59999, None, 300));
+    }
+
+    #[test]
+    fn health_request_uses_requested_route_and_port_in_host() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            stream.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\n{}").unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let healthy = http_health_path(port, "/__csswitch/health", 1000);
+        let request = server.join().unwrap();
+        assert!(healthy);
+        assert!(request.starts_with("GET /__csswitch/health HTTP/1.0\r\n"));
+        assert!(request.contains(&format!("\r\nHost: 127.0.0.1:{port}\r\n")));
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub fn manage(root: &Path, operation: &str, mut params: Value) -> Result<Value, 
         "add_local",
         "add_remote",
         "install",
+        "export_science",
         "attach",
         "detach",
         "enabled",
@@ -45,47 +46,15 @@ pub fn manage(root: &Path, operation: &str, mut params: Value) -> Result<Value, 
     ) {
         return Err("请先在提供商页面启动 CSSwitch 所管理的第三方 Science。".into());
     }
-    if operation == "install" {
-        let node =
-            super::proc::find_exe("node").ok_or("科研 MCP 需要 Node.js 22 或以上，请先安装。")?;
-        let version = Command::new(&node)
-            .arg("--version")
-            .output()
-            .map_err(|_| "无法检查 Node.js 版本。")?;
-        let major = String::from_utf8_lossy(&version.stdout)
-            .trim()
-            .trim_start_matches('v')
-            .split('.')
-            .next()
-            .unwrap_or("")
-            .parse::<u32>()
-            .unwrap_or(0);
-        if !version.status.success() || major < 22 {
-            return Err("科研 MCP 需要 Node.js 22 或以上，请先升级。".into());
-        }
-        let script = root.join("scripts/openscience-mcp/server.mjs");
-        if !script.is_file() {
-            return Err("缺少科研 MCP 资源，请重新构建或安装 CSSwitch。".into());
-        }
-        let mut env = params.get("env").cloned().unwrap_or(json!({}));
-        let values = env
-            .as_object_mut()
-            .ok_or("环境变量需为 JSON 字符串对象。")?;
-        // Science deliberately strips proxy vars from stdio children. Supply our
-        // loopback gateway explicitly so Node never needs direct sandbox DNS.
+    if operation == "install" || operation == "export_science" {
         let cfg = super::config::load_from(&super::config::default_dir())
             .map_err(|_| "无法读取网关端口。")?;
-        for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
-            values.insert(
-                key.into(),
-                json!(format!("http://127.0.0.1:{}", cfg.proxy_port)),
-            );
-        }
-        for key in ["NO_PROXY", "no_proxy"] {
-            values.insert(key.into(), json!("127.0.0.1,localhost,::1"));
-        }
-        params = json!({"name": "csswitch-openscience", "description": "科研数据库 MCP 服务",
-            "command": node, "args": [script], "env": env, "attach": true});
+        let script = root.join("scripts/science-connector-run.py");
+        if !script.is_file() { return Err("缺少本机连接器资源，请重新安装 CSSwitch。".into()); }
+        params["home"] = json!(session.home);
+        params["launcher"] = json!(script);
+        params["proxy_port"] = json!(cfg.proxy_port);
+        params["node"] = json!(super::proc::find_exe("node"));
     }
     // Generate a fresh nonce for this exact owned instance; it never reaches JS.
     let output = super::science_shared::command(&bin, &session, "url")
@@ -120,7 +89,7 @@ pub fn manage(root: &Path, operation: &str, mut params: Value) -> Result<Value, 
         .map_err(|_| "无法启动 MCP 管理组件。")?;
     let input = json!({"base": format!("http://127.0.0.1:{}", session.port), "nonce": nonce,
         "data_dir": session.data_dir, "auth_dir": session.config.parent().unwrap().join("auth"),
-        "operation": operation, "params": params});
+        "home": session.home, "operation": operation, "params": params});
     let bytes = serde_json::to_vec(&input).map_err(|_| "MCP 参数无效。")?;
     if let Err(_) = child.stdin.take().unwrap().write_all(&bytes) {
         let _ = child.kill();

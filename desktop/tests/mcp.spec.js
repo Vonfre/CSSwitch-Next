@@ -12,15 +12,15 @@ async function setup(page, stopped = false, blocked = false) {
       if (cmd === 'mcp_manage') {
         if (stopped) throw new Error('请先启动 CSSwitch 所管理的第三方 Science。');
         const { operation: op, params: p } = args;
-        if (op === 'list') return { connectors, customAllowed: !blocked, directoryHealth: { ok: false, status: 401 } };
+        if (op === 'list') return { scienceProfiles: connectors.some(c => c.name === 'csswitch-local-pubmed') ? Array.from({length:24}, () => ({ready:true})) : [], connectors, customAllowed: !blocked, directoryHealth: { ok: false, status: 401 } };
         if (op === 'tools') return { status: 'loaded', tools: [{ toolName: 'search', description: '<unsafe tool>', readOnlyHint: true, state: 'unset' }] };
         if (op === 'attach') connectors.find(c => c.id === p.id).attachedAgents = ['OPERON'];
         if (op === 'detach') connectors.find(c => c.id === p.id).attachedAgents = [];
         if (op === 'remove') connectors = connectors.filter(c => c.id !== p.id);
         if (op === 'add_local' || op === 'add_remote' || op === 'install') {
           if (window.mcpFailure) throw new Error('Science HTTP 400：参数被拒绝');
-          connectors.push({ id: op === 'install' ? 'local:csswitch-openscience' : 'local:new', name: op === 'install' ? 'csswitch-openscience' : p.name, source: op === 'add_remote' ? 'custom' : 'local-stdio', transport: 'stdio', attachedAgents: ['OPERON'] });
-          return { message: 'MCP 已添加。' };
+          connectors.push({ id: op === 'install' ? 'local:csswitch-local-pubmed' : 'local:new', name: op === 'install' ? 'csswitch-local-pubmed' : p.name, source: op === 'add_remote' ? 'custom' : 'local-stdio', transport: 'stdio', attachedAgents: ['OPERON'] });
+          return op === 'install' ? {complete: true, message:'本机连接器接入完成：24/24 已连接。', report:[{displayName:'PubMed',ok:true,tools:7}]} : { message: 'MCP 已添加。' };
         }
         return { message: op === 'authorize' ? '请在浏览器完成授权后刷新。' : '已更新。' };
       }
@@ -78,9 +78,11 @@ test('local add validates JSON, retains errors, and clears secret drafts after s
 
 test('install and remote HTTPS setup use distinct commands', async ({ page }) => {
   await setup(page);
-  await page.getByRole('button', { name: '安装科研数据库服务', exact: true }).click();
-  await page.getByRole('button', { name: '安装并绑定', exact: true }).click();
-  await expect(page.getByRole('button', { name: '科研服务已安装' })).toBeDisabled();
+  await page.getByRole('button', { name: '接入 24 个本机连接器', exact: true }).click();
+  await page.getByRole('button', { name: '接入并绑定', exact: true }).click();
+  await expect(page.locator('#mcpInstallReport')).toContainText('PubMed：已接入（7 个工具）');
+  await expect(page.locator('#content')).toContainText('24/24 已连接');
+  await page.getByRole('button', { name: '取消', exact: true }).click();
   await page.getByRole('button', { name: '添加 MCP', exact: true }).click();
   await page.getByLabel('名称', { exact: true }).fill('remote2');
   await page.getByLabel('连接方式').selectOption('remote');
@@ -103,7 +105,7 @@ test('stopped Science and organization policy have clear unavailable states', as
 test('organization policy prevents adding custom MCP', async ({ page }) => {
   await setup(page, false, true);
   await expect(page.getByRole('button', { name: '添加 MCP', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '安装科研数据库服务', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '接入 24 个本机连接器', exact: true })).toBeDisabled();
 });
 
 test('MCP page and installation form fit narrow windows and dark mode', async ({ page }) => {
@@ -112,7 +114,7 @@ test('MCP page and installation form fit narrow windows and dark mode', async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: '切换深浅主题' }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole('button', { name: '安装科研数据库服务', exact: true }).click();
+  await page.getByRole('button', { name: '接入 24 个本机连接器', exact: true }).click();
   await expect(page.locator('#mcpDialog')).toBeVisible();
   expect(await page.locator('#mcpDialog').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   await page.screenshot({ path: '../artifacts/mcp-mobile.png', fullPage: true });

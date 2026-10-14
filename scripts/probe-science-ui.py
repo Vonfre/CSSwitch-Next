@@ -3,6 +3,7 @@
 Requires macOS, Node and Playwright Chromium. Never changes the user instance.
 """
 import sys
+import argparse
 import importlib.util
 import json
 import os
@@ -15,6 +16,10 @@ import time
 import urllib.parse
 
 repo = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--settings', action='store_true', help='Inspect every native settings module')
+parser.add_argument('--collect', action='store_true', help='Collect native settings text before asserting translations')
+options = parser.parse_args()
 candidate = Path.home() / '.claude-science/bin/claude-science'
 binary = candidate if candidate.is_file() else Path('/Applications/Claude Science.app/Contents/Resources/bin/claude-science')
 if not binary.is_file() or not shutil.which('node'):
@@ -61,7 +66,10 @@ try:
   link=next(line for line in fresh.stdout.splitlines() if line.startswith('http://'))
   u=urllib.parse.urlsplit(link)
   (root/'browser-input.json').write_text(json.dumps({'url':urllib.parse.urlunsplit(('http','127.0.0.1:'+str(ui_port),u.path,u.query,'')),'config':str(ui_config),'root':str(root)}))
-  result=subprocess.run([shutil.which('node'),str(repo/'desktop/tests/native-science-ui.mjs'),str(root/'browser-input.json')],capture_output=True,text=True,timeout=90)
+  script = 'native-science-settings.mjs' if options.settings else 'native-science-ui.mjs'
+  browser_args = [shutil.which('node'), str(repo/'desktop/tests'/script), str(root/'browser-input.json')]
+  if options.collect: browser_args.append('--collect')
+  result=subprocess.run(browser_args,capture_output=True,text=True,timeout=180 if options.settings else 90)
   print(result.stdout,flush=True)
   if result.returncode: print(__import__('re').sub(r'nonce=[^\s&]+', 'nonce=[REDACTED]', result.stderr[:1800]));raise RuntimeError('Native browser test failed')
  finally:

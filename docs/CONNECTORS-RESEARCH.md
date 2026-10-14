@@ -1,6 +1,10 @@
 # 第三方 API 模式下的 Science connectors 调研
 
-调研日期：2026-10-12。OpenScience 研究版本：`a7b9fa3a8c1bd52a9a0c171de58bc14759a0f850`。
+历史调研日期：2026-10-12。
+
+2026-10-14 更新：0.8.0 已移除 OpenScience 聚合服务的打包及默认安装入口，接入 Science 0.1.62 安装包已有的 24 个本机实现。下文保留早期调研记录；当前使用与验证结果见 [MCP 管理](MCP.md)。
+
+OpenScience 研究版本：`a7b9fa3a8c1bd52a9a0c171de58bc14759a0f850`。
 
 ## 结论
 

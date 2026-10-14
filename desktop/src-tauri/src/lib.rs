@@ -853,6 +853,12 @@ fn launch_inner(
             return Err(format!("共享 Science 启动失败。请关闭原来的 Science 窗口后重试。原有凭据和历史未被替换。清理结果：{cleanup:?}\n{tail}"));
         }
     }
+    let mcp_notice = if cfg.science_local_mcp {
+        match asset_root(&app).and_then(|root| mcp::manage(&root, "install", json!({})).ok()) {
+            Some(result) => result.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            None => "本机连接器接入未完成，请在 MCP 管理中查看并重试。".into(),
+        }
+    } else { String::new() };
     let native_url = sandbox_url(sport);
     let url = science_ui::entry(&app, &mut lock(&state), sport, &native_url)?;
     {
@@ -864,7 +870,7 @@ fn launch_inner(
         Ok(()) => "已打开 Science，使用本机原有对话记录，第三方模式免登录。".to_string(),
         Err(_) => format!("Science 已就绪，请手动打开：{url}"),
     };
-    Ok(json!({ "url": url, "msg": msg, "action": "opened" }))
+    Ok(json!({ "url": url, "msg": msg, "action": "opened", "mcp_notice": mcp_notice }))
 }
 
 /// 从 `claude-science url` 的 stdout 里取**第一条**合法 http(s) URL。

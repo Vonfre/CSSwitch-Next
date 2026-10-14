@@ -15,11 +15,14 @@ function renderMcp() {
     $('#mcpWorkbench').onclick = () => showView('workbench'); icons(); return;
   }
   const data = mcpState.data;
-  const rows = data.connectors || [];
-  const installed = rows.some(c => c.name === 'csswitch-openscience');
+  const selected = new Set((data.scienceProfiles || []).filter(p => p.kind === 'local' && p.ready).map(p => p.profile));
+  const rows = (data.connectors || []).filter(c => !(c.source === 'bundled' && selected.has(c.name)));
+  const profiles = data.scienceProfiles || [];
+  const ready = profiles.filter(p => p.ready).length;
   const directoryUnavailable = data.directoryHealth && !data.directoryHealth.ok;
   const mcpPolicyNote = data.localMcpActive ? '本机 MCP 策略已生效，Claude 托管的科研连接器已停用。' : '下次启动 Science 将停用 Claude 托管的科研连接器。';
-  $('#content').innerHTML = `<section class="mcp-intro"><div><h2>科研数据库与自定义 MCP</h2><p>安装科研数据库服务后，可在 Science 对话中检索 PubMed、UniProt、ChEMBL 等数据源。需要 Node.js 22 或以上，部分数据库需要单独的 API Key。</p></div><button class="btn primary" id="installScienceMcp" ${!data.customAllowed || installed ? 'disabled' : ''}>${icon('download')}${installed ? '科研服务已安装' : '安装科研数据库服务'}</button></section>
+  $('#content').innerHTML = `<section class="mcp-intro"><div><h2>Science 本机连接器</h2><p>24 个连接器使用本机工具及数据源自己的接口，保留原始名称、工具参数和审批。已有的 20 个本机连接器继续使用；PubMed、ChEMBL、bioRxiv、Clinical Trials 接入本地版本。</p></div><button class="btn primary" id="installScienceMcp" ${!data.customAllowed ? 'disabled' : ''}>${icon('download')}接入 24 个本机连接器</button></section>
+    <div class="mcp-note">${ready}/24 已连接。<button class="btn" id="exportScienceMcp">导出 24 个本机配置</button></div>
     ${state.config.science_local_mcp !== false || data.localMcpActive ? `<div class="mcp-note">${mcpPolicyNote}请把所需服务绑定到 Science；工具审批和服务商授权仍由 Science 管理。可在设置中关闭此策略。</div>` : ''}
     ${directoryUnavailable ? `<div class="mcp-note">Claude 官方目录当前不可用${data.directoryHealth.status ? `（HTTP ${esc(data.directoryHealth.status)}）` : ''}。下面的本地和自定义 MCP 使用各自的连接与授权，不依赖 Claude 目录登录。</div>` : ''}
     ${!data.customAllowed ? '<div class="notice error">Science 组织策略禁止自定义连接器。</div>' : ''}
@@ -35,7 +38,7 @@ function renderMcp() {
         ${c.source === 'bundled' ? `<button class="btn" data-mcp-op="enabled" ${blocked ? 'disabled' : ''}>${c.enabled === false ? '启用' : '停用'}</button>` : ''}
         ${['custom', 'antmcp'].includes(c.source) && c.authState !== 'not-required' ? `<button class="btn" data-mcp-op="authorize" ${blocked ? 'disabled' : ''}>授权</button>` : ''}
         ${['custom', 'local-stdio'].includes(c.source) ? `<button class="icon-btn danger" data-mcp-op="remove" title="删除 ${esc(c.name)}" aria-label="删除 ${esc(c.name)}">${icon('trash-2')}</button>` : ''}</div></article>`;
-    }).join('') || '<div class="empty">暂无连接器。安装科研数据库服务 或添加自己的服务。</div>'}</div><div id="mcpNoMatches" class="empty" hidden>没有匹配的连接器</div><section id="mcpTools"></section>`;
+    }).join('') || '<div class="empty">暂无连接器。接入 Science 本机连接器或添加自己的服务。</div>'}</div><div id="mcpNoMatches" class="empty" hidden>没有匹配的连接器</div><section id="mcpTools"></section>`;
   $('#addMcp').onclick = () => openMcpEditor();
   $('#importMcp').onclick = openMcpImport;
   $('#mcpSearch').oninput = e => { mcpState.search = e.target.value; filterMcp(); };
@@ -43,6 +46,12 @@ function renderMcp() {
   $('#mcpBound').onchange = e => { mcpState.bound = e.target.value; filterMcp(); };
   filterMcp();
   $('#installScienceMcp').onclick = () => openMcpEditor(true);
+  $('#exportScienceMcp').onclick = () => action(async () => {
+    const data = await mcpCall('export_science');
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'science-local-mcp.json'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000); notice('已导出 24 个本机 MCP 配置，不包含已保存的密钥。');
+  });
   document.querySelectorAll('[data-mcp-op]').forEach(button => { button.onclick = () => action(async () => {
     const c = rows.find(c => c.id === button.closest('[data-mcp-id]').dataset.mcpId);
     const op = button.dataset.mcpOp;
@@ -71,12 +80,12 @@ function renderMcpTools() {
 }
 function openMcpEditor(install = false) {
   const dialog = $('#mcpDialog');
-  dialog.innerHTML = `<form id="mcpForm"><div class="dialog-heading"><h2 id="mcpTitle">${install ? '安装科研数据库服务' : '添加 MCP'}</h2><button type="button" class="icon-btn" id="closeMcp" aria-label="关闭 MCP 表单">${icon('x')}</button></div><div class="editor-body">
+  dialog.innerHTML = `<form id="mcpForm"><div class="dialog-heading"><h2 id="mcpTitle">${install ? '接入 Science 本机连接器' : '添加 MCP'}</h2><button type="button" class="icon-btn" id="closeMcp" aria-label="关闭 MCP 表单">${icon('x')}</button></div><div class="editor-body">
     <div class="form-grid">${!install ? `<div class="field wide"><label for="mcpPreset">快速配置</label><select id="mcpPreset"><option value="custom">自定义 MCP</option><option value="filesystem">Filesystem · 本地文件</option><option value="memory">Memory · 知识记忆</option><option value="fetch">Fetch · 网页读取</option></select></div><div class="field"><label for="mcpName">名称</label><input id="mcpName" name="name" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" maxlength="64" placeholder="my-mcp" required /></div><div class="field"><label for="mcpType">连接方式</label><select id="mcpType"><option value="local">本地 stdio</option><option value="remote">远程 HTTPS</option></select></div><div class="field wide"><label for="mcpDescription">描述</label><input id="mcpDescription" name="description" maxlength="1000" /></div>
       <div id="mcpLocal" class="field wide"><div class="field"><label for="mcpCommand">可执行文件绝对路径</label><input id="mcpCommand" name="command" placeholder="/opt/homebrew/bin/uv" required /></div><div class="field"><label for="mcpArgs">参数（JSON 字符串数组）</label><textarea id="mcpArgs" rows="2" spellcheck="false">[]</textarea></div></div>
-      <div id="mcpRemote" class="field wide" hidden><div class="field"><label for="mcpUrl">公共 HTTPS MCP 地址</label><input id="mcpUrl" name="url" type="url" placeholder="https://example.com/mcp" /></div><div class="field"><label for="mcpTransport">传输协议</label><select id="mcpTransport" name="transport"><option value="streamable_http">Streamable HTTP</option><option value="sse">SSE</option></select></div><details><summary>OAuth 与请求头配置</summary><div class="field"><label for="mcpOauthServer">OAuth 服务地址（可选）</label><input id="mcpOauthServer" name="oauth_server_url" type="url" /></div><div class="field"><label for="mcpClient">客户端 ID（可选）</label><input id="mcpClient" name="client_id" /></div><div class="field"><label for="mcpScopes">Scopes（可选）</label><input id="mcpScopes" name="scopes" /></div><div class="field"><label for="mcpHeaders">Science headers_helper 命令（可选）</label><input id="mcpHeaders" name="headers_helper" placeholder="/absolute/path/to/headers-helper" /><p class="subtle">命令须输出请求头 JSON，由 Science 执行。授权信息使用服务商自己的账号或密钥。</p></div></details></div>` : '<p class="subtle field wide">将安装本地只读数据库服务并绑定 Science。工具调用保留默认审批。数据库清单可在对话中通过 science_list_dbs 查看。</p>'}
-    <div id="mcpEnvField" class="field wide"><label for="mcpEnv">环境变量（JSON 字符串对象，可选）</label><textarea id="mcpEnv" rows="3" autocomplete="off" spellcheck="false" placeholder='{"BIOGRID_ACCESS_KEY":"..."}'>{}</textarea><span class="subtle">仅用于本地 MCP。密钥交给 Science 保存，不会在连接器列表回显。</span></div></div>
-    <p id="mcpFormError" class="err" role="alert" hidden></p>${!install ? '<label><input type="checkbox" id="mcpAttach" checked /> 添加后绑定 Science（OPERON）</label>' : ''}</div><div class="dialog-actions"><button type="button" class="btn" id="cancelMcp">取消</button><button class="btn primary" type="submit">${install ? '安装并绑定' : '添加'}</button></div></form>`;
+      <div id="mcpRemote" class="field wide" hidden><div class="field"><label for="mcpUrl">公共 HTTPS MCP 地址</label><input id="mcpUrl" name="url" type="url" placeholder="https://example.com/mcp" /></div><div class="field"><label for="mcpTransport">传输协议</label><select id="mcpTransport" name="transport"><option value="streamable_http">Streamable HTTP</option><option value="sse">SSE</option></select></div><details><summary>OAuth 与请求头配置</summary><div class="field"><label for="mcpOauthServer">OAuth 服务地址（可选）</label><input id="mcpOauthServer" name="oauth_server_url" type="url" /></div><div class="field"><label for="mcpClient">客户端 ID（可选）</label><input id="mcpClient" name="client_id" /></div><div class="field"><label for="mcpScopes">Scopes（可选）</label><input id="mcpScopes" name="scopes" /></div><div class="field"><label for="mcpHeaders">Science headers_helper 命令（可选）</label><input id="mcpHeaders" name="headers_helper" placeholder="/absolute/path/to/headers-helper" /><p class="subtle">命令须输出请求头 JSON，由 Science 执行。授权信息使用服务商自己的账号或密钥。</p></div></details></div>` : '<p class="subtle field wide">核对 24 个本机服务资源，并将 4 个 Claude 托管连接器替换为本地版本。保留已有的 20 个本机连接器及其权限。依赖 Science 的本机运行资源；不复制其源码。PubMed 可设置 NCBI_EMAIL，Literature Graph 的 OpenAlex 密钥继续在 Science 凭据中配置。</p>'}
+    <div id="mcpEnvField" class="field wide"><label for="mcpEnv">环境变量（JSON 字符串对象，可选）</label><textarea id="mcpEnv" rows="3" autocomplete="off" spellcheck="false" placeholder='{"NCBI_EMAIL":"your-email@example.org","NCBI_API_KEY":"..."}'>{}</textarea><span class="subtle">仅用于本地 MCP。密钥交给 Science 保存，不会在连接器列表回显。</span></div></div>
+    <div id="mcpInstallReport" class="subtle" role="status"></div><p id="mcpFormError" class="err" role="alert" hidden></p>${!install ? '<label><input type="checkbox" id="mcpAttach" checked /> 添加后绑定 Science（OPERON）</label>' : ''}</div><div class="dialog-actions"><button type="button" class="btn" id="cancelMcp">取消</button><button class="btn primary" type="submit">${install ? '接入并绑定' : '添加'}</button></div></form>`;
   const close = () => { if (!state.busy) { dialog.close(); dialog.innerHTML = ''; } };
   $('#closeMcp').onclick = close; $('#cancelMcp').onclick = close;
   dialog.oncancel = e => { if (state.busy) e.preventDefault(); };
@@ -105,7 +114,11 @@ function openMcpEditor(install = false) {
         ...(remote ? {} : { args: JSON.parse($('#mcpArgs').value), env: JSON.parse($('#mcpEnv').value || '{}') }),
       };
       const value = await mcpCall(install ? 'install' : remote ? 'add_remote' : 'add_local', params);
-      dialog.close(); notice(value.message || 'MCP 已添加。'); await loadMcp(); renderMcp();
+      if (install) {
+        $('#mcpInstallReport').textContent = (value.report || []).map(r => `${r.displayName}：${r.ok ? `已接入（${r.tools} 个工具）` : r.message}`).join('\n');
+        $('#mcpEnv').value = '{}';
+        notice(value.message); await loadMcp(); renderMcp();
+      } else { dialog.close(); notice(value.message || 'MCP 已添加。'); await loadMcp(); renderMcp(); }
     } catch (e) { error.textContent = e instanceof SyntaxError ? '参数或环境变量的 JSON 格式无效。' : String(e.message || e); error.hidden = false; }
     finally { form.inert = false; }
   }); };

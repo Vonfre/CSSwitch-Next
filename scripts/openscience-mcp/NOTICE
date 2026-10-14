@@ -1,8 +1,0 @@
-OpenScience scientific connectors
-Copyright 2026 InkVell Inc. (Synthetic Sciences)
-https://github.com/synthetic-sciences/openscience
-Source commit: a7b9fa3a8c1bd52a9a0c171de58bc14759a0f850
-Apache License 2.0; see LICENSE.
-
-CSSwitch modifications (2026): standalone type imports and Node network layer.
-Application plugin and file-spill helpers excluded; MCP wrapper and bridge added by CSSwitch.

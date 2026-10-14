@@ -58,6 +58,7 @@ class Proxy(BaseHTTPRequestHandler):
             tls.close()
 
 
+@unittest.skipUnless((Path(__file__).parents[1] / 'openscience-mcp/server.mjs').is_file(), 'Legacy OpenScience bundle was removed')
 class McpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

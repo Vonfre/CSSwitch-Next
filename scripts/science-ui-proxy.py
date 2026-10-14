@@ -65,6 +65,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def handle_request(self):
+        # A running 0.7.2 desktop still probes /health without the port in Host.
+        # Permit only this empty loopback readiness response, so replacing the
+        # bundled script repairs the next open without restarting research.
+        if self.path == '/health' and self.headers.get('Host') == '127.0.0.1' and self.headers.get('Origin') is None:
+            return self.local_reply(200, b'{}', 'application/json')
         origins = {f'http://127.0.0.1:{self.server.server_port}', f'http://localhost:{self.server.server_port}'}
         hosts = {o.split('//')[1] for o in origins}
         if self.headers.get('Host') not in hosts or (self.headers.get('Origin') and self.headers['Origin'] not in origins):

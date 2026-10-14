@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 repo = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description="Probe public-science MCP in an isolated Claude Science session on macOS.")
-parser.add_argument('--prototype', action='store_true', help='Use the earlier minimal Python prototype instead of transplanted OpenScience')
+parser.add_argument('--prototype', action='store_true', help='Use the earlier minimal Python prototype')
 parser.add_argument('--science-bin', type=Path, help="Override the installed Science binary")
 args = parser.parse_args()
 original_home = Path.home()
@@ -99,15 +99,15 @@ class Stub(BaseHTTPRequestHandler):
         tool_results = [c for m in body.get('messages', []) if isinstance(m.get('content'), list) for c in m['content'] if isinstance(c, dict) and c.get('type') == 'tool_result']
         want_pubmed = 'PUBMED_PROBE' in json.dumps(body.get('messages', []))
         want_uniprot = 'UNIPROT_PROBE' in json.dumps(body.get('messages', []))
-        suffix = ('uniprot_fetch' if want_uniprot else 'pubmed_search' if want_pubmed else 'connector_probe') if args.prototype else ('science_fetch' if want_uniprot else 'science_search' if want_pubmed else 'science_list_dbs')
+        suffix = ('uniprot_fetch' if want_uniprot else 'pubmed_search' if want_pubmed else 'connector_probe') if args.prototype else ('get_uniprot_entries' if want_uniprot else 'search_articles')
         if 'repl' in names and not tool_results:
             content = [{'type': 'tool_use', 'id': 'toolu_probe_skill', 'name': 'skill', 'input': {'skill': 'mcp-csswitch-probe', 'human_description': 'Loading scientific connector methods'}}]
             reason = 'tool_use'
         elif 'repl' in names and len(tool_results) == 1:
-            arguments = (', accession="P04637"' if want_uniprot else ', query="BRCA1 breast cancer"' if want_pubmed else '') if args.prototype else (', db="uniprot", id="P04637"' if want_uniprot else ', db="pubmed", query="BRCA1 breast cancer", limit=2' if want_pubmed else '')
+            arguments = (', accession="P04637"' if want_uniprot else ', query="BRCA1 breast cancer"' if want_pubmed else '') if args.prototype else (', accessions=["P04637"], format="fasta"' if want_uniprot else ', query="BRCA1 breast cancer", max_results=2')
             code = f'result = host.mcp("csswitch-probe", "{suffix}"{arguments}); print(result)'
             if want_uniprot and not args.prototype:
-                code = f'result = host.mcp("csswitch-probe", "{suffix}"{arguments}); print({{"db": result["db"], "id": result["id"], "found": result["found"], "record": {{k: result["record"][k] for k in ("primaryAccession", "genes", "organism")}}}})'
+                code = f'result = host.mcp("csswitch-local-genes-ontologies", "{suffix}"{arguments}); print(result)'
             content = [{'type': 'tool_use', 'id': 'toolu_probe_repl', 'name': 'repl', 'input': {'code': code, 'human_description': 'Calling read-only scientific connector'}}]
             reason = 'tool_use'
         else:
@@ -211,7 +211,7 @@ try:
     initial_connectors = manage('list')['connectors']
     assert not hosted_attempts, 'Disabled hosted MCP connected during startup'
     print('PASS management list and native hosted-MCP exclusion', len(initial_connectors), flush=True)
-    created = manage('add_local', {'name': 'csswitch-probe', 'command': '/usr/bin/python3' if args.prototype else node, 'args': [str(repo / 'scripts/science-public-mcp.py' if args.prototype else repo / 'scripts/openscience-mcp/server.mjs')], 'env': {'HTTPS_PROXY': f'http://127.0.0.1:{stub.server_port}', 'https_proxy': f'http://127.0.0.1:{stub.server_port}', 'HTTP_PROXY': f'http://127.0.0.1:{stub.server_port}', 'http_proxy': f'http://127.0.0.1:{stub.server_port}', 'NO_PROXY': '127.0.0.1,localhost,::1', 'no_proxy': '127.0.0.1,localhost,::1'}, 'description': 'Isolated read-only fixture'})
+    created = manage('add_local', {'name': 'csswitch-probe', 'command': '/usr/bin/python3' if args.prototype else str(original_home / '.claude-science/conda/envs/claude-science-mcp/bin/python'), 'args': [str(repo / 'scripts/science-public-mcp.py')] if args.prototype else [str(repo / 'scripts/science-connector-run.py'), '--home', str(original_home), '--profile', 'pubmed'], 'env': {'HTTPS_PROXY': f'http://127.0.0.1:{stub.server_port}', 'https_proxy': f'http://127.0.0.1:{stub.server_port}', 'HTTP_PROXY': f'http://127.0.0.1:{stub.server_port}', 'http_proxy': f'http://127.0.0.1:{stub.server_port}', 'NO_PROXY': '127.0.0.1,localhost,::1', 'no_proxy': '127.0.0.1,localhost,::1'}, 'description': 'Isolated read-only fixture'})
     connector = created['connector']
     sid = connector['id']
     manage('attach', {'id': sid})
@@ -224,11 +224,14 @@ try:
         if isinstance(result, dict) and result.get('status') not in ('pending',): break
         time.sleep(1)
     _, servers = call('/api/agents/OPERON/mcp-servers?include_tools=true', quiet=True)
-    for tool in (('connector_probe', 'pubmed_search', 'uniprot_fetch') if args.prototype else ('science_list_dbs', 'science_search', 'science_fetch')):
+    for tool in (('connector_probe', 'pubmed_search', 'uniprot_fetch') if args.prototype else ('search_articles',)):
         manage('grant', {'id': sid, 'toolName': tool, 'decision': 'allow'})
+    if not args.prototype:
+        genes = manage('add_local', {'name': 'csswitch-local-genes-ontologies', 'command': str(original_home / '.claude-science/conda/envs/claude-science-mcp/bin/python'), 'args': [str(repo / 'scripts/science-connector-run.py'), '--home', str(original_home), '--profile', 'genes-ontologies'], 'env': {'HTTPS_PROXY': f'http://127.0.0.1:{stub.server_port}', 'https_proxy': f'http://127.0.0.1:{stub.server_port}', 'HTTP_PROXY': f'http://127.0.0.1:{stub.server_port}', 'http_proxy': f'http://127.0.0.1:{stub.server_port}', 'NO_PROXY': '127.0.0.1,localhost,::1', 'no_proxy': '127.0.0.1,localhost,::1'}})
+        manage('grant', {'id': genes['connector']['id'], 'toolName': 'get_uniprot_entries', 'decision': 'allow'})
     _, project = call('/api/projects', {'name': 'isolated-connector-probe'})
     pid = project.get('project_id', project.get('id'))
-    for label, request in [('fixture', 'Call science_list_dbs once and report its result.' if not args.prototype else 'Call connector_probe once and report its result.'), ('pubmed', 'PUBMED_PROBE: Call pubmed_search once for BRCA1 breast cancer and report the returned papers.'), ('uniprot', 'UNIPROT_PROBE: Call uniprot_fetch once for P04637 and report the gene and organism.')]:
+    for label, request in [('fixture', 'Call search_articles once and report its result.' if not args.prototype else 'Call connector_probe once and report its result.'), ('pubmed', 'PUBMED_PROBE: Call pubmed_search once for BRCA1 breast cancer and report the returned papers.'), ('uniprot', 'UNIPROT_PROBE: Call uniprot_fetch once for P04637 and report the gene and organism.')]:
         _, frame = call('/api/frames', {'project_id': pid})
         fid = frame['root_frame_id']
         call('/api/frames/' + fid + '/session-config', {'verifier_mode': 'off', 'memory_mode': 'off', 'plan_mode': False, 'ultra_mode': False})
@@ -243,7 +246,7 @@ try:
             # Approve only this fixture's known mock-generated MCP call, once.
             pending = (final.get('output_data') or {}).get('pending_input_requests', [])
             for card in pending:
-                if card.get('kind') != 'local_exec' or card.get('tool') != 'repl' or 'host.mcp("csswitch-probe",' not in card.get('code', ''):
+                if card.get('kind') != 'local_exec' or card.get('tool') != 'repl' or not any(f'host.mcp("{name}",' in card.get('code', '') for name in ('csswitch-probe', 'csswitch-local-genes-ontologies')):
                     raise RuntimeError('Unexpected approval request in isolated probe')
                 code, _ = call('/api/frames/' + fid + '/resolve-input', {'responses': [{'requestId': card['requestId'], 'action': 'allow_once', 'approved': True}]}, quiet=True)
                 if code != 200:
@@ -263,7 +266,7 @@ try:
         data = ast.literal_eval(cell['stdout'].strip())
         marker = data.get('status') == 'CSSWITCH_MCP_PROBE_OK' if label == 'fixture' else bool(data.get('results')) if label == 'pubmed' else data.get('accession') == 'P04637' and 'TP53' in data.get('genes', [])
         if not args.prototype:
-            marker = len(data.get('databases', [])) >= 40 if label == 'fixture' else bool(data.get('results')) if label == 'pubmed' else data.get('found') and data.get('record', {}).get('primaryAccession') == 'P04637' and 'TP53' in json.dumps(data['record'].get('genes'))
+            marker = bool(data.get('pmids')) if label in ('fixture', 'pubmed') else data.get('n_found') == 1 and 'P04637' in data.get('records', {})
         if not marker:
             raise RuntimeError(label + ': public source result failed validation')
         (root / (label + '-result.json')).write_text(json.dumps(data, ensure_ascii=False, indent=2))

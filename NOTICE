@@ -17,7 +17,10 @@ DOMPurify is used under Apache-2.0; see desktop/src/assets/dompurify-LICENSE.txt
 Claude Science and Anthropic names belong to their respective owners.
 This project is not affiliated with or endorsed by Anthropic.
 
-OpenScience database adapters are vendored under Apache-2.0 in mcp/openscience.
+Legacy OpenScience database adapters are retained as source under Apache-2.0
+in mcp/openscience, but are not bundled in the application as of 0.8.0.
 Copyright 2026 InkVell Inc. (Synthetic Sciences). See its LICENSE and NOTICE.
-The generated MCP service bundles Undici and Zod under their MIT licenses;
-see scripts/openscience-mcp for license copies.
+
+Science connector implementations are supplied by the user's installed Claude
+Science runtime. CSSwitch bundles only its own launcher and management bridge;
+no Science implementation source is copied or redistributed.

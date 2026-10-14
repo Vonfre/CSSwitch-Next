@@ -63,7 +63,7 @@ fn start_proxy(
         .arg(ready)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(if cfg!(test) { Stdio::inherit() } else { Stdio::null() })
         .spawn()
         .map_err(|_| "无法启动 Science 页面入口。")?;
     let mut port = None;
@@ -107,6 +107,9 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap();
+        assert!(root.join("scripts/science-ui-proxy.py").is_file());
+        let python = super::super::proc::find_exe("python3").unwrap();
+        eprintln!("Page entry Python: {}", python.display());
         // Run the production launcher and actual Python proxy, without a Science
         // daemon. Entry readiness must never depend on the upstream /health route.
         let (mut child, port) =

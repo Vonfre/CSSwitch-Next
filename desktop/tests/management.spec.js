@@ -5,8 +5,14 @@ async function setup(page, offline = false) {
   await page.addInitScript(({ offline }) => {
     const now = Math.floor(Date.now() / 1000);
     let skills = [{ name: 'paper-reader', description: '阅读科学文献并提取方法', source: 'local', enabled: true }, { name: 'data-analysis', description: '处理实验数据', source: 'anthropic', enabled: true }, { name: 'blocked', description: '<unsafe-skill>', source: 'organization', admin_blocked: true, enabled: false }];
+    window.addManagedFixture = (file = false) => skills.push({name:'lab-notes',description:'实验笔记',source:'csswitch-local',sourceKey:file ? null : 'agents:lab-notes',fingerprint:'old-content',enabled:false,attachedAgents:['OPERON']});
     let connectors = [{ id: 'local:memory', name: 'memory', description: '知识记忆', source: 'local-stdio', transport: 'stdio', attachedAgents: ['OPERON'] }, { id: 'remote', name: 'remote', description: '远程数据库', source: 'custom', transport: 'streamable_http', attachedAgents: [] }];
     const sessions = Array.from({ length: 28 }, (_, i) => ({ key: 'org:session-' + i, id: 'session-' + i, org: 'org', title: i === 0 ? '蛋白质结构研究' : i === 1 ? '<unsafe-session>' : '文献分析 ' + i, project_id: i % 2 ? 'papers' : 'proteins', project_name: i % 2 ? '文献综述' : '蛋白研究', messages: i === 0 ? 101 : 1, model: 'gpt-research', status: 'completed', updated_at: now * 1000 - i * 86400000 }));
+    window.useDesignPreview = () => {
+      skills = [['paper-reader','阅读科学文献，提取研究问题、方法与核心结论。','csswitch-local'],['pubmed-search','检索 PubMed 文献，整理证据与引用。','csswitch-local'],['data-analysis','探索实验数据，进行统计检验并生成图表。','anthropic'],['protein-structure','分析蛋白质结构、置信度与关键结合位点。','csswitch-local'],['lab-notes','整理实验笔记，记录步骤、观察和后续计划。','csswitch-local'],['literature-review','系统梳理文献，构建研究问题与证据框架。','csswitch-local']].map(([name,description,source],i)=>({name,description,source,enabled:i!==4}));
+      const titles=['蛋白质结构研究','单细胞数据分析与批次校正','整理肿瘤免疫相关文献','设计蛋白结合位点验证实验','RNA-seq 差异表达分析','研究计划与实验记录'];
+      sessions.forEach((r,i)=>{r.title=titles[i%titles.length];r.preview=i===0?'比较 AlphaFold 预测结构和实验结构，整理验证方案。':'整理研究步骤、数据处理方法与验证思路。';});
+    };
     const repos = []; const pricing = { 'gpt-research': { input: 2, output: 8, cache_read: 0.2, cache_write: 2.5 } };
     window.testCalls = []; window.__TAURI__ = { core: { invoke: async (cmd, args = {}) => {
       window.testCalls.push({ cmd, args });
@@ -19,8 +25,9 @@ async function setup(page, offline = false) {
         if (op === 'skills_list') return { skills: structuredClone(skills), degraded: Boolean(window.catalogDegraded), localImportAvailable: Boolean(window.localImportAvailable), customAllowed: !window.customSkillsBlocked };
         if (op === 'skills_content') return { content: '---\nname: ' + p.name + '\n---\n<unsafe-content>\n# Methods' };
         if (op === 'skills_enabled') skills.find(s => s.name === p.name).enabled = p.enabled;
+        if (op === 'skills_update') { if(window.updateFails) throw new Error('Science 验证失败，已恢复旧内容。'); skills.find(s=>s.name===p.name).fingerprint='new-content'; }
         if (op === 'skills_remove') skills = skills.filter(s => s.name !== p.name);
-        if (op === 'skills_import') { if (window.importFails) throw new Error('Science HTTP 409：同名技能已存在。'); skills.push({ name: p.filename.replace(/\.zip|\.md/g, ''), source: window.catalogDegraded ? 'csswitch-local' : 'local', description: '新技能' }); return { message: 'Skill 已导入 Science。' }; }
+        if (op === 'skills_import') { if (window.importFails || window.failFile === p.filename) throw new Error('Science HTTP 409：同名技能已存在。'); skills.push({ name: p.filename.replace(/\.zip|\.md/g, ''), source: window.catalogDegraded ? 'csswitch-local' : 'local', description: '新技能' }); return { name:p.filename.replace(/\.(zip|skill|md)$/, ''),message: 'Skill 已导入 Science。' }; }
         if (op === 'list') return { connectors: structuredClone(connectors), customAllowed: true };
         if (op === 'add_local' || op === 'add_remote') connectors.push({ id: 'local:' + p.name, name: p.name, source: op === 'add_local' ? 'local-stdio' : 'custom', transport: op === 'add_local' ? 'stdio' : p.transport, attachedAgents: p.attach ? ['OPERON'] : [] });
         return { message: '已更新。' };
@@ -28,14 +35,18 @@ async function setup(page, offline = false) {
       if (cmd === 'workspace_manage') {
         const { operation: op, params: p } = args;
         if (op === 'skills_discover') return { skills: [{ key: 'codex:paper-reader', name: 'paper-reader', directory: 'paper-reader', source: 'codex', description: '已安装技能', path: '~/.codex/skills/paper-reader' }, { key: 'agents:lab-notes', name: 'lab-notes', directory: 'lab-notes', source: 'agents', description: '整理实验笔记', path: '~/.agents/skills/lab-notes' }], repos: structuredClone(repos) };
-        if (op === 'skill_bundle') return { filename: 'lab-notes.zip', bundle: 'dGVzdA==' };
+        if (op === 'skill_bundle') return { filename: p.key.split(':').pop() + '.zip', bundle: 'dGVzdA==', sourceKey:p.key, fingerprint:'new-content' };
+        if (op === 'skill_import_plan') return { skills:[{name:p.filename.replace(/\.(zip|skill|md)$/, ''),filename:p.filename,bundle:p.bundle}] };
         if (op === 'repo_add') { if (window.repoFails) throw new Error('无法下载 GitHub 仓库。'); repos.push({ key: p.repo + '@' + p.branch, repo: p.repo, branch: p.branch }); }
         if (op === 'repo_remove') repos.splice(repos.findIndex(r => r.key === p.key), 1);
         if (op === 'sessions_list') return { sessions: structuredClone(sessions) };
         if (op === 'session_meta') Object.assign(sessions.find(s => s.key === p.key), p.changes);
         if (op === 'session_messages') {
           const many = p.key === 'org:session-0', total = many ? 101 : 1;
-          return { total, offset: p.offset, has_more: many && p.offset === 0, messages: Array.from({ length: many && p.offset === 0 ? 100 : 1 }, (_, i) => ({ idx: p.offset + i, role: i % 2 ? 'assistant' : 'user', text: '<unsafe-message>\n研究方法 ' + (p.offset + i + 1) })) };
+          return { total, offset: p.offset, has_more: many && p.offset === 0, messages: Array.from({ length: many && p.offset === 0 ? 100 : 1 }, (_, i) => {
+            const idx=p.offset+i, text=idx===0 ? '请比较 AlphaFold 预测结构和实验结构，整理一份验证方案。' : idx===1 ? window.readerFixture || '## 结构验证方案\n\n先检查预测置信度，再结合实验数据验证关键位点。\n\n- **整体结构**：比较 TM-score 和主链 RMSD。\n- **局部区域**：检查 pLDDT 与 PAE。\n- **实验验证**：优先选择结合位点与低置信度区域。\n\n```python\nfrom Bio.PDB import PDBParser\nstructure = PDBParser().get_structure("target", "target.pdb")\n```\n\n| 指标 | 用途 |\n| --- | --- |\n| pLDDT | 局部置信度 |\n| PAE | 域间相对位置 |' : '<unsafe-message>\n研究方法 '+(idx+1);
+            return {idx,role:i%2?'assistant':'user',text,...(idx===1?{blocks:[{type:'text',text},{type:'tool_use',name:'PubMed',text:'{"query":"protein structure validation"}'},{type:'tool_result',text:'检索完成：找到 12 篇相关文献。'}]}:{})};
+          }) };
         }
         if (op === 'pricing_get') return { pricing: structuredClone(pricing) };
         if (op === 'pricing_save') pricing[p.model] = p.rates;
@@ -83,8 +94,10 @@ test('file Skill import uses native API and failed imports are visible', async (
   await setup(page); await page.getByRole('button', { name: 'Skills 管理', exact: true }).click();
   await page.evaluate(() => { window.importFails = true; });
   await page.locator('#skillFile').setInputFiles({ name: 'new-skill.md', mimeType: 'text/markdown', buffer: Buffer.from('---\nname: new-skill\ndescription: Fixture\n---\n') });
+  await page.getByRole('button',{name:'开始批量导入',exact:true}).click();
   await expect(page.locator('#notice')).toContainText('409');
   await page.evaluate(() => { window.importFails = false; }); await page.locator('#skillFile').setInputFiles({ name: 'new-skill.md', mimeType: 'text/markdown', buffer: Buffer.from('---\nname: new-skill\n---\n') });
+  await page.getByRole('button',{name:'开始批量导入',exact:true}).click();
   await expect(page.locator('#skillRows')).toContainText('new-skill');
   const call = await page.evaluate(() => window.testCalls.find(c => c.args.operation === 'skills_import')); expect(call.args.params.bundle).toBeTruthy();
 });
@@ -170,6 +183,7 @@ test('MCP search and cc-switch JSON import validate before native mutations, ski
 
 test('management pages fit small windows, support dark mode and have no script errors', async ({ page }) => {
   const errors = []; page.on('pageerror', e => errors.push(e.message)); await setup(page); mkdirSync('../artifacts/screenshots', { recursive: true });
+  await page.evaluate(()=>window.useDesignPreview());
   for (const [width, height] of [[1200, 820], [980, 720], [390, 844]]) {
     await page.setViewportSize({ width, height });
     for (const [label, id] of [['MCP 管理', 'mcp'], ['Skills 管理', 'skills'], ['用量统计', 'usage'], ['会话管理', 'sessions']]) {
@@ -178,7 +192,90 @@ test('management pages fit small windows, support dark mode and have no script e
       await page.screenshot({ path: `../artifacts/screenshots/${id}-workspace-${width}.png`, fullPage: true });
     }
   }
-  await page.getByRole('button', { name: '查看 蛋白质结构研究', exact: true }).click(); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect(page.locator('#sessionReader')).toContainText('蛋白质结构研究'); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: '切换深浅主题' }).click(); await page.screenshot({ path: '../artifacts/screenshots/session-reader-dark.png', fullPage: true });
   await expect(page.locator('unsafe-skill, unsafe-session, unsafe-message')).toHaveCount(0); expect(errors).toEqual([]);
+});
+
+test('Skills batch selection respects policy and keeps successful operations when another item is skipped', async ({ page }) => {
+  await setup(page); await page.getByRole('button', {name:'Skills 管理',exact:true}).click();
+  await page.getByLabel('全选当前页 Skills',{exact:true}).check();
+  await expect(page.getByLabel('选择 blocked',{exact:true})).toBeDisabled();
+  await expect(page.locator('#skillBatchBar')).toContainText('已选 2 个');
+  await page.getByRole('button',{name:'批量停用',exact:true}).click();
+  await expect(page.getByRole('switch',{name:'启用 paper-reader',exact:true})).toHaveAttribute('aria-checked','false');
+  await expect(page.getByRole('switch',{name:'启用 data-analysis',exact:true})).toHaveAttribute('aria-checked','false');
+  await page.getByLabel('全选当前页 Skills',{exact:true}).check();
+  await page.getByRole('button',{name:'卸载所选',exact:true}).click(); await page.getByRole('button',{name:'确认',exact:true}).click();
+  await expect(page.locator('#skillRows')).not.toContainText('paper-reader');
+  await expect(page.locator('#skillRows')).toContainText('data-analysis');
+  await expect(page.locator('#skillReport')).toContainText('受组织策略或来源限制');
+});
+
+test('batch file import reports individual failures and continues to import the next skill', async ({ page }) => {
+  await setup(page); await page.getByRole('button',{name:'Skills 管理',exact:true}).click();
+  await page.evaluate(()=>{window.failFile='first.md';});
+  await page.locator('#skillFile').setInputFiles(['first','second'].map(name=>({name:name+'.md',mimeType:'text/markdown',buffer:Buffer.from(`---\nname: ${name}\ndescription: Test\n---\n`)})));
+  await expect(page.getByRole('heading',{name:'导入 2 个 Skills 文件'})).toBeVisible();
+  await page.getByRole('button',{name:'开始批量导入',exact:true}).click();
+  await expect(page.locator('#skillReport')).toContainText('first'); await expect(page.locator('#skillReport')).toContainText('409');
+  await expect(page.locator('#skillReport')).toContainText('second'); await expect(page.locator('#skillRows')).toContainText('second');
+});
+
+test('check and update a managed skill preserves its disabled state and original source', async ({ page }) => {
+  await setup(page); await page.evaluate(()=>{window.addManagedFixture(); window.catalogDegraded=true; window.localImportAvailable=true;});
+  await page.getByRole('button',{name:'Skills 管理',exact:true}).click();
+  await page.getByRole('button',{name:'检查更新',exact:true}).click();
+  await expect(page.locator('#content')).toContainText('1 个可更新');
+  await page.getByLabel('Skills 状态').selectOption('updates'); await expect(page.locator('.skill-row')).toHaveCount(1);
+  await page.getByRole('button',{name:'全部更新',exact:true}).click(); await page.getByRole('button',{name:'确认',exact:true}).click();
+  await expect(page.locator('#skillReport')).toContainText('1 项完成');
+  await page.getByLabel('Skills 状态').selectOption('all');
+  await expect(page.getByRole('switch',{name:'启用 lab-notes',exact:true})).toHaveAttribute('aria-checked','false');
+  const update=await page.evaluate(()=>window.testCalls.find(c=>c.args.operation==='skills_update').args.params);
+  expect(update.sourceKey).toBe('agents:lab-notes'); expect(update.expectedFingerprint).toBe('old-content');
+  await page.getByRole('button',{name:'检查更新',exact:true}).click(); await expect(page.locator('#notice')).toContainText('0 个技能可更新');
+});
+
+test('session content opens immediately, renders Markdown, filters tools, searches loaded content and navigates outline', async ({ page }) => {
+  await setup(page); await page.getByRole('button',{name:'会话管理',exact:true}).click();
+  await expect(page.locator('.markdown h2')).toContainText('结构验证方案'); await expect(page.locator('.markdown table')).toHaveCount(1);
+  await expect(page.getByRole('button',{name:'复制代码',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'工具',exact:true}).click();
+  await expect(page.locator('.message')).toHaveCount(1); await expect(page.locator('.message-step')).toHaveCount(2);
+  await page.locator('.message-step').first().locator('summary').click(); await expect(page.locator('.message-step').first()).toContainText('protein structure validation');
+  await page.getByRole('button',{name:'对话',exact:true}).click(); await expect(page.locator('.message-step')).toHaveCount(0);
+  await page.getByLabel('搜索会话内容').fill('结构验证方案'); await expect(page.locator('.message')).toHaveCount(1);
+  await page.getByLabel('搜索会话内容').fill(''); await page.getByRole('button',{name:'切换对话目录',exact:true}).click();
+  await expect(page.locator('#sessionOutline')).toBeVisible(); await page.locator('[data-message-jump]').nth(4).click();
+  await expect(page.locator('unsafe-message, unsafe-session, unsafe-skill, .markdown script, .markdown img')).toHaveCount(0);
+});
+
+test('sidebar collapse persists and navigation has exactly one active page', async ({ page }) => {
+  await setup(page); await page.getByRole('button',{name:'收起导航',exact:true}).click();
+  await expect(page.locator('html')).toHaveAttribute('data-sidebar','collapsed');
+  await page.getByRole('button',{name:'Skills 管理',exact:true}).click();
+  await expect(page.locator('.nav-item.active')).toHaveCount(1); await expect(page.locator('.nav-item.active')).toHaveText('Skills 管理');
+  await page.reload(); await expect(page.getByRole('button',{name:'展开导航',exact:true})).toBeVisible();
+});
+
+test('manually imported skills update from new files only when the user selects the update option', async ({page})=>{
+  await setup(page); await page.evaluate(()=>{window.addManagedFixture(true);window.catalogDegraded=true;window.localImportAvailable=true;});
+  await page.getByRole('button',{name:'Skills 管理',exact:true}).click();
+  await page.locator('#skillFile').setInputFiles({name:'lab-notes.md',mimeType:'text/markdown',buffer:Buffer.from('---\nname: lab-notes\ndescription: Updated\n---\n')});
+  await page.getByLabel('更新通过文件导入的同名本地技能').check();
+  await page.getByRole('button',{name:'开始批量导入',exact:true}).click();
+  await expect(page.locator('#skillReport')).toContainText('1 项完成');
+  const update=await page.evaluate(()=>window.testCalls.find(c=>c.args.operation==='skills_update').args.params);
+  expect(update.name).toBe('lab-notes'); expect(update.expectedFingerprint).toBe('old-content');
+  await expect(page.getByRole('switch',{name:'启用 lab-notes',exact:true})).toHaveAttribute('aria-checked','false');
+});
+
+test('untrusted Markdown cannot execute HTML, retain unsafe URLs or load remote images', async ({page})=>{
+  const remote=[];page.on('request',r=>{if(r.url().includes('tracking.example'))remote.push(r.url());});
+  await setup(page);await page.evaluate(()=>{window.readerFixture='<img src="https://tracking.example/pixel" onerror="window.readerExecuted=true">\n\n<script>window.readerExecuted=true</script>\n\n[unsafe](javascript:window.readerExecuted=true)\n\n![remote image](https://tracking.example/image.png)';});
+  await page.getByRole('button',{name:'会话管理',exact:true}).click();
+  await expect(page.locator('#sessionReader')).toContainText('remote image');
+  await expect(page.locator('.markdown img, .markdown script, .markdown [onerror], .markdown a[href^="javascript:"]')).toHaveCount(0);
+  expect(await page.evaluate(()=>Boolean(window.readerExecuted))).toBe(false);expect(remote).toEqual([]);
 });

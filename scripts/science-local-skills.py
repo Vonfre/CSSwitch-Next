@@ -6,6 +6,7 @@ through Science's API. This module handles inert files only, without DB writes.
 """
 import base64
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -14,6 +15,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import tempfile
 from contextlib import contextmanager
 import zipfile
 
@@ -26,6 +28,23 @@ MARKER = '.csswitch-local.json'
 
 class LocalSkillError(Exception):
     pass
+
+
+def fingerprint(files):
+    digest = hashlib.sha256()
+    for name, content in sorted(files.items()):
+        encoded = name.encode('utf-8')
+        digest.update(len(encoded).to_bytes(4, 'big') + encoded)
+        digest.update(len(content).to_bytes(8, 'big') + content)
+    return digest.hexdigest()
+
+
+def source_key(value):
+    if value is not None and (not isinstance(value, str) or len(value) > 1000
+                              or re.search(r'[\x00-\x1f]', value)
+                              or not value.startswith(('codex:', 'agents:', 'claude:', 'repo:'))):
+        raise LocalSkillError('技能更新来源无效。')
+    return value
 
 
 def guarded(path):
@@ -178,7 +197,38 @@ class LocalSkills:
             return None
         if value.get('owner') != 'CSSwitch' or value.get('name') != name or actual != name:
             return None
-        return {'name': name, 'description': description, 'source': 'csswitch-local'}
+        files = self.files(path)
+        current = fingerprint(files)
+        return {'name': name, 'description': description, 'source': 'csswitch-local',
+                'sourceKey': value.get('sourceKey'), 'fingerprint': current,
+                'locallyModified': bool(value.get('fingerprint') and current != value['fingerprint'])}
+
+    def files(self, path):
+        files, total = {}, 0
+        for base, dirs, names in os.walk(path, followlinks=False):
+            for part in dirs + names:
+                if (Path(base) / part).is_symlink():
+                    raise LocalSkillError('技能目录含符号链接，请先检查目录内容。')
+            for part in names:
+                file = Path(base) / part
+                if file.name == MARKER and file.parent == path:
+                    continue
+                if not regular(file):
+                    raise LocalSkillError('技能目录包含特殊文件。')
+                total += file.stat().st_size
+                if total > MAX_BYTES or len(files) >= MAX_FILES:
+                    raise LocalSkillError('已安装技能超过管理限制，请先检查目录。')
+                files[file.relative_to(path).as_posix()] = file.read_bytes()
+        return files
+
+    def write_files(self, dest, name, files, origin=None):
+        for rel, content in sorted(files.items(), key=lambda item: item[0] == 'SKILL.md'):
+            path = guarded(dest / rel)
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with path.open('xb') as stream:
+                stream.write(content)
+        (dest / MARKER).write_text(json.dumps({'owner': 'CSSwitch', 'name': name,
+            'version': 2, 'fingerprint': fingerprint(files), 'sourceKey': source_key(origin)}))
 
     def disabled(self, user_id):
         try:
@@ -188,7 +238,7 @@ class LocalSkills:
         except sqlite3.Error:
             raise LocalSkillError('Science 技能状态不可读，请检查 Science 版本后重试。') from None
 
-    def install(self, name, files, reserved):
+    def install(self, name, files, reserved, origin=None):
         if not NAME.fullmatch(name):
             raise LocalSkillError('Skill 名称无效。')
         aliases = {name, name.removeprefix('operon-'), 'operon-' + name}
@@ -201,15 +251,49 @@ class LocalSkills:
             except FileExistsError:
                 raise LocalSkillError('同名 Skill 已存在，未覆盖任何文件。') from None
             try:
-                for rel, content in sorted(files.items(), key=lambda item: item[0] == 'SKILL.md'):
-                    path = guarded(dest / rel)
-                    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    with path.open('xb') as stream:
-                        stream.write(content)
-                (dest / MARKER).write_text(json.dumps({'owner': 'CSSwitch', 'name': name, 'version': 1}))
+                self.write_files(dest, name, files, origin)
             except BaseException:
                 shutil.rmtree(dest)
                 raise
+
+    @contextmanager
+    def replacing(self, name, files, expected, origin=None):
+        """Keep the complete old draft until Science verifies the replacement."""
+        with self.locked():
+            previous = self.info(name)
+            if not previous:
+                raise LocalSkillError('仅可更新 CSSwitch 管理的本地技能。')
+            if previous['locallyModified']:
+                raise LocalSkillError('技能已有本地修改，已跳过更新以保留你的内容。')
+            if not expected or previous['fingerprint'] != expected:
+                raise LocalSkillError('技能内容已变化，请重新检查更新。')
+            origin = source_key(origin)
+            if previous['sourceKey'] and origin != previous['sourceKey']:
+                raise LocalSkillError('更新来源与安装来源不一致，请使用原来源。')
+            if metadata(files['SKILL.md'])[0] != name:
+                raise LocalSkillError('新技能 name 与已安装名称不一致。')
+            dest = guarded(self.root / name)
+            stage = Path(tempfile.mkdtemp(prefix='.csswitch-stage-', dir=self.root))
+            backup = Path(tempfile.mkdtemp(prefix='.csswitch-backup-', dir=self.root))
+            moved, committed = False, False
+            try:
+                self.write_files(stage, name, files, origin)
+                backup.rmdir()
+                os.replace(dest, backup)
+                moved = True
+                os.replace(stage, dest)
+                yield
+                committed = True
+            except BaseException:
+                if moved:
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    os.replace(backup, dest)
+                raise
+            finally:
+                if stage.exists(): shutil.rmtree(stage)
+                # Keep the backup if rollback itself fails (permissions/I/O).
+                if committed and backup.exists(): shutil.rmtree(backup)
 
     def remove(self, name):
         with self.locked():

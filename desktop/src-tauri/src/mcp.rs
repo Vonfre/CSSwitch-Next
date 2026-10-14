@@ -21,6 +21,7 @@ pub fn manage(root: &Path, operation: &str, mut params: Value) -> Result<Value, 
         "skills_content",
         "skills_enabled",
         "skills_import",
+        "skills_update",
         "skills_remove",
     ]
     .contains(&operation)

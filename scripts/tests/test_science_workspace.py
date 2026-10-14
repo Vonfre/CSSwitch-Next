@@ -51,6 +51,9 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(first['has_more'])
         self.assertIn('[工具调用：search]', first['messages'][0]['text'])
         self.assertIn('<script>', first['messages'][0]['text'])
+        self.assertEqual(first['messages'][0]['blocks'][1]['type'], 'tool_use')
+        self.assertEqual(first['messages'][0]['blocks'][1]['name'], 'search')
+        self.assertIn('<script>', self.work.sessions()['sessions'][0]['preview'])
         last = self.work.run('session_messages', {'key': 'org-fixture:root1', 'offset': 100})
         self.assertEqual(len(last['messages']), 3)
         self.assertFalse(last['has_more'])
@@ -100,6 +103,38 @@ class WorkspaceTests(unittest.TestCase):
     def test_skill_bundle_size_limit(self):
         p = self.local_skill(); (p / 'big').write_bytes(b'x' * (w.MAX_BUNDLE + 1))
         with self.assertRaises(w.WorkspaceError): self.work.skill_bundle('codex:paper-helper')
+
+    def test_batch_archive_prevalidates_skills_and_preserves_support_files(self):
+        content = io.BytesIO()
+        with zipfile.ZipFile(content, 'w') as z:
+            for name in ('one', 'two'):
+                z.writestr(f'pack/{name}/SKILL.md', f'---\nname: {name}\ndescription: Fixture\n---\n# Skill')
+                z.writestr(f'pack/{name}/references/readme.md', 'Reference')
+            z.writestr('pack/README.md', 'Collection')
+        plan = self.work.run('skill_import_plan', {'filename':'collection.zip','bundle':base64.b64encode(content.getvalue()).decode()})
+        self.assertEqual({s['name'] for s in plan['skills']}, {'one','two'})
+        for skill in plan['skills']:
+            name, _, files = w.local_skill_files.unpack(skill['filename'], skill['bundle'])
+            self.assertEqual(name,skill['name'])
+            self.assertEqual(files['references/readme.md'],b'Reference')
+
+    def test_batch_archive_rejects_special_files_and_published_markers(self):
+        for path, mode in [('pack/test/device',0o020600), ('pack/test/.catalog_stamp',0), ('../escape',0)]:
+            content=io.BytesIO()
+            with zipfile.ZipFile(content,'w') as z:
+                z.writestr('pack/test/SKILL.md','---\nname: test\ndescription: Fixture\n---\n')
+                info=zipfile.ZipInfo(path);info.external_attr=mode<<16;z.writestr(info,b'unsafe')
+            with self.assertRaises(w.WorkspaceError):
+                self.work.import_plan({'filename':'test.zip','bundle':base64.b64encode(content.getvalue()).decode()})
+
+    def test_source_bundle_hash_matches_the_installed_package_and_detects_reference_edits(self):
+        p=self.local_skill()
+        first=self.work.skill_bundle('codex:paper-helper')
+        _,_,files=w.local_skill_files.unpack(first['filename'],first['bundle'])
+        self.assertEqual(first['fingerprint'],w.local_skill_files.fingerprint(files))
+        self.assertEqual(first['sourceKey'],'codex:paper-helper')
+        (p/'references/method.md').write_text('Updated reference')
+        self.assertNotEqual(self.work.skill_bundle('codex:paper-helper')['fingerprint'], first['fingerprint'])
 
     def test_github_discovery_packages_only_selected_skill(self):
         repo = {'key': 'org/repo@main', 'repo': 'org/repo', 'branch': 'main'}

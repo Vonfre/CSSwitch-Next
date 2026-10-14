@@ -6,6 +6,7 @@ No skill code is executed. Imports are packaged for the Science management API.
 import base64
 import hashlib
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -21,6 +22,9 @@ import zipfile
 
 MAX_BUNDLE = 4 * 1024 * 1024
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
+_spec = importlib.util.spec_from_file_location('local_skill_files', Path(__file__).with_name('science-local-skills.py'))
+local_skill_files = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(local_skill_files)
 
 
 class WorkspaceError(Exception):
@@ -81,7 +85,8 @@ def safe_zip(z):
         raise WorkspaceError('仓库解压内容超过限制。')
     for f in files:
         p = PurePosixPath(f.filename)
-        if p.is_absolute() or '..' in p.parts or '\\' in f.filename or stat.S_ISLNK(f.external_attr >> 16):
+        mode = f.external_attr >> 16
+        if p.is_absolute() or '..' in p.parts or '\\' in f.filename or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)) or f.flag_bits & 1:
             raise WorkspaceError('压缩包包含不安全的路径或符号链接。')
     return files
 
@@ -93,7 +98,38 @@ def bundle(files, name):
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         for rel, content in files:
             z.writestr(name + '/' + rel, content)
-    return {'filename': name + '.zip', 'bundle': base64.b64encode(out.getvalue()).decode()}
+    digest = hashlib.sha256()
+    for rel, content in sorted(files):
+        encoded = rel.encode('utf-8')
+        digest.update(len(encoded).to_bytes(4, 'big') + encoded)
+        digest.update(len(content).to_bytes(8, 'big') + content)
+    return {'filename': name + '.zip', 'bundle': base64.b64encode(out.getvalue()).decode(),
+            'fingerprint': digest.hexdigest()}
+
+
+def message_blocks(content):
+    blocks = content if isinstance(content, list) else [{'type': 'text', 'text': content}]
+    result, remaining = [], 60000
+    for block in blocks:
+        if remaining <= 0: break
+        if isinstance(block, str): block = {'type': 'text', 'text': block}
+        if not isinstance(block, dict): continue
+        kind = block.get('type', 'text')
+        name = ''
+        if kind in ('text', 'thinking'):
+            text = block.get('text') or block.get('thinking') or ''
+        elif kind == 'tool_use':
+            name = str(block.get('name', '工具'))[:200]
+            text = json.dumps(block.get('input', {}), ensure_ascii=False, indent=2)
+        elif kind == 'tool_result':
+            raw = block.get('content', '')
+            text = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, indent=2)
+        else:
+            kind, text = 'attachment', '[' + str(kind)[:100] + ']'
+        if not isinstance(text, str): text = json.dumps(text, ensure_ascii=False)
+        result.append({'type': kind, 'name': name, 'text': text[:remaining], 'truncated': len(text) > remaining})
+        remaining -= len(text)
+    return result
 
 
 class Workspace:
@@ -129,9 +165,13 @@ class Workspace:
                     fields = ['f.id', 'f.project_id', 'f.created_at', 'f.updated_at']
                     for k in ['name', 'model', 'status', 'input_tokens', 'output_tokens', 'total_cost', 'is_hidden']:
                         fields.append('f.' + k if k in columns else 'NULL AS ' + k)
-                    query = 'SELECT ' + ','.join(fields) + ', p.name AS project_name, (SELECT COUNT(*) FROM frame_messages m WHERE m.frame_id = f.id) AS messages FROM frames f LEFT JOIN projects p ON f.project_id=p.id WHERE f.parent_frame_id IS NULL ORDER BY f.updated_at DESC LIMIT 5000'
+                    query = 'SELECT ' + ','.join(fields) + ', p.name AS project_name, (SELECT COUNT(*) FROM frame_messages m WHERE m.frame_id = f.id) AS messages, (SELECT msg_json FROM frame_messages m WHERE m.frame_id=f.id ORDER BY idx LIMIT 1) AS preview_json FROM frames f LEFT JOIN projects p ON f.project_id=p.id WHERE f.parent_frame_id IS NULL ORDER BY f.updated_at DESC LIMIT 5000'
                     for r in db.execute(query):
                         item = dict(r)
+                        try:
+                            preview = json.loads(item.pop('preview_json') or '{}')
+                            item['preview'] = next((b['text'][:240] for b in message_blocks(preview.get('content', '')) if b['type'] == 'text'), '')
+                        except (ValueError, AttributeError): item['preview'] = ''
                         if item.pop('is_hidden', False):
                             continue
                         key = path.parent.name + ':' + item['id']
@@ -188,7 +228,8 @@ class Workspace:
                         content = '\n\n'.join(parts)
                     elif not isinstance(content, str):
                         content = json.dumps(content, ensure_ascii=False)
-                    messages.append({'idx': row['idx'], 'role': m.get('role', 'system'), 'text': content[:60000], 'truncated': len(content) > 60000})
+                    messages.append({'idx': row['idx'], 'role': m.get('role', 'system'), 'text': content[:60000],
+                                     'blocks': message_blocks(m.get('content', '')), 'truncated': len(content) > 60000})
                 except (ValueError, AttributeError):
                     messages.append({'idx': row['idx'], 'role': 'system', 'text': '[消息格式无法解析]'})
         return {'messages': messages, 'total': count, 'offset': offset, 'has_more': offset + len(messages) < count}
@@ -296,7 +337,46 @@ class Workspace:
                     total += p.stat().st_size
                     if total > MAX_BUNDLE: raise WorkspaceError('Skill 超过 4 MB。')
                     files.append((p.relative_to(path).as_posix(), p.read_bytes()))
-        return bundle(files, name)
+        return {**bundle(files, name), 'sourceKey': item['key']}
+
+    def import_plan(self, p):
+        """Split a multi-skill archive into individually validated native imports."""
+        try:
+            filename, encoded = p.get('filename'), p.get('bundle')
+            if not isinstance(filename, str) or Path(filename).suffix.lower() not in ('.md', '.zip', '.skill'):
+                raise WorkspaceError('请选择 Markdown、ZIP 或 .skill。')
+            content = base64.b64decode(encoded, validate=True)
+            if not content or len(content) > MAX_BUNDLE:
+                raise WorkspaceError('导入文件不能超过 4 MB。')
+            if Path(filename).suffix.lower() == '.md':
+                name, _, _ = local_skill_files.unpack(filename, encoded)
+                return {'skills': [{'name': name, 'filename': filename, 'bundle': encoded}]}
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                entries = safe_zip(archive)
+                if sum(f.file_size for f in entries) > 16 * 1024 * 1024:
+                    raise WorkspaceError('批量技能包解压内容不能超过 16 MB。')
+                roots = sorted({PurePosixPath(f.filename).parent for f in entries
+                                if not f.is_dir() and (f.filename.endswith('/SKILL.md') or f.filename == 'SKILL.md')},
+                               key=lambda r: (len(r.parts), str(r)))
+                roots = [r for i, r in enumerate(roots) if not any(r.is_relative_to(parent) for parent in roots[:i])]
+                if not roots or len(roots) > 50:
+                    raise WorkspaceError('压缩包需要包含 1–50 个 Skills。')
+                skills = []
+                for root in roots:
+                    files = []
+                    for entry in entries:
+                        path = PurePosixPath(entry.filename)
+                        if entry.is_dir() or not path.is_relative_to(root) or '__MACOSX' in path.parts or path.name == '.DS_Store' or path.name.startswith('._'):
+                            continue
+                        files.append((path.relative_to(root).as_posix(), archive.read(entry)))
+                    pkg = bundle(files, 'skill')
+                    name, _, _ = local_skill_files.unpack(pkg['filename'], pkg['bundle'])
+                    skills.append({'name': name, 'filename': name + '.zip', 'bundle': pkg['bundle']})
+                return {'skills': skills}
+        except local_skill_files.LocalSkillError as error:
+            raise WorkspaceError(str(error)) from None
+        except (ValueError, TypeError, zipfile.BadZipFile, RuntimeError):
+            raise WorkspaceError('技能包损坏或编码无效。') from None
 
     def run(self, operation, p):
         if operation == 'sessions_list': return self.sessions()
@@ -318,6 +398,7 @@ class Workspace:
             return {'message': '会话显示设置已保存。'}
         if operation == 'skills_discover': return self.discover()
         if operation == 'skill_bundle': return self.skill_bundle(p.get('key'))
+        if operation == 'skill_import_plan': return self.import_plan(p)
         if operation == 'repo_add': return self.repo_add(p)
         if operation == 'repo_remove':
             prefs = self.preferences()
@@ -342,7 +423,7 @@ class Workspace:
 def main():
     signal.alarm(55)
     try:
-        data = json.loads(sys.stdin.read(1024 * 1024))
+        data = json.loads(sys.stdin.read(6 * 1024 * 1024))
         value = Workspace(data['home'], data['data'], data['config']).run(data['operation'], data.get('params', {}))
         print(json.dumps({'ok': True, 'value': value}, ensure_ascii=False))
     except WorkspaceError as e:

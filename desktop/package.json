@@ -1,7 +1,7 @@
 {
   "name": "csswitch-next",
   "private": true,
-  "version": "0.6.1",
+  "version": "0.7.0",
   "type": "module",
   "scripts": {
     "tauri": "tauri",
@@ -10,7 +10,7 @@
     "build": "tauri build --bundles app,dmg",
     "preview": "python3 -m http.server 4178 --bind 127.0.0.1 --directory src",
     "test:ui": "playwright test",
-    "check": "node --check src/main.js && node --check src/providers.js && node --check src/mcp.js && node --check src/skills.js && node --check src/sessions.js && node --check src/usage.js && node --check src/updater.js",
+    "check": "node --check src/main.js && node --check src/providers.js && node --check src/mcp.js && node --check src/skills.js && node --check src/sessions.js && node --check src/reader.js && node --check src/usage.js && node --check src/updater.js",
     "build:mcp": "node scripts/build-mcp.mjs"
   },
   "devDependencies": {
@@ -19,7 +19,9 @@
     "esbuild": "^0.28.2"
   },
   "dependencies": {
+    "dompurify": "3.3.3",
     "lucide": "^0.468.0",
+    "marked": "16.4.0",
     "undici": "^6.29.0",
     "zod": "^4.6.6"
   }

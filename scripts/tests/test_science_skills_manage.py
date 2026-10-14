@@ -41,7 +41,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/skills/catalog/') and self.path.endswith('/content?path=SKILL.md'):
             name = self.path.split('/')[4]
             path = self.server.skills_root/name/'SKILL.md'
-            if path.is_file(): return self.respond(200, {'content': path.read_text()})
+            if path.is_file(): return self.respond(200, {'content': 'corrupt' if self.server.corrupt_content else path.read_text()})
         self.respond(404, {'error': 'private-error-must-not-leak'})
 
     def do_POST(self):
@@ -107,6 +107,7 @@ class SkillsBridgeTests(unittest.TestCase):
         self.server.degraded = False
         self.server.attach_fails = False
         self.server.attached = []
+        self.server.corrupt_content = False
 
     def tearDown(self): self.temp.cleanup()
 
@@ -143,6 +144,28 @@ class SkillsBridgeTests(unittest.TestCase):
         with self.assertRaisesRegex(bridge.BridgeError, '安装新版'):
             self.client().run('skills_import', self.local_params())
         self.assertFalse((self.server.skills_root/'local-fixture').exists())
+
+    def test_local_update_preserves_disabled_state_binding_and_rolls_back_api_failure(self):
+        self.server.degraded = True
+        client = self.local_client()
+        params = {**self.local_params(), 'sourceKey':'codex:local-fixture'}
+        client.run('skills_import', params)
+        client.run('skills_enabled', {'name':'local-fixture','enabled':False})
+        item = next(s for s in client.run('skills_list', {})['skills'] if s['name']=='local-fixture')
+        content = base64.b64decode(params['bundle']) + b'\nUpdated content'
+        update = {**params, 'name':'local-fixture', 'bundle':base64.b64encode(content).decode(), 'expectedFingerprint':item['fingerprint']}
+        self.server.corrupt_content = True
+        with self.assertRaises(bridge.BridgeError): client.run('skills_update', update)
+        self.assertEqual((self.server.skills_root/'local-fixture/SKILL.md').read_bytes(), base64.b64decode(params['bundle']))
+        self.server.corrupt_content = False
+        client.run('skills_update', update)
+        self.assertEqual((self.server.skills_root/'local-fixture/SKILL.md').read_bytes(), content)
+        self.assertEqual(self.server.attached, ['local-fixture'])
+        current = next(s for s in client.run('skills_list', {})['skills'] if s['name']=='local-fixture')
+        self.assertFalse(current['enabled'])
+        self.assertEqual(current['sourceKey'], 'codex:local-fixture')
+        self.server.allowed = False
+        with self.assertRaises(bridge.BridgeError): client.run('skills_update',update)
 
     def test_failed_native_attachment_rolls_back_local_files(self):
         self.server.degraded = True

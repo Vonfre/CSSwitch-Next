@@ -12,6 +12,8 @@ CC Switch: https://github.com/farion1231/cc-switch (MIT), UI workflow reference;
 no React component source copied.
 
 Lucide icons retain their ISC license in desktop/src/assets/lucide-LICENSE.txt.
+Marked retains its MIT license in desktop/src/assets/marked-LICENSE.txt.
+DOMPurify is used under Apache-2.0; see desktop/src/assets/dompurify-LICENSE.txt.
 Claude Science and Anthropic names belong to their respective owners.
 This project is not affiliated with or endorsed by Anthropic.
 

@@ -8,6 +8,9 @@
     <link rel="icon" href="./assets/app-icon.png" />
     <link rel="stylesheet" href="./styles.css" />
     <script src="./assets/lucide.min.js" defer></script>
+    <script src="./assets/marked.min.js" defer></script>
+    <script src="./assets/purify.min.js" defer></script>
+    <script src="./reader.js" defer></script>
     <script src="./providers.js" defer></script>
     <script src="./mcp.js" defer></script>
     <script src="./updater.js" defer></script>
@@ -19,9 +22,11 @@
   <body>
     <div class="shell">
       <aside class="sidebar">
-        <div class="brand"><img src="./assets/app-icon.png" alt="" width="32" height="32" /><div>CSSwitch<span>Next <small>0.6</small></span></div></div>
+        <div class="brand"><img src="./assets/app-icon.png" alt="" width="32" height="32" /><div>CSSwitch<span>Next <small>0.7</small></span></div><button class="icon-btn sidebar-collapse" id="sidebarToggle" aria-label="收起导航" title="收起 / 展开导航"><i data-lucide="panel-left-close"></i></button></div>
         <nav aria-label="导航">
+          <div class="sidebar-section">工作空间</div>
           <button class="nav-item active" data-view="workbench"><i data-lucide="plug-zap"></i>提供商</button>
+          <div class="nav-separator" role="separator"></div>
           <button class="nav-item" data-view="mcp"><i data-lucide="network"></i>MCP 管理</button>
           <button class="nav-item" data-view="skills"><i data-lucide="book-open"></i>Skills 管理</button>
           <button class="nav-item" data-view="usage"><i data-lucide="chart-no-axes-combined"></i>用量统计</button>

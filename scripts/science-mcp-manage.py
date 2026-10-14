@@ -194,6 +194,24 @@ class Bridge:
     def skills(self, operation, params):
         if operation == 'skills_list':
             return self.skill_catalog()
+        if operation == 'skills_update':
+            catalog = self.skill_catalog()
+            if not catalog.get('customAllowed') or not catalog.get('localImportAvailable'):
+                raise BridgeError(catalog.get('localImportReason') or '本地技能更新暂不可用。')
+            name = params.get('name')
+            entry = next((s for s in catalog['skills'] if s['name'] == name), {})
+            if entry.get('source') != 'csswitch-local' or entry.get('admin_blocked'):
+                raise BridgeError('此技能由 Science 或组织管理，无法覆盖更新。')
+            try:
+                actual, _, files = local_skills.unpack(params.get('filename'), params.get('bundle'))
+                if actual != name:
+                    raise BridgeError('新技能 name 与已安装名称不一致。')
+                store = self.local_store()
+                with store.replacing(name, files, params.get('expectedFingerprint'), params.get('sourceKey')):
+                    self.verify_local_skill(name, files)
+                return {'name': name, 'message': 'Skill 已更新，原有启停状态和代理绑定保留。'}
+            except local_skills.LocalSkillError as error:
+                raise BridgeError(str(error)) from None
         if operation == 'skills_import':
             catalog = self.skill_catalog()
             if not catalog.get('customAllowed'):
@@ -205,13 +223,9 @@ class Bridge:
                 try:
                     name, _, files = local_skills.unpack(params.get('filename'), params.get('bundle'))
                     reserved = {s['name'] for s in catalog['skills']}
-                    store.install(name, files, reserved)
+                    store.install(name, files, reserved, params.get('sourceKey'))
                     try:
-                        if name not in self.request('/api/skills/drafts').get('drafts', []):
-                            raise BridgeError('Science 未识别本地技能，安装已撤销。')
-                        content = self.request(f'/api/skills/catalog/{name}/content?path=SKILL.md')
-                        if content.get('content') != files['SKILL.md'].decode('utf-8'):
-                            raise BridgeError('Science 未能读取本地技能，安装已撤销。')
+                        self.verify_local_skill(name, files)
                         attached = self.request('/api/agents/OPERON/skills', {'skill_name': name})
                         if name not in attached.get('skillNames', []):
                             raise BridgeError('Science 未能绑定本地技能，安装已撤销。')
@@ -275,6 +289,15 @@ class Bridge:
             return {'message': 'Skill 已卸载。'}
         raise BridgeError('不支持的 Skills 管理操作。')
 
+    def verify_local_skill(self, name, files):
+        if name not in self.request('/api/skills/drafts').get('drafts', []):
+            raise BridgeError('Science 未识别本地技能，修改已撤销。')
+        for path, data in files.items():
+            if path != 'SKILL.md': continue
+            content = self.request(f'/api/skills/catalog/{name}/content?path=SKILL.md')
+            if content.get('content') != data.decode('utf-8'):
+                raise BridgeError('Science 未能读取新技能内容，修改已撤销。')
+
     def local_store(self, optional=False):
         if not self.data_dir or not self.auth_dir:
             if optional:
@@ -325,6 +348,9 @@ class Bridge:
 
 
 def main():
+    def timeout(_signum, _frame):
+        raise BridgeError('Science 管理操作超时，请刷新后重试。')
+    signal.signal(signal.SIGALRM, timeout)
     signal.alarm(85)
     try:
         data = json.loads(sys.stdin.read(6 * 1024 * 1024))

@@ -168,8 +168,11 @@ async function showView(view) {
     state.dirty = false; state.draft = null; state.selected = state.config.provider;
   }
   state.view = view;
-  $('.nav-item.active')?.classList.remove('active');
-  $(`[data-view="${view}"]`).classList.add('active');
+  document.body.dataset.view = view;
+  document.querySelectorAll('.nav-item').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === view);
+    if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
   $('#pageTitle').textContent = { workbench: '提供商', mcp: 'MCP 管理', skills: 'Skills 管理', sessions: '会话管理', usage: '用量统计', logs: '运行日志', settings: '设置' }[view];
   if (['mcp', 'skills', 'sessions'].includes(view)) {
     $('#content').innerHTML = '<div class="empty">正在读取管理数据…</div>';
@@ -185,7 +188,19 @@ async function showView(view) {
   });
 }
 
-document.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => showView(b.dataset.view); });
+document.querySelectorAll('.nav-item[data-view]').forEach((b) => { b.onclick = () => showView(b.dataset.view); });
+function applySidebarMode() {
+  const collapsed = document.documentElement.dataset.sidebar === 'collapsed';
+  $('#sidebarToggle').setAttribute('aria-label', collapsed ? '展开导航' : '收起导航');
+  $('#sidebarToggle').setAttribute('aria-expanded', String(!collapsed));
+  document.querySelectorAll('.nav-item').forEach(b => { b.title = b.textContent.trim(); });
+}
+document.documentElement.dataset.sidebar = localStorage.getItem('csswitch-sidebar') || 'expanded';
+applySidebarMode();
+$('#sidebarToggle').onclick = () => {
+  const value = document.documentElement.dataset.sidebar === 'collapsed' ? 'expanded' : 'collapsed';
+  document.documentElement.dataset.sidebar = value; localStorage.setItem('csswitch-sidebar',value); applySidebarMode();
+};
 $('#themeBtn').onclick = () => {
   const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = theme; localStorage.setItem('csswitch-theme', theme);
@@ -197,7 +212,7 @@ $('#quitBtn').onclick = () => action(() => call('quit_app'));
 $('#refreshBtn').onclick = () => action(async () => {
   if (state.dirty) { notice('请先保存连接配置，再刷新。', true); return; }
   await loadConfig(); await refreshRuntime();
-  if (['mcp', 'skills', 'sessions'].includes(state.view)) { await ({ mcp: loadMcp, skills: loadSkills, sessions: loadSessions })[state.view](); ({ mcp: renderMcp, skills: renderSkills, sessions: renderSessions })[state.view](); return; }
+  if (['mcp', 'skills', 'sessions'].includes(state.view)) { await ({ mcp: loadMcp, skills: loadSkills, sessions: loadSessions })[state.view](state.view === 'sessions'); ({ mcp: renderMcp, skills: renderSkills, sessions: renderSessions })[state.view](); return; }
   if (state.view === 'usage') await loadUsage();
   if (state.view === 'logs') state.logs = await call('read_logs');
   if (state.view === 'settings') state.diagnostics = await call('diagnostics');

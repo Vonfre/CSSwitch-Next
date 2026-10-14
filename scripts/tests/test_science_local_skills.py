@@ -56,6 +56,32 @@ class LocalSkillsTests(unittest.TestCase):
         self.assertEqual(name,'local-fixture')
         self.assertEqual(files,{'SKILL.md':self.text})
 
+    def test_update_replaces_support_files_and_restores_every_file_on_failure(self):
+        original = {'SKILL.md': self.text, 'references/old.md': b'old'}
+        self.store.install('local-fixture', original, set(), 'codex:local-fixture')
+        before = self.store.info('local-fixture')
+        changed = {'SKILL.md': self.text + b'\nUpdated', 'scripts/new.py': b'# inert'}
+        with self.assertRaisesRegex(RuntimeError, 'verification'):
+            with self.store.replacing('local-fixture', changed, before['fingerprint'], 'codex:local-fixture'):
+                self.assertEqual(self.store.files(self.store.root/'local-fixture'), changed)
+                raise RuntimeError('verification failed')
+        self.assertEqual(self.store.files(self.store.root/'local-fixture'), original)
+        with self.store.replacing('local-fixture', changed, before['fingerprint'], 'codex:local-fixture'): pass
+        self.assertEqual(self.store.files(self.store.root/'local-fixture'), changed)
+        self.assertFalse(any(p.name.startswith(('.csswitch-stage-', '.csswitch-backup-')) for p in self.store.root.iterdir()))
+
+    def test_update_rejects_edits_stale_hash_wrong_source_and_name(self):
+        self.store.install('local-fixture', {'SKILL.md':self.text}, set(), 'codex:local-fixture')
+        before = self.store.info('local-fixture')
+        for expected, origin, content in [('stale', 'codex:local-fixture',self.text), (before['fingerprint'],'agents:local-fixture',self.text), (before['fingerprint'],'codex:local-fixture',self.text.replace(b'local-fixture',b'other'))]:
+            with self.assertRaises(local.LocalSkillError):
+                with self.store.replacing('local-fixture', {'SKILL.md':content}, expected, origin): pass
+        (self.store.root/'local-fixture/SKILL.md').write_bytes(self.text+b'\nUser edit')
+        edited = self.store.info('local-fixture')
+        self.assertTrue(edited['locallyModified'])
+        with self.assertRaisesRegex(local.LocalSkillError,'本地修改'):
+            with self.store.replacing('local-fixture', {'SKILL.md':self.text}, edited['fingerprint'], 'codex:local-fixture'): pass
+
     def test_finder_zip_metadata_is_ignored_and_case_collisions_rejected(self):
         encoded=self.zip([('fixture/SKILL.md',self.text),('fixture/.DS_Store',b'Finder'),('__MACOSX/fixture/._SKILL.md',b'Resource fork')])
         self.assertEqual(local.unpack('fixture.zip',encoded)[2],{'SKILL.md':self.text})

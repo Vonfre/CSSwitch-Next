@@ -8,6 +8,7 @@
 - 移除 OpenScience 聚合服务的打包及默认安装入口；替代服务确认就绪后，先私密备份旧配置，再移除 csswitch-openscience。失败时保留旧服务，支持重试。
 - 验证全部 24 个 MCP 的 225 个工具及 Ketcher 资源，并执行真实 PubMed、ChEMBL、bioRxiv、ClinicalTrials.gov、UniProt 请求。部分数据源仍需要各自的密钥或联系邮箱。
 - 合并此前本地修复：修复 Science 页面入口启动失败，补齐登录后 11 个设置模块、动态弹窗和权限记录的汉化，支持随时关闭并恢复原文。
+- 页面入口不再依赖主机名反向查询，并延长冷启动等待；仅在专用 HTTP 探活通过后确认就绪。
 
 macOS 安装包提供 Apple Silicon（arm64）和 Intel（x64）版本；支持在「设置 → 应用更新」升级。使用这 24 个连接器需要本机已安装 Claude Science；CSSwitch 使用其现有本机实现，不附带 Science 源码。
 

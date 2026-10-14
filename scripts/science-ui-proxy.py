@@ -13,12 +13,22 @@ import os
 from pathlib import Path
 import select
 import socket
+from socketserver import TCPServer
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 BOOTSTRAP = "(()=>{const s=document.createElement('script');s.src='/__csswitch/zh.js';document.head.append(s)})();"
 SCRIPT_HASH = "'sha256-" + base64.b64encode(hashlib.sha256(BOOTSTRAP.encode()).digest()).decode() + "'"
 HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'}
+
+
+class LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # The listener always uses a numeric loopback address. HTTPServer's
+        # reverse hostname lookup adds no value and can stall before readiness.
+        TCPServer.server_bind(self)
+        self.server_name = 'localhost'
+        self.server_port = self.server_address[1]
 
 
 class UpgradeResponse(http.client.HTTPResponse):
@@ -181,7 +191,7 @@ def main():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--ready', type=Path, required=True)
     args = parser.parse_args()
-    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    server = LoopbackServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
     server.upstream_port, server.config = args.upstream_port, args.config
     # The parent chooses a unique private readiness file. Never replace a symlink.

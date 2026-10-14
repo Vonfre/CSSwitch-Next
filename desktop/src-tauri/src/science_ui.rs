@@ -67,13 +67,15 @@ fn start_proxy(
         .spawn()
         .map_err(|_| "无法启动 Science 页面入口。")?;
     let mut port = None;
-    for _ in 0..50 {
+    // Allow a cold Python interpreter to start on slower machines. Readiness
+    // requires a successful HTTP probe, not just the file announcing its port.
+    for _ in 0..150 {
         if let Ok(bytes) = std::fs::read(ready) {
             port = serde_json::from_slice::<serde_json::Value>(&bytes)
                 .ok()
                 .and_then(|v| v["port"].as_u64())
                 .and_then(|p| u16::try_from(p).ok());
-            if port.is_some() {
+            if port.is_some_and(|p| super::proc::http_health_path(p, "/__csswitch/health", 400)) {
                 break;
             }
         }

@@ -6,6 +6,7 @@ import socket
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -64,7 +65,7 @@ class ProxyTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.native = ThreadingHTTPServer(('127.0.0.1', 0), Native)
         self.native.base = f'http://127.0.0.1:{self.native.server_port}'
-        self.proxy = ThreadingHTTPServer(('127.0.0.1', 0), ui.Handler)
+        self.proxy = ui.LoopbackServer(('127.0.0.1', 0), ui.Handler)
         self.proxy.config = Path(self.temp.name) / 'config.json'
         self.proxy.config.write_text(json.dumps({'science_zh': True, 'secret': 'NEVER-RETURN', 'providers': {'key': 'NEVER-RETURN'}}))
         self.proxy.upstream_port = self.native.server_port
@@ -78,6 +79,14 @@ class ProxyTests(unittest.TestCase):
         self.temp.cleanup()
     def request(self, path, **kwargs):
         return self.opener.open(urllib.request.Request(self.base + path, **kwargs), timeout=3)
+    def test_loopback_bind_does_not_depend_on_hostname_lookup(self):
+        with patch('socket.getfqdn', side_effect=AssertionError('unexpected DNS lookup')):
+            server = ui.LoopbackServer(('127.0.0.1', 0), ui.Handler)
+        try:
+            self.assertEqual(server.server_name, 'localhost')
+            self.assertGreater(server.server_port, 0)
+        finally:
+            server.server_close()
     def test_readiness_routes_work_without_native_and_keep_host_origin_checks(self):
         self.proxy.upstream_port = 0
         with self.request('/__csswitch/health') as r:

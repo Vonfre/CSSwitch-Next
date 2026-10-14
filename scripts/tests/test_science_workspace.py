@@ -30,7 +30,7 @@ class WorkspaceTests(unittest.TestCase):
             db.execute('INSERT INTO frames VALUES (?,?,?,?,?,?,?,?)', ('root1', 'p1', None, '论文分析', 'test-model', 'completed', 1000, 2000))
             db.execute('INSERT INTO frames VALUES (?,?,?,?,?,?,?,?)', ('child1', 'p1', 'root1', '子代理', 'test-model', 'completed', 1000, 1500))
             for i in range(103):
-                db.execute('INSERT INTO frame_messages VALUES (?,?,?)', ('root1', i, json.dumps({'role': 'user' if i % 2 == 0 else 'assistant', 'content': [{'type': 'text', 'text': '<script>unsafe</script>'}, {'type': 'tool_use', 'name': 'search', 'input': {'query': 'paper'}}]})))
+                db.execute('INSERT INTO frame_messages VALUES (?,?,?)', ('root1', i, json.dumps({'role': 'user' if i % 2 == 0 else 'assistant', 'timestamp': 1000+i, 'content': [{'type': 'text', 'text': '<script>unsafe</script>'}, {'type': 'tool_use', 'name': 'search', 'input': {'query': 'paper'}}]})))
         self.work = w.Workspace(self.home, self.data, self.config)
         self.digest = hashlib.sha256(self.dbpath.read_bytes()).hexdigest()
 
@@ -54,9 +54,21 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(first['messages'][0]['blocks'][1]['type'], 'tool_use')
         self.assertEqual(first['messages'][0]['blocks'][1]['name'], 'search')
         self.assertIn('<script>', self.work.sessions()['sessions'][0]['preview'])
+        self.assertIn('<script>', self.work.sessions()['sessions'][0]['last_preview'])
+        self.assertEqual(first['messages'][0]['timestamp'], 1000)
         last = self.work.run('session_messages', {'key': 'org-fixture:root1', 'offset': 100})
         self.assertEqual(len(last['messages']), 3)
         self.assertFalse(last['has_more'])
+
+    def test_tool_pairing_ids_and_error_state_survive_read_only_conversion(self):
+        blocks = w.message_blocks([
+            {'type': 'tool_use', 'id': 'call-1', 'name': 'Bash', 'input': {'command': 'false'}},
+            {'type': 'tool_result', 'tool_use_id': 'call-1', 'is_error': True, 'content': 'exit 1'},
+        ])
+        self.assertEqual(blocks[0]['id'], blocks[1]['tool_use_id'])
+        self.assertTrue(blocks[1]['is_error'])
+        self.assertIn('false', blocks[0]['text'])
+        self.assertEqual(blocks[1]['text'], 'exit 1')
 
     def test_meta_only_changes_csswitch_preferences(self):
         key = 'org-fixture:root1'

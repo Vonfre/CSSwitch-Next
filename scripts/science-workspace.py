@@ -127,7 +127,10 @@ def message_blocks(content):
         else:
             kind, text = 'attachment', '[' + str(kind)[:100] + ']'
         if not isinstance(text, str): text = json.dumps(text, ensure_ascii=False)
-        result.append({'type': kind, 'name': name, 'text': text[:remaining], 'truncated': len(text) > remaining})
+        result.append({'type': kind, 'name': name, 'text': text[:remaining], 'truncated': len(text) > remaining,
+                       'id': str(block.get('id') or '')[:200],
+                       'tool_use_id': str(block.get('tool_use_id') or '')[:200],
+                       'is_error': block.get('is_error') is True})
         remaining -= len(text)
     return result
 
@@ -165,13 +168,17 @@ class Workspace:
                     fields = ['f.id', 'f.project_id', 'f.created_at', 'f.updated_at']
                     for k in ['name', 'model', 'status', 'input_tokens', 'output_tokens', 'total_cost', 'is_hidden']:
                         fields.append('f.' + k if k in columns else 'NULL AS ' + k)
-                    query = 'SELECT ' + ','.join(fields) + ', p.name AS project_name, (SELECT COUNT(*) FROM frame_messages m WHERE m.frame_id = f.id) AS messages, (SELECT msg_json FROM frame_messages m WHERE m.frame_id=f.id ORDER BY idx LIMIT 1) AS preview_json FROM frames f LEFT JOIN projects p ON f.project_id=p.id WHERE f.parent_frame_id IS NULL ORDER BY f.updated_at DESC LIMIT 5000'
+                    query = 'SELECT ' + ','.join(fields) + ', p.name AS project_name, (SELECT COUNT(*) FROM frame_messages m WHERE m.frame_id = f.id) AS messages, (SELECT msg_json FROM frame_messages m WHERE m.frame_id=f.id ORDER BY idx LIMIT 1) AS preview_json, (SELECT msg_json FROM frame_messages m WHERE m.frame_id=f.id ORDER BY idx DESC LIMIT 1) AS last_preview_json FROM frames f LEFT JOIN projects p ON f.project_id=p.id WHERE f.parent_frame_id IS NULL ORDER BY f.updated_at DESC LIMIT 5000'
                     for r in db.execute(query):
                         item = dict(r)
                         try:
                             preview = json.loads(item.pop('preview_json') or '{}')
                             item['preview'] = next((b['text'][:240] for b in message_blocks(preview.get('content', '')) if b['type'] == 'text'), '')
                         except (ValueError, AttributeError): item['preview'] = ''
+                        try:
+                            last = json.loads(item.pop('last_preview_json') or '{}')
+                            item['last_preview'] = next((b['text'][:240] for b in message_blocks(last.get('content', '')) if b['type'] == 'text'), '')
+                        except (ValueError, AttributeError): item['last_preview'] = ''
                         if item.pop('is_hidden', False):
                             continue
                         key = path.parent.name + ':' + item['id']
@@ -229,7 +236,8 @@ class Workspace:
                     elif not isinstance(content, str):
                         content = json.dumps(content, ensure_ascii=False)
                     messages.append({'idx': row['idx'], 'role': m.get('role', 'system'), 'text': content[:60000],
-                                     'blocks': message_blocks(m.get('content', '')), 'truncated': len(content) > 60000})
+                                     'blocks': message_blocks(m.get('content', '')),
+                                     'timestamp': m.get('timestamp') or m.get('created_at'), 'truncated': len(content) > 60000})
                 except (ValueError, AttributeError):
                     messages.append({'idx': row['idx'], 'role': 'system', 'text': '[消息格式无法解析]'})
         return {'messages': messages, 'total': count, 'offset': offset, 'has_more': offset + len(messages) < count}

@@ -7,11 +7,11 @@ async function setup(page, offline = false) {
     let skills = [{ name: 'paper-reader', description: '阅读科学文献并提取方法', source: 'local', enabled: true }, { name: 'data-analysis', description: '处理实验数据', source: 'anthropic', enabled: true }, { name: 'blocked', description: '<unsafe-skill>', source: 'organization', admin_blocked: true, enabled: false }];
     window.addManagedFixture = (file = false) => skills.push({name:'lab-notes',description:'实验笔记',source:'csswitch-local',sourceKey:file ? null : 'agents:lab-notes',fingerprint:'old-content',enabled:false,attachedAgents:['OPERON']});
     let connectors = [{ id: 'local:memory', name: 'memory', description: '知识记忆', source: 'local-stdio', transport: 'stdio', attachedAgents: ['OPERON'] }, { id: 'remote', name: 'remote', description: '远程数据库', source: 'custom', transport: 'streamable_http', attachedAgents: [] }];
-    const sessions = Array.from({ length: 28 }, (_, i) => ({ key: 'org:session-' + i, id: 'session-' + i, org: 'org', title: i === 0 ? '蛋白质结构研究' : i === 1 ? '<unsafe-session>' : '文献分析 ' + i, project_id: i % 2 ? 'papers' : 'proteins', project_name: i % 2 ? '文献综述' : '蛋白研究', messages: i === 0 ? 101 : 1, model: 'gpt-research', status: 'completed', updated_at: now * 1000 - i * 86400000 }));
+    const sessions = Array.from({ length: 28 }, (_, i) => ({ key: 'org:session-' + i, id: 'session-' + i, org: 'org', title: i === 0 ? '蛋白质结构研究' : i === 1 ? '<unsafe-session>' : '文献分析 ' + i, project_id: i % 2 ? 'papers' : 'proteins', project_name: i % 2 ? '文献综述' : '蛋白研究', messages: i === 0 ? 101 : 1, model: 'gpt-research', status: 'completed', preview:'首条提问 '+i,last_preview:'研究结果摘要 '+i,created_at:now*1000-i*86400000-600000,updated_at: now * 1000 - i * 86400000 }));
     window.useDesignPreview = () => {
       skills = [['paper-reader','阅读科学文献，提取研究问题、方法与核心结论。','csswitch-local'],['pubmed-search','检索 PubMed 文献，整理证据与引用。','csswitch-local'],['data-analysis','探索实验数据，进行统计检验并生成图表。','anthropic'],['protein-structure','分析蛋白质结构、置信度与关键结合位点。','csswitch-local'],['lab-notes','整理实验笔记，记录步骤、观察和后续计划。','csswitch-local'],['literature-review','系统梳理文献，构建研究问题与证据框架。','csswitch-local']].map(([name,description,source],i)=>({name,description,source,enabled:i!==4}));
       const titles=['蛋白质结构研究','单细胞数据分析与批次校正','整理肿瘤免疫相关文献','设计蛋白结合位点验证实验','RNA-seq 差异表达分析','研究计划与实验记录'];
-      sessions.forEach((r,i)=>{r.title=titles[i%titles.length];r.preview=i===0?'比较 AlphaFold 预测结构和实验结构，整理验证方案。':'整理研究步骤、数据处理方法与验证思路。';});
+      sessions.splice(5); sessions.forEach((r,i)=>{r.project_id='design-'+(i===0?0:i<4?1:2);r.project_name=i===0?'蛋白研究':i<4?'单细胞图谱':'文献综述';r.last_preview='已整理分析步骤、数据处理方法和后续验证方案。';r.title=titles[i%titles.length];r.preview=i===0?'比较 AlphaFold 预测结构和实验结构，整理验证方案。':'整理研究步骤、数据处理方法与验证思路。';});
     };
     const repos = []; const pricing = { 'gpt-research': { input: 2, output: 8, cache_read: 0.2, cache_write: 2.5 } };
     window.testCalls = []; window.__TAURI__ = { core: { invoke: async (cmd, args = {}) => {
@@ -42,6 +42,7 @@ async function setup(page, offline = false) {
         if (op === 'sessions_list') return { sessions: structuredClone(sessions) };
         if (op === 'session_meta') Object.assign(sessions.find(s => s.key === p.key), p.changes);
         if (op === 'session_messages') {
+          if(window.timelineFixture) return {total:window.timelineFixture.length,has_more:false,messages:structuredClone(window.timelineFixture)};
           const many = p.key === 'org:session-0', total = many ? 101 : 1;
           return { total, offset: p.offset, has_more: many && p.offset === 0, messages: Array.from({ length: many && p.offset === 0 ? 100 : 1 }, (_, i) => {
             const idx=p.offset+i, text=idx===0 ? '请比较 AlphaFold 预测结构和实验结构，整理一份验证方案。' : idx===1 ? window.readerFixture || '## 结构验证方案\n\n先检查预测置信度，再结合实验数据验证关键位点。\n\n- **整体结构**：比较 TM-score 和主链 RMSD。\n- **局部区域**：检查 pLDDT 与 PAE。\n- **实验验证**：优先选择结合位点与低置信度区域。\n\n```python\nfrom Bio.PDB import PDBParser\nstructure = PDBParser().get_structure("target", "target.pdb")\n```\n\n| 指标 | 用途 |\n| --- | --- |\n| pLDDT | 局部置信度 |\n| PAE | 域间相对位置 |' : '<unsafe-message>\n研究方法 '+(idx+1);
@@ -190,9 +191,16 @@ test('management pages fit small windows, support dark mode and have no script e
       await page.getByRole('button', { name: label, exact: true }).click(); await expect(page.locator('#content')).toHaveAttribute('aria-busy', 'false');
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: `../artifacts/screenshots/${id}-workspace-${width}.png`, fullPage: true });
+      if(id==='sessions'){
+        await page.getByRole('button',{name:'查看 蛋白质结构研究',exact:true}).first().click();
+        await expect(page.locator('#sessionReader')).toBeVisible();
+        expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+        await page.screenshot({path:`../artifacts/screenshots/session-reader-${width}.png`,fullPage:true});
+        await page.getByRole('button',{name:'关闭会话阅读',exact:true}).click();
+      }
     }
   }
-  await expect(page.locator('#sessionReader')).toContainText('蛋白质结构研究'); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button',{name:'查看 蛋白质结构研究',exact:true}).first().click(); await expect(page.locator('#sessionReader')).toContainText('蛋白质结构研究'); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: '切换深浅主题' }).click(); await page.screenshot({ path: '../artifacts/screenshots/session-reader-dark.png', fullPage: true });
   await expect(page.locator('unsafe-skill, unsafe-session, unsafe-message')).toHaveCount(0); expect(errors).toEqual([]);
 });
@@ -237,15 +245,17 @@ test('check and update a managed skill preserves its disabled state and original
   await page.getByRole('button',{name:'检查更新',exact:true}).click(); await expect(page.locator('#notice')).toContainText('0 个技能可更新');
 });
 
-test('session content opens immediately, renders Markdown, filters tools, searches loaded content and navigates outline', async ({ page }) => {
+test('session reader opens from the full-width list, renders Markdown, filters tools, searches loaded content and navigates outline', async ({ page }) => {
   await setup(page); await page.getByRole('button',{name:'会话管理',exact:true}).click();
+  await page.getByRole('button',{name:'查看 蛋白质结构研究',exact:true}).click();
   await expect(page.locator('.markdown h2')).toContainText('结构验证方案'); await expect(page.locator('.markdown table')).toHaveCount(1);
   await expect(page.getByRole('button',{name:'复制代码',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'工具',exact:true}).click();
-  await expect(page.locator('.message')).toHaveCount(1); await expect(page.locator('.message-step')).toHaveCount(2);
+  await expect(page.locator('.message')).toHaveCount(1); await expect(page.locator('.message-step')).toHaveCount(1);
   await page.locator('.message-step').first().locator('summary').click(); await expect(page.locator('.message-step').first()).toContainText('protein structure validation');
   await page.getByRole('button',{name:'对话',exact:true}).click(); await expect(page.locator('.message-step')).toHaveCount(0);
-  await page.getByLabel('搜索会话内容').fill('结构验证方案'); await expect(page.locator('.message')).toHaveCount(1);
+  await page.getByRole('button',{name:'搜索当前会话',exact:true}).click();
+  await page.getByLabel('搜索会话内容').fill('结构验证方案'); await expect(page.locator('.message')).toHaveCount(2);
   await page.getByLabel('搜索会话内容').fill(''); await page.getByRole('button',{name:'切换对话目录',exact:true}).click();
   await expect(page.locator('#sessionOutline')).toBeVisible(); await page.locator('[data-message-jump]').nth(4).click();
   await expect(page.locator('unsafe-message, unsafe-session, unsafe-skill, .markdown script, .markdown img')).toHaveCount(0);
@@ -275,7 +285,49 @@ test('untrusted Markdown cannot execute HTML, retain unsafe URLs or load remote 
   const remote=[];page.on('request',r=>{if(r.url().includes('tracking.example'))remote.push(r.url());});
   await setup(page);await page.evaluate(()=>{window.readerFixture='<img src="https://tracking.example/pixel" onerror="window.readerExecuted=true">\n\n<script>window.readerExecuted=true</script>\n\n[unsafe](javascript:window.readerExecuted=true)\n\n![remote image](https://tracking.example/image.png)';});
   await page.getByRole('button',{name:'会话管理',exact:true}).click();
+  await page.getByRole('button',{name:'查看 蛋白质结构研究',exact:true}).click();
   await expect(page.locator('#sessionReader')).toContainText('remote image');
   await expect(page.locator('.markdown img, .markdown script, .markdown [onerror], .markdown a[href^="javascript:"]')).toHaveCount(0);
   expect(await page.evaluate(()=>Boolean(window.readerExecuted))).toBe(false);expect(remote).toEqual([]);
+});
+
+test('cc-switch session list groups projects and opens a full-window reader without loading content in the list', async ({page})=>{
+  await setup(page);await page.getByRole('button',{name:'会话管理',exact:true}).click();
+  await expect(page.locator('.sessions-layout')).toHaveCount(0);await expect(page.locator('#sessionReader')).toHaveCount(0);
+  expect(await page.evaluate(()=>window.testCalls.filter(c=>c.args.operation==='session_messages').length)).toBe(0);
+  await expect(page.locator('.session-group')).toHaveCount(2);await expect(page.locator('.session-group').first()).toHaveAttribute('open','');
+  await expect(page.locator('.session-group').nth(1)).not.toHaveAttribute('open','');
+  await page.locator('.session-group').nth(1).locator('summary').click();await expect(page.getByRole('button',{name:'查看 <unsafe-session>',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'按时间',exact:true}).click();await expect(page.locator('.session-row:visible')).toHaveCount(25);
+  await page.getByLabel('搜索会话',{exact:true}).fill('session-0');await expect(page.locator('.session-row')).toHaveCount(1);
+  await page.getByRole('button',{name:'查看 蛋白质结构研究',exact:true}).click();await expect(page.locator('.sidebar')).toBeHidden();
+  await expect(page.locator('.session-browser')).toHaveCount(0);
+  expect(await page.locator('#sessionReader').evaluate(e=>e.getBoundingClientRect().width>=innerWidth-2)).toBe(true);
+  await page.getByRole('button',{name:'关闭会话阅读',exact:true}).click();await expect(page.getByLabel('搜索会话',{exact:true})).toHaveValue('session-0');
+  await expect(page.locator('.session-row')).toHaveCount(1);await expect(page.locator('.sidebar')).toBeVisible();
+});
+
+test('session execution timeline pairs tool results, preserves failures, expands long output and filters changes', async ({page})=>{
+  await setup(page);await page.setViewportSize({width:1200,height:820});await page.evaluate(()=>{window.timelineFixture=[
+    {idx:0,role:'user',text:'请检查这份单细胞数据分析脚本，修复输入检查，并整理一份可复现的运行说明。',timestamp:Date.now()},
+    {idx:1,role:'assistant',blocks:[{type:'thinking',text:'先检查脚本和输入。'},{type:'tool_use',id:'call-1',name:'Bash',text:'{"command":"python analysis.py"}'}]},
+    {idx:2,role:'user',blocks:[{type:'tool_result',tool_use_id:'call-1',is_error:true,text:Array.from({length:40},(_,i)=>'error line '+i).join('\n')}]},
+    {idx:3,role:'assistant',blocks:[{type:'tool_use',id:'call-2',name:'Edit',text:'{"file_path":"analysis.py","old_string":"old","new_string":"new"}'}]},
+    {idx:4,role:'user',blocks:[{type:'tool_result',tool_use_id:'call-2',text:'文件已更新'}]},
+    {idx:5,role:'assistant',text:'## 更新完成\n\n已修复输入检查。'}
+  ];});
+  await page.getByRole('button',{name:'会话管理',exact:true}).click();await page.getByRole('button',{name:'查看 蛋白质结构研究',exact:true}).click();
+  await expect(page.locator('.message.user')).toHaveCount(1);await expect(page.locator('.execution-timeline')).toHaveCount(1);
+  await expect(page.locator('#readerStats')).toContainText('1 次提问 · 2 次工具调用');
+  await expect(page.locator('.execution-timeline')).toContainText('1 个失败');await expect(page.locator('.timeline-step')).toHaveCount(3);
+  const failed=page.locator('.timeline-step.failed');await failed.locator('summary').click();await expect(failed).toContainText('error line 0');
+  await expect(failed.locator('pre').last()).not.toContainText('error line 39');
+  await page.screenshot({path:'../artifacts/screenshots/session-reader-execution-1200.png',fullPage:true});
+  await failed.getByRole('button',{name:'显示全部 · 40 行',exact:true}).click();
+  await expect(page.locator('.timeline-step.failed pre').last()).toContainText('error line 39');
+  await page.getByRole('button',{name:'改动',exact:true}).click();await expect(page.locator('.timeline-step')).toHaveCount(1);
+  await expect(page.locator('.timeline-step summary')).toContainText('Edit');await page.locator('.timeline-step summary').click();await expect(page.locator('.timeline-step')).toContainText('文件已更新');
+  await page.getByRole('button',{name:'对话',exact:true}).click();await expect(page.locator('.execution-timeline')).toHaveCount(0);await expect(page.locator('.markdown h2')).toHaveText('更新完成');
+  await page.evaluate(()=>{window.timelineFixture[5].text='## 刷新后的回复\n\n继续验证。';});
+  await page.getByRole('button',{name:'刷新当前会话',exact:true}).click();await expect(page.locator('.markdown h2')).toHaveText('刷新后的回复');
 });

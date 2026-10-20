@@ -30,6 +30,7 @@ import urllib.error
 from contextvars import ContextVar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from routing import load_profile, profile_from_config
+from science_models import family, configure
 from responses_adapter import from_chat, to_anthropic as responses_to_anthropic
 from stream_bridge import Bridge, events
 from usage import AnthropicMeter, record
@@ -48,21 +49,12 @@ PROVIDERS = {
         "mode": "anthropic",
         "url": "https://api.deepseek.com/anthropic/v1/messages",
         "key_env": "DEEPSEEK_API_KEY",
-        # 选择器里展示的可选模型。
-        # 注意：Science 模型面板对可选项有两道硬规则（二进制 s0/ZjO/XjO/hB_）：
-        #   1) id 必须以 claude- 开头（s0）；
-        #   2) 只有 id 形如 claude-{opus|sonnet|haiku}-<数字...>（family+纯数字版本）才进【主列表】，
-        #      每个 family 只留一个；其余一律塞进「More models」折叠区（overflow:true）。
-        # 因此这里【借用】Science 认可的主列表 id（opus/haiku），显示名仍写 DeepSeek，
-        # 由 model_map 映射回真实 DeepSeek id。这样两个模型都直接平铺在选择器里，无需展开 More models。
-        #   claude-opus-4-8  → 显示「DeepSeek V4 Pro」  （tier0，且是 Science 的默认模型 id）
-        #   claude-haiku-4-5 → 显示「DeepSeek V4 Flash」（tier2）
-        "models": [
-            ("claude-opus-4-8", "DeepSeek V4 Pro"),
-            ("claude-haiku-4-5", "DeepSeek V4 Flash"),
-        ],
+        # Science 0.1.67 uses Opus 5 / Sonnet 5 for its default and reviewer.
+        # Keep current family IDs visible and legacy IDs routable for old sessions.
+        "models": [],  # Filled from the installed Science catalog.
         "model_map": {
             # 选择器里选中的 / Science 硬编码的 claude-*（标题用 haiku、正式推理用 opus）→ 真实 deepseek id
+            "claude-opus-5": "deepseek-v4-pro",
             "claude-opus-4-8": "deepseek-v4-pro",
             "claude-sonnet-5": "deepseek-v4-flash",
             "claude-sonnet-4-6": "deepseek-v4-flash",
@@ -75,17 +67,15 @@ PROVIDERS = {
         },
         "default_cap": 8192,
         "default_model": "deepseek-v4-flash",
+        "family_map": {"opus": "deepseek-v4-pro", "sonnet": "deepseek-v4-flash", "haiku": "deepseek-v4-flash"},
     },
     "qwen": {
         "mode": "openai",
         "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         "key_env": "DASHSCOPE_API_KEY",
-        "models": [
-            ("qwen-max", "Qwen Max"),
-            ("qwen-plus", "Qwen Plus"),
-            ("qwen-turbo", "Qwen Turbo"),
-        ],
+        "models": [],  # Filled from the installed Science catalog.
         "model_map": {
+            "claude-opus-5": "qwen-max",
             "claude-opus-4-8": "qwen-max",
             "claude-sonnet-5": "qwen-plus",
             "claude-sonnet-4-6": "qwen-plus",
@@ -99,6 +89,7 @@ PROVIDERS = {
         },
         "default_cap": 8192,
         "default_model": "qwen-plus",
+        "family_map": {"opus": "qwen-max", "sonnet": "qwen-plus", "haiku": "qwen-turbo"},
     },
 }
 
@@ -205,6 +196,9 @@ def resolve_model(name):
     ids.update(mm.values())
     if name in ids:         # provider 原生 id（如 qwen-max）直接用
         return name
+    kind = family(name)
+    if kind and kind in prov().get("family_map", {}):
+        return prov()["family_map"][kind]
     stripped = _DATE_SUFFIX.sub("", name)
     if stripped in mm:
         return mm[stripped]
@@ -800,6 +794,7 @@ if __name__ == "__main__":
             PROV, KEY, PROV_NAME = initial["prov"], initial["key"], initial["provider"]
             CURRENT_ROUTE.set(initial)
         elif PROV:
+            PROV = configure(dict(PROV))
             KEY = load_key(PROV, args)
         else:
             raise ValueError("Unknown provider; use --config for custom connections")

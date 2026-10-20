@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import stat
+from science_models import configure
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -60,9 +61,11 @@ def profile_from_config(cfg, presets, selected=None):
             raise ValueError("Invalid output token limit")
         prov = {"mode": protocol, "url": endpoint_for(p["base_url"], protocol),
                 "default_model": model, "default_cap": cap, "model_caps": {},
-                "models": [("claude-opus-4-8", quality), ("claude-sonnet-4-6", model), ("claude-haiku-4-5", fast)],
-                "model_map": {"claude-opus-4-8": quality, "claude-sonnet-5": model,
+                "family_map": {"opus": quality, "sonnet": model, "haiku": fast},
+                "models": [],
+                "model_map": {"claude-opus-5": quality, "claude-opus-4-8": quality, "claude-sonnet-5": model,
                               "claude-sonnet-4-6": model, "claude-haiku-4-5": fast}}
+    configure(prov)
     key = p.get("key", "").strip()
     if not key:
         raise ValueError("Save an API key for this connection first")

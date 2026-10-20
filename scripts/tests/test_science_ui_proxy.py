@@ -30,7 +30,11 @@ class Native(BaseHTTPRequestHandler):
             self.wfile.flush()
             self.close_connection = True
             return
-        if self.path == '/redirect':
+        if self.path == '/api/models':
+            body = json.dumps({'models': {'anthropic': [{'id': 'claude-opus-5', 'name': 'stale-name'}]}, 'default_model_id': 'claude-opus-5'}).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+        elif self.path == '/redirect':
             body = b''
             self.send_response(302)
             self.send_header('Location', self.server.base + '/setup?nonce=fixture')
@@ -118,6 +122,22 @@ class ProxyTests(unittest.TestCase):
         with self.request('/__csswitch/config') as r: self.assertEqual(json.load(r), {'enabled': True})
         self.proxy.config.write_text('{"science_zh":false}')
         with self.request('/__csswitch/config') as r: self.assertEqual(json.load(r), {'enabled': False})
+    def test_model_menu_reads_current_config_and_official_mode_is_untouched(self):
+        cfg = {'mode': 'proxy', 'provider': 'test', 'providers': {'test': {'base_url':'https://example.invalid',
+            'protocol':'responses', 'key':'NEVER-RETURN', 'model':'model-default', 'quality_model':'model-quality'}}}
+        self.proxy.config.write_text(json.dumps(cfg)); self.proxy.config.chmod(0o600)
+        with self.request('/api/models') as r:
+            self.assertEqual(r.headers['Cache-Control'], 'no-store')
+            body = r.read().decode(); data = json.loads(body)
+        self.assertIn('model-quality', body)
+        self.assertNotIn('NEVER-RETURN', body)
+        self.assertEqual(data['default_model_id'], 'claude-opus-5')
+        cfg['providers']['test']['quality_model'] = 'changed-quality'
+        self.proxy.config.write_text(json.dumps(cfg))
+        with self.request('/api/models') as r: self.assertIn('changed-quality', r.read().decode())
+        cfg['mode'] = 'official'; self.proxy.config.write_text(json.dumps(cfg))
+        with self.request('/api/models') as r: self.assertIn('stale-name', r.read().decode())
+
     def test_origin_cookie_forwarding_and_foreign_origin_rejection(self):
         with self.request('/api/csrf-fixture', data=b'{"test":true}', headers={'Origin': self.base, 'Cookie': 'operon_auth=fixture'}) as r:
             value = json.load(r)

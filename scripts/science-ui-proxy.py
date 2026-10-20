@@ -13,9 +13,16 @@ import os
 from pathlib import Path
 import select
 import socket
+import sys
 from socketserver import TCPServer
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'proxy'))
+from routing import load_profile
+from csswitch_proxy import PROVIDERS
+from science_models import adapt_model_response
+
 
 BOOTSTRAP = "(()=>{const s=document.createElement('script');s.src='/__csswitch/zh.js';document.head.append(s)})();"
 SCRIPT_HASH = "'sha256-" + base64.b64encode(hashlib.sha256(BOOTSTRAP.encode()).digest()).decode() + "'"
@@ -128,12 +135,21 @@ class Handler(BaseHTTPRequestHandler):
             conn.request(self.command, self.path, body, headers)
             res = conn.getresponse()
             is_html = self.command != 'HEAD' and 'text/html' in res.getheader('Content-Type', '') and res.status == 200 and not res.getheader('Content-Encoding')
-            payload = inject_html(res.read()) if is_html else None
+            is_models = self.command == 'GET' and urlsplit(self.path).path == '/api/models' and res.status == 200 and 'application/json' in res.getheader('Content-Type', '') and not res.getheader('Content-Encoding')
+            payload = inject_html(res.read()) if is_html else res.read() if is_models else None
+            if is_models:
+                try:
+                    cfg = json.loads(self.server.config.read_text())
+                    if cfg.get('mode', 'proxy') == 'proxy':
+                        route = load_profile(str(self.server.config), PROVIDERS)
+                        payload = json.dumps(adapt_model_response(json.loads(payload), route['prov']), ensure_ascii=False).encode()
+                except (OSError, ValueError, TypeError, KeyError):
+                    pass  # Preserve the native response when local configuration is unavailable.
             self.send_response(res.status)
             sent = True
             for k, v in res.getheaders():
                 key = k.lower()
-                if key in HOP or (is_html and key in {'content-length', 'etag', 'content-md5'}):
+                if key in HOP or ((is_html or is_models) and key in {'content-length', 'etag', 'content-md5', 'cache-control'}):
                     continue
                 if key == 'location' and v.startswith(base + '/'):
                     v = f'http://{self.headers["Host"]}' + v[len(base):]
@@ -145,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Upgrade', 'websocket')
             else:
                 self.send_header('Connection', 'close')
-            if is_html:
+            if is_html or is_models:
                 self.send_header('Content-Length', str(len(payload)))
                 self.send_header('Cache-Control', 'no-store')
             self.end_headers()

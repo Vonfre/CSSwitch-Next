@@ -157,9 +157,9 @@ class GatewayIntegration(unittest.TestCase):
         cls.upstream.server_close()
         cls.temp.cleanup()
 
-    def request(self, stream=False):
+    def request(self, stream=False, model="claude-opus-4-8"):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/test-path-secret/v1/messages",
-            data=json.dumps({"model": "claude-opus-4-8", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 32, "stream": stream}).encode(),
+            data=json.dumps({"model": model, "messages": [{"role": "user", "content": "hello"}], "max_tokens": 32, "stream": stream}).encode(),
             headers={"Content-Type": "application/json", "Authorization": "Bearer inbound-oauth-must-not-leak", "x-api-key": "inbound-key"})
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.read().decode()
@@ -184,6 +184,17 @@ class GatewayIntegration(unittest.TestCase):
         self.assertTrue(all(e["input_tokens"] == 11 and e["output_tokens"] == 5 for e in entries))
         self.assertEqual(os.stat(self.usage).st_mode & 0o777, 0o600)
         self.assertNotIn("test-key", self.usage.read_text())
+
+    def test_science_family_routes_change_without_restarting_gateway(self):
+        for active in ('chat', 'responses', 'native'):
+            self.write_config(active)
+            for alias, expected in [('claude-opus-5', 'quality-'), ('claude-opus-6', 'quality-'), ('claude-sonnet-6', 'model-'), ('claude-haiku-5', 'fast-')]:
+                self.request(model=alias)
+                self.assertEqual(self.hits[-1][1]['model'], expected + active)
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/test-path-secret/v1/models") as response:
+                catalog = json.load(response)['data']
+            self.assertTrue(any('quality-' + active in row['display_name'] for row in catalog))
+        self.assertIsNone(self.process.poll())
 
     def test_hot_switch_keeps_inflight_route_and_same_process(self):
         self.write_config("hold")

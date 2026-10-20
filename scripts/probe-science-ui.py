@@ -18,6 +18,7 @@ import urllib.parse
 repo = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--settings', action='store_true', help='Inspect every native settings module')
+parser.add_argument('--models', action='store_true', help='Inspect model routing against an isolated local gateway')
 parser.add_argument('--collect', action='store_true', help='Collect native settings text before asserting translations')
 options = parser.parse_args()
 candidate = Path.home() / '.claude-science/bin/claude-science'
@@ -41,7 +42,18 @@ for key in ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'BUN_
 args = ['--data-dir', str(auth), '--config', str(config)]
 profile = '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))'
 spec = importlib.util.spec_from_file_location('bridge', repo / 'scripts/science-mcp-manage.py'); bridge = importlib.util.module_from_spec(spec); spec.loader.exec_module(bridge)
+gateway = None
 try:
+ if options.models:
+  with socket.socket() as sock:
+   sock.bind(('127.0.0.1',0)); gateway_port = sock.getsockname()[1]
+  gateway_config = root/'gateway.json'
+  gateway_config.write_text(json.dumps({'provider':'fixture','providers':{'fixture':{'protocol':'responses','base_url':'http://127.0.0.1:9','key':'fixture-key','model':'fixture-default','quality_model':'fixture-quality','fast_model':''}}}))
+  gateway_config.chmod(0o600)
+  gateway = subprocess.Popen([sys.executable,str(repo/'proxy/csswitch_proxy.py'),'--config',str(gateway_config),'--port',str(gateway_port)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  env['ANTHROPIC_BASE_URL'] = 'http://127.0.0.1:'+str(gateway_port)
+  env['no_proxy'] = env['NO_PROXY'] = '127.0.0.1,localhost,::1'
+  env['https_proxy'] = env['HTTPS_PROXY'] = env['ANTHROPIC_BASE_URL']
  with (root/'science.log').open('w') as log:
   subprocess.run(['/usr/bin/sandbox-exec','-p',profile,str(binary),'serve',*args,'--port',str(port),'--sandbox-port','0','--detached','--no-browser','--no-auto-update'],env=env,stdout=log,stderr=log,timeout=50,check=True)
  for _ in range(80):
@@ -54,7 +66,8 @@ try:
  nonce = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['nonce'][0]
  client = bridge.Bridge('http://127.0.0.1:'+str(port),nonce,str(auth),str(auth))
 
- ui_config = root/'ui-config.json'; ui_config.write_text('{"science_zh":true}')
+ ui_config = root/'ui-config.json'; ui_config.write_text(gateway_config.read_text() if options.models else '{"science_zh":true}')
+ ui_config.chmod(0o600)
  ready=root/'ui-ready.json'
  ui_proc=subprocess.Popen([sys.executable,str(repo/'scripts/science-ui-proxy.py'),'--upstream-port',str(port),'--config',str(ui_config),'--ready',str(ready)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  try:
@@ -65,8 +78,8 @@ try:
   fresh=subprocess.run([str(binary),'url',*args],env=env,capture_output=True,text=True,timeout=15,check=True)
   link=next(line for line in fresh.stdout.splitlines() if line.startswith('http://'))
   u=urllib.parse.urlsplit(link)
-  (root/'browser-input.json').write_text(json.dumps({'url':urllib.parse.urlunsplit(('http','127.0.0.1:'+str(ui_port),u.path,u.query,'')),'config':str(ui_config),'root':str(root)}))
-  script = 'native-science-settings.mjs' if options.settings else 'native-science-ui.mjs'
+  (root/'browser-input.json').write_text(json.dumps({'url':urllib.parse.urlunsplit(('http','127.0.0.1:'+str(ui_port),u.path,u.query,'')),'config':str(ui_config),'root':str(root), 'gateway_config':str(root/'gateway.json')}))
+  script = 'native-science-models.mjs' if options.models else 'native-science-settings.mjs' if options.settings else 'native-science-ui.mjs'
   browser_args = [shutil.which('node'), str(repo/'desktop/tests'/script), str(root/'browser-input.json')]
   if options.collect: browser_args.append('--collect')
   result=subprocess.run(browser_args,capture_output=True,text=True,timeout=180 if options.settings else 90)
@@ -75,5 +88,6 @@ try:
  finally:
   ui_proc.terminate();ui_proc.wait(timeout=10)
 finally:
+ if gateway is not None: gateway.terminate(); gateway.wait(timeout=10)
  subprocess.run([str(binary),'stop',*args],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)
  print('FIXTURE',root,flush=True)

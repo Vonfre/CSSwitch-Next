@@ -152,3 +152,7 @@ body[data-view="sessions"].session-detail .session-reader { display:flex; flex-d
 .launch-progress > svg { flex-shrink:0; color:var(--accent); }.launch-progress p { color:var(--muted); margin:5px 0 0; font-size:12px; }.launch-help { margin-bottom:16px; }
 @media (max-width:500px) { .compat-heading { flex-direction:column; }.compat-summary { gap:7px; }.compat-summary > div { padding:10px; }.compat-summary strong { font-size:16px; } }
 @media (prefers-reduced-motion:reduce) { .spin { animation:none; } }
+
+.route-protocol { margin-left:auto; min-width:0; }
+.route-protocol select { width:auto; max-width:190px; min-height:28px; font-size:11px; padding:3px 24px 3px 8px; }
+.test-role-field { max-width:260px; margin-bottom:16px; }

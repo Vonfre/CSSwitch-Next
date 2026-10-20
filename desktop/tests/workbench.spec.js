@@ -294,3 +294,40 @@ test('active connection deletion is protected only while the gateway runs', asyn
   await page.locator('[aria-label="更多操作 GPT"]').click();
   await expect(page.getByRole('button', { name: '删除连接', exact: true }).filter({ visible: true })).toBeEnabled();
 });
+
+
+test('mixed API protocols persist, inherit when empty and test each role separately', async ({ page }) => {
+  await fixture(page); await page.goto('/'); await edit(page, 'GPT');
+  await tab(page, '模型');
+  await expect(page.locator('#fast_protocol')).toBeDisabled();
+  await page.locator('#quality_model').fill('gpt-6-astra');
+  await page.locator('#fast_model').fill('claude-sonnet-5-5');
+  await page.locator('#fast_protocol').selectOption('anthropic');
+  await page.getByRole('button', { name: '选择快速模型', exact: true }).click();
+  await expect.poll(async () => (await page.evaluate(() => window.testCalls.filter(c => c.cmd === 'list_models').at(-1)))?.args.query.model_protocol).toBe('anthropic');
+  await page.locator('#closeModels').click();
+  await tab(page, '测试');
+  await page.locator('#test_role').selectOption('fast');
+  await expect(page.locator('#testModel')).toHaveText('claude-sonnet-5-5');
+  await expect(page.locator('#testProtocol')).toHaveText('Anthropic Messages');
+  await page.getByRole('button', { name: '测试连接', exact: true }).click();
+  await expect(page.locator('#verification')).toContainText('测试通过');
+  const probe = await page.evaluate(() => window.testCalls.filter(c => c.cmd === 'test_connection').at(-1).args.input);
+  expect(probe.test_role).toBe('fast'); expect(probe.fast_protocol).toBe('anthropic');
+  expect(probe.key).toBeNull();
+  await page.locator('#test_role').selectOption('quality');
+  await expect(page.locator('#testProtocol')).toHaveText('OpenAI Responses');
+  await expect(page.locator('#verification')).not.toContainText('测试通过');
+  await page.getByRole('button', { name: '保存连接', exact: true }).click();
+  await edit(page, 'GPT'); await tab(page, '模型');
+  await expect(page.locator('#fast_protocol')).toHaveValue('anthropic');
+  await expect(page.locator('#quality_protocol')).toHaveValue('');
+  await page.locator('#fast_model').fill('');
+  await expect(page.locator('#fast_protocol')).toBeDisabled();
+  await tab(page, '测试'); await page.locator('#test_role').selectOption('fast');
+  await expect(page.locator('#testModel')).toHaveText('gpt-6.1-sol');
+  await expect(page.locator('#testProtocol')).toHaveText('OpenAI Responses');
+  await tab(page, '模型'); await page.locator('#fast_model').fill('claude-sonnet-5-5');
+  mkdirSync('../artifacts', { recursive: true });
+  await page.screenshot({ path: '../artifacts/mixed-protocol-settings.png' });
+});

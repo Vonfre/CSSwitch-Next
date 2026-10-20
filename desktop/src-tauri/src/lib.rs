@@ -360,6 +360,7 @@ fn public_config(cfg: &config::Config) -> serde_json::Value {
     let connections: Vec<_> = ids.iter().filter_map(|id| cfg.connection_for(id).map(|p| json!({
         "id": id, "name": p.name, "protocol": p.protocol, "base_url": p.base_url,
         "model": p.model, "quality_model": p.quality_model, "fast_model": p.fast_model,
+        "quality_protocol": p.quality_protocol, "fast_protocol": p.fast_protocol,
         "max_tokens": p.max_tokens, "key_masked": config::mask(&p.key), "has_key": !p.key.is_empty()
     }))).collect();
     json!({
@@ -488,6 +489,12 @@ struct ConnectionInput {
     model: String,
     quality_model: String,
     fast_model: String,
+    #[serde(default)]
+    quality_protocol: String,
+    #[serde(default)]
+    fast_protocol: String,
+    #[serde(default)]
+    test_role: String,
     max_tokens: u32,
     key: Option<String>,
 }
@@ -510,6 +517,8 @@ fn save_connection(input: ConnectionInput) -> Result<(), String> {
         model: input.model.trim().into(),
         quality_model: input.quality_model.trim().into(),
         fast_model: input.fast_model.trim().into(),
+        quality_protocol: input.quality_protocol,
+        fast_protocol: input.fast_protocol,
         max_tokens: input.max_tokens,
         ..Default::default()
     };
@@ -596,11 +605,14 @@ fn probe_profile(input: ConnectionInput, cfg: &config::Config) -> Result<config:
         protocol: input.protocol,
         base_url: input.base_url,
         key: input.key,
+        model_protocol: String::new(),
     }, cfg)?;
     profile.name = input.name.trim().into();
     profile.model = input.model.trim().into();
     profile.quality_model = input.quality_model.trim().into();
     profile.fast_model = input.fast_model.trim().into();
+    profile.quality_protocol = input.quality_protocol;
+    profile.fast_protocol = input.fast_protocol;
     profile.max_tokens = input.max_tokens;
     profile.validate()?;
     Ok(profile)
@@ -610,12 +622,17 @@ fn probe_profile(input: ConnectionInput, cfg: &config::Config) -> Result<config:
 async fn test_connection(app: tauri::AppHandle, input: ConnectionInput) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let cfg = config::load_from(&config::default_dir()).map_err(|e| e.to_string())?;
+        let role = if input.test_role.is_empty() { "default".to_owned() } else { input.test_role.clone() };
+        if !["default", "quality", "fast"].contains(&role.as_str()) {
+            return Err("测试模型档位无效。".into());
+        }
         let profile = probe_profile(input, &cfg)?;
         let root = asset_root(&app).ok_or("找不到代理资源。")?;
         let py = proc::find_exe("python3").ok_or("未找到 python3。")?;
         // Unsaved credentials stay in stdin, never in a temporary config or argv.
         let mut child = Command::new(py).arg("-B")
             .arg(root.join("proxy/csswitch_proxy.py")).arg("--probe-stdin")
+            .arg("--probe-role").arg(role)
             .env_remove("CSSWITCH_UPSTREAM_URL")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
             .spawn().map_err(|_| "无法启动连接测试。")?;
@@ -637,6 +654,8 @@ struct ModelQuery {
     protocol: String,
     base_url: String,
     key: Option<String>,
+    #[serde(default)]
+    model_protocol: String,
 }
 
 fn catalog_profile(query: ModelQuery, cfg: &config::Config) -> Result<config::ProviderCfg, String> {
@@ -661,6 +680,18 @@ fn catalog_profile(query: ModelQuery, cfg: &config::Config) -> Result<config::Pr
     };
     if profile.key.is_empty() || profile.key.len() > 16384 || profile.key.contains(['\r', '\n']) {
         return Err("请填写有效 API Key。".into());
+    }
+    if !query.model_protocol.is_empty() {
+        // The key is reused only after checking the original saved endpoint above.
+        // A role override changes the API suffix on that same connection.
+        for suffix in ["/messages", "/chat/completions", "/responses"] {
+            if profile.base_url.ends_with(suffix) {
+                profile.base_url.truncate(profile.base_url.len() - suffix.len());
+                break;
+            }
+        }
+        profile.protocol = query.model_protocol;
+        profile.validate()?;
     }
     Ok(profile)
 }
@@ -1166,7 +1197,8 @@ mod tests {
             key: "private-test-key".into(), ..Default::default()
         });
         let query = |url: &str, key: Option<&str>| super::ModelQuery {
-            id: "test".into(), protocol: "responses".into(), base_url: url.into(), key: key.map(str::to_owned)
+            id: "test".into(), protocol: "responses".into(), base_url: url.into(), key: key.map(str::to_owned),
+            model_protocol: String::new()
         };
         assert!(super::catalog_profile(query("https://example.com/v1/", None), &cfg).is_ok());
         assert!(super::catalog_profile(query("https://other.example.com/v1", None), &cfg).is_err());
@@ -1189,6 +1221,37 @@ mod tests {
     }
 
     #[test]
+    fn model_protocol_overrides_roundtrip_and_reuse_only_the_same_connection_key() {
+        let mut cfg = super::config::Config::default();
+        let profile = super::config::ProviderCfg {
+            name: "Mixed".into(), protocol: "responses".into(),
+            base_url: "https://example.com/v1/responses".into(), model: "gpt-default".into(),
+            fast_model: "claude-fast".into(), fast_protocol: "anthropic".into(),
+            max_tokens: 8192, key: "private-test-key".into(), ..Default::default()
+        };
+        profile.validate().unwrap();
+        cfg.providers.insert("mixed".into(), profile);
+        let restored: super::config::Config = serde_json::from_slice(&serde_json::to_vec(&cfg).unwrap()).unwrap();
+        assert_eq!(restored.providers["mixed"].fast_protocol, "anthropic");
+        let public = super::public_config(&restored);
+        assert_eq!(public["connections"][0]["fast_protocol"], "anthropic");
+        assert!(!public.to_string().contains("private-test-key"));
+        let query = |url: &str, protocol: &str| super::ModelQuery {
+            id: "mixed".into(), protocol: "responses".into(), base_url: url.into(),
+            key: None, model_protocol: protocol.into()
+        };
+        let catalog = super::catalog_profile(query("https://example.com/v1/responses", "anthropic"), &restored).unwrap();
+        assert_eq!(catalog.protocol, "anthropic");
+        assert_eq!(catalog.base_url, "https://example.com/v1");
+        assert_eq!(catalog.key, "private-test-key");
+        assert!(super::catalog_profile(query("https://other.example.com/v1/responses", "anthropic"), &restored).is_err());
+        assert!(super::catalog_profile(query("https://example.com/v1/responses", "invalid"), &restored).is_err());
+        let mut invalid = restored.providers["mixed"].clone();
+        invalid.fast_protocol = "invalid".into();
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
     fn draft_probe_keeps_saved_config_and_restricts_key_reuse() {
         let mut cfg = super::config::Config::default();
         cfg.providers.insert("test".into(), super::config::ProviderCfg {
@@ -1199,7 +1262,8 @@ mod tests {
         let input = |url: &str, key: Option<&str>| super::ConnectionInput {
             id: "test".into(), name: "Draft".into(), protocol: "responses".into(),
             base_url: url.into(), model: "draft-model".into(), quality_model: "".into(),
-            fast_model: "".into(), max_tokens: 8192, key: key.map(str::to_owned)
+            fast_model: "".into(), quality_protocol: "".into(), fast_protocol: "".into(),
+            test_role: "".into(), max_tokens: 8192, key: key.map(str::to_owned)
         };
         let p = super::probe_profile(input("https://example.com/v1", None), &cfg).unwrap();
         assert_eq!(p.model, "draft-model");

@@ -14,7 +14,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "proxy"))
-from routing import endpoint_for, load_profile
+from routing import endpoint_for, load_profile, profile_from_config, model_endpoint, select_model_route
 from stream_bridge import Bridge
 import csswitch_proxy as cs
 
@@ -27,6 +27,24 @@ class RouteContracts(unittest.TestCase):
         for url in ("http://example.test", "https://user:password@example.test", "https://example.test?key=secret"):
             with self.assertRaises(ValueError):
                 endpoint_for(url, "openai")
+
+    def test_role_protocol_defaults_validation_and_explicit_endpoint(self):
+        cfg = {'provider': 'p', 'providers': {'p': {'protocol': 'responses',
+            'base_url': 'https://example.test/api/v1/responses', 'key': 'private-key',
+            'model': 'gpt-model', 'fast_protocol': 'anthropic'}}}
+        plan = profile_from_config(cfg, {})
+        self.assertEqual(plan['prov']['model_routes']['haiku']['mode'], 'responses')
+        cfg['providers']['p']['fast_model'] = 'claude-sonnet-5-5'
+        plan = profile_from_config(cfg, {})
+        self.assertEqual(plan['prov']['model_routes']['haiku']['url'], 'https://example.test/api/v1/messages')
+        selected = select_model_route(plan, 'claude-haiku-6', 'claude-sonnet-5-5')
+        self.assertEqual(selected['prov']['mode'], 'anthropic')
+        self.assertEqual(plan['prov']['mode'], 'responses')
+        cfg['providers']['p']['quality_protocol'] = 'invalid'
+        with self.assertRaises(ValueError):
+            profile_from_config(cfg, {})
+        with self.assertRaises(ValueError):
+            model_endpoint('https://example.test/v1/messages', 'responses', 'anthropic')
 
     def test_images_and_responses_tools_roundtrip(self):
         cs.PROV = cs.PROVIDERS["qwen"]
@@ -70,7 +88,7 @@ class GatewayIntegration(unittest.TestCase):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 cls.hits.append((self.path, body, dict(self.headers)))
-                if self.path.startswith("/hold/"):
+                if self.path.startswith("/hold/") and body.get("model") == "quality-hold":
                     cls.entered.set()
                     cls.release.wait(5)
                 protocol = "responses" if self.path.endswith("/responses") else "anthropic" if self.path.endswith("/messages") else "openai"
@@ -136,11 +154,12 @@ class GatewayIntegration(unittest.TestCase):
             raise RuntimeError("Gateway did not start")
 
     @classmethod
-    def write_config(cls, active):
+    def write_config(cls, active, changes=None):
         cfg = {"provider": active, "providers": {id: {"name": id, "protocol": protocol, "base_url": cls.base + "/" + id,
             "model": "model-" + id, "quality_model": "quality-" + id, "fast_model": "fast-" + id,
             "key": "test-key-" + id, "max_tokens": 8192} for id, protocol in
             [("chat", "openai"), ("responses", "responses"), ("native", "anthropic"), ("hold", "openai")]}}
+        cfg["providers"][active].update(changes or {})
         tmp = cls.config.with_suffix(".tmp")
         fd = os.open(tmp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -184,6 +203,74 @@ class GatewayIntegration(unittest.TestCase):
         self.assertTrue(all(e["input_tokens"] == 11 and e["output_tokens"] == 5 for e in entries))
         self.assertEqual(os.stat(self.usage).st_mode & 0o777, 0o600)
         self.assertNotIn("test-key", self.usage.read_text())
+
+    def test_mixed_protocol_roles_stream_nonstream_and_credentials(self):
+        self.write_config('chat', {'quality_protocol': 'responses', 'fast_protocol': 'anthropic',
+                                   'fast_model': 'claude-sonnet-5-5'})
+        for stream in (False, True):
+            for alias, suffix, model, protocol in [
+                ('claude-sonnet-5', '/chat/completions', 'model-chat', 'openai'),
+                ('claude-opus-6', '/responses', 'quality-chat', 'responses'),
+                ('claude-haiku-5', '/messages', 'claude-sonnet-5-5', 'anthropic'),
+                ('claude-sonnet-5-5', '/messages', 'claude-sonnet-5-5', 'anthropic'),
+            ]:
+                result = self.request(stream=stream, model=alias)
+                self.assertIn('message_stop' if stream else 'OK', result)
+                path, body, headers = self.hits[-1]
+                self.assertEqual(path, '/chat/v1' + suffix)
+                self.assertEqual(body['model'], model)
+                self.assertEqual(headers.get('X-Api-Key') if protocol == 'anthropic' else headers.get('Authorization'),
+                                 'test-key-chat' if protocol == 'anthropic' else 'Bearer test-key-chat')
+                self.assertNotIn('inbound-', json.dumps(headers))
+                self.assertEqual('input' in body, protocol == 'responses')
+                if stream and protocol != 'anthropic':
+                    self.assertIn('input_json_delta', result)
+        for _ in range(30):
+            entries = [json.loads(line) for line in self.usage.read_text().splitlines()]
+            if entries[-1].get('model') == 'claude-sonnet-5-5':
+                break
+            time.sleep(.01)
+        self.assertEqual(entries[-1]['protocol'], 'anthropic')
+
+    def test_concurrent_mixed_requests_and_hot_edits_keep_inflight_protocol(self):
+        self.write_config('hold', {'quality_protocol': 'responses', 'fast_protocol': 'anthropic'})
+        self.entered.clear()
+        self.release.clear()
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                pending = pool.submit(self.request, True, 'claude-opus-5')
+                self.assertTrue(self.entered.wait(3))
+                self.assertIn('message_stop', self.request(stream=True, model='claude-haiku-4-5'))
+                self.assertEqual(self.hits[-1][0], '/hold/v1/messages')
+                self.assertFalse(pending.done())
+                self.write_config('hold', {'quality_protocol': 'anthropic', 'fast_protocol': 'openai'})
+                self.assertIn('OK', self.request(model='claude-haiku-4-5'))
+                self.assertEqual(self.hits[-1][0], '/hold/v1/chat/completions')
+                self.release.set()
+                self.assertIn('input_json_delta', pending.result())
+        finally:
+            self.release.set()
+        hit = next(h for h in reversed(self.hits) if h[1]['model'] == 'quality-hold')
+        self.assertEqual(hit[0], '/hold/v1/responses')
+        self.assertEqual(hit[2]['Authorization'], 'Bearer test-key-hold')
+
+    def test_probe_mixed_roles_without_saving_or_switching(self):
+        self.write_config('chat')
+        before = self.config.read_bytes()
+        cfg = {'provider': 'draft', 'providers': {'draft': {
+            'protocol': 'responses', 'base_url': self.base + '/draft/v1/responses',
+            'model': 'gpt-default', 'quality_model': 'gpt-quality', 'fast_model': 'claude-fast',
+            'fast_protocol': 'anthropic', 'key': 'probe-private-key'}}}
+        script = str(pathlib.Path(__file__).resolve().parents[1] / 'proxy/csswitch_proxy.py')
+        for role, model, suffix in [('default', 'gpt-default', '/responses'),
+                                    ('quality', 'gpt-quality', '/responses'), ('fast', 'claude-fast', '/messages')]:
+            out = subprocess.run([sys.executable, script, '--probe-stdin', '--probe-role', role],
+                                 input=json.dumps(cfg).encode(), capture_output=True, timeout=30)
+            self.assertTrue(json.loads(out.stdout)['ok'], out.stdout)
+            self.assertEqual(self.hits[-1][0], '/draft/v1' + suffix)
+            self.assertEqual(self.hits[-1][1]['model'], model)
+            self.assertNotIn(b'probe-private-key', out.stdout + out.stderr)
+        self.assertEqual(self.config.read_bytes(), before)
 
     def test_science_family_routes_change_without_restarting_gateway(self):
         for active in ('chat', 'responses', 'native'):

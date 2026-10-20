@@ -49,6 +49,10 @@ pub struct ProviderCfg {
     pub quality_model: String,
     #[serde(default)]
     pub fast_model: String,
+    #[serde(default)]
+    pub quality_protocol: String,
+    #[serde(default)]
+    pub fast_protocol: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
 }
@@ -93,6 +97,11 @@ impl ProviderCfg {
         }
         if !["anthropic", "openai", "responses"].contains(&self.protocol.as_str()) {
             return Err("协议必须是 Anthropic Messages、OpenAI Chat 或 OpenAI Responses。".into());
+        }
+        for protocol in [&self.quality_protocol, &self.fast_protocol] {
+            if !["", "anthropic", "openai", "responses"].contains(&protocol.as_str()) {
+                return Err("模型协议必须跟随连接，或选择 Anthropic Messages、OpenAI Chat、OpenAI Responses。".into());
+            }
         }
         let url = url::Url::parse(&self.base_url).map_err(|_| "API 地址不是有效 URL。")?;
         let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));

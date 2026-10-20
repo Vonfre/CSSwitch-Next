@@ -101,7 +101,7 @@ function mark(p) {
   return `<span class="provider-mark ${esc(p.protocol)}">${icon(templateIcons[match?.[0] || 'custom'])}</span>`;
 }
 function testSignature(input) {
-  return JSON.stringify([input.protocol, input.base_url.trim().replace(/\/+$/, ''), input.model, input.quality_model || '', input.fast_model || '', Number(input.max_tokens)]);
+  return JSON.stringify([input.protocol, input.base_url.trim().replace(/\/+$/, ''), input.model, input.quality_model || '', input.fast_model || '', input.quality_protocol || '', input.fast_protocol || '', input.test_role || 'default', Number(input.max_tokens)]);
 }
 
 function renderRuntime() {

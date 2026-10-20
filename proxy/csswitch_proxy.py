@@ -29,7 +29,7 @@ import urllib.request
 import urllib.error
 from contextvars import ContextVar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from routing import load_profile, profile_from_config
+from routing import load_profile, profile_from_config, select_model_route
 from science_models import family, configure
 from responses_adapter import from_chat, to_anthropic as responses_to_anthropic
 from stream_bridge import Bridge, events
@@ -187,6 +187,8 @@ def load_key(prov, args):
 def resolve_model(name):
     """把 Science 传来的模型名解析成当前 provider 的目标模型。
     优先：选择器里选中的 provider 原生名 > 显式映射 > 去日期后缀 > 前缀匹配 > 默认。"""
+    if 'resolved_model' in prov():
+        return prov()['resolved_model']
     if not name:
         return prov()["default_model"]
     mm = prov()["model_map"]
@@ -471,6 +473,11 @@ class H(BaseHTTPRequestHandler):
                 "type": "invalid_request_error",
                 "message": "request body must be a JSON object with a 'messages' array"}})
             return
+        if not isinstance(areq.get('model', ''), str):
+            self._send_json(400, {"type": "error", "error": {
+                "type": "invalid_request_error", "message": "model must be a string"}})
+            return
+        CURRENT_ROUTE.set(select_model_route(route(), areq.get('model'), resolve_model(areq.get('model'))))
         _dd = os.environ.get("PROXY_DUMP_REQ")
         if _dd:
             try:
@@ -776,6 +783,7 @@ if __name__ == "__main__":
     ap.add_argument("--usage-file", default=None)
     ap.add_argument("--probe", action="store_true")
     ap.add_argument("--probe-stdin", action="store_true")
+    ap.add_argument("--probe-role", choices=("default", "quality", "fast"), default="default")
     args = ap.parse_args()
     PROV_NAME = args.provider
     CONFIG_PATH, USAGE_PATH, PROBE = args.config, args.usage_file, args.probe or args.probe_stdin
@@ -814,7 +822,10 @@ if __name__ == "__main__":
         sys.exit(1)
     if PROBE:
         started = time.monotonic()
-        req = {"model": "claude-sonnet-4-6", "max_tokens": 16, "messages": [{"role": "user", "content": "Reply OK."}]}
+        alias = {'default': 'claude-sonnet-4-6', 'quality': 'claude-opus-4-8', 'fast': 'claude-haiku-4-5'}[args.probe_role]
+        CURRENT_ROUTE.set(select_model_route(route(), alias, resolve_model(alias)))
+        PROV = prov()
+        req = {"model": alias, "max_tokens": 16, "messages": [{"role": "user", "content": "Reply OK."}]}
         try:
             if PROV["mode"] == "anthropic":
                 req["model"] = resolve_model(req["model"])

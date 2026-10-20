@@ -3,7 +3,7 @@ import copy
 import json
 import os
 import stat
-from science_models import configure
+from science_models import configure, family
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -28,6 +28,27 @@ def endpoint_for(base, protocol):
     if not path.endswith("/v1"):
         path += "/v1"
     return urlunsplit((u.scheme, u.netloc, path + suffix, "", ""))
+
+
+def model_endpoint(base, default_protocol, protocol):
+    """Change only the inference suffix; keep the configured host and API prefix."""
+    original = endpoint_for(base, default_protocol)
+    return endpoint_for(original[:-len(SUFFIXES[default_protocol])], protocol)
+
+
+def select_model_route(plan, name, target):
+    """Pin one model/protocol pair in this request's snapshot, never global state."""
+    routes = plan['prov'].get('model_routes')
+    if not routes:
+        return plan
+    kind = family(name) if name in plan['prov']['model_map'] else None
+    if kind is None:
+        # Exact upstream IDs keep their configured route, including Claude IDs.
+        kind = next((k for k in ('sonnet', 'opus', 'haiku') if routes[k]['model'] == name), None)
+    kind = kind or family(name) or 'sonnet'
+    selected = routes[kind]
+    return {**plan, 'prov': {**plan['prov'], 'mode': selected['mode'],
+                            'url': selected['url'], 'resolved_model': target}}
 
 
 def load_profile(path, presets, selected=None):
@@ -65,6 +86,15 @@ def profile_from_config(cfg, presets, selected=None):
                 "models": [],
                 "model_map": {"claude-opus-5": quality, "claude-opus-4-8": quality, "claude-sonnet-5": model,
                               "claude-sonnet-4-6": model, "claude-haiku-4-5": fast}}
+        routes = {}
+        for kind, field, target in [('sonnet', 'model', model), ('opus', 'quality_model', quality), ('haiku', 'fast_model', fast)]:
+            override = p.get(field.replace('_model', '') + '_protocol', '') if field != 'model' else ''
+            if override and override not in SUFFIXES:
+                raise ValueError('Unsupported model API protocol')
+            # A blank model inherits both the default model and its protocol.
+            mode = (override if p.get(field, '').strip() else '') or protocol
+            routes[kind] = {'model': target, 'mode': mode, 'url': model_endpoint(p['base_url'], protocol, mode)}
+        prov['model_routes'] = routes
     configure(prov)
     key = p.get("key", "").strip()
     if not key:

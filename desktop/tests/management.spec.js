@@ -337,12 +337,15 @@ test('session execution timeline pairs tool results, preserves failures, expands
 
 test('Science plugin switches persist independently and stay reversible', async ({ page }) => {
   await setup(page); await page.getByRole('button',{name:'设置',exact:true}).click();
-  await expect(page.getByRole('switch',{name:'使用本机 MCP'})).toHaveAttribute('aria-checked','true');
+  await expect(page.getByRole('switch',{name:'使用本机 MCP'})).toHaveCount(0);
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','false');
   await page.getByRole('switch',{name:'Science 页面汉化'}).click();
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','true');
+  await page.getByRole('button',{name:'MCP 管理',exact:true}).click();
+  await expect(page.getByRole('switch',{name:'使用本机 MCP'})).toHaveAttribute('aria-checked','true');
   await page.getByRole('switch',{name:'使用本机 MCP'}).click();
   await expect(page.getByRole('switch',{name:'使用本机 MCP'})).toHaveAttribute('aria-checked','false');
+  await page.getByRole('button',{name:'设置',exact:true}).click();
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','true');
   await page.getByRole('switch',{name:'Science 页面汉化'}).click();
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','false');

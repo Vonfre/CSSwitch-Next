@@ -2,12 +2,18 @@ import { test, expect } from '@playwright/test';
 
 async function setup(page, stopped = false, blocked = false) {
   await page.addInitScript(({ stopped, blocked }) => {
+    let features = { science_local_mcp: true, science_zh: true };
     let connectors = [{ id: 'local:sample', name: 'sample', description: '<untrusted>', source: 'local-stdio', transport: 'stdio', authState: 'not-required', attachedAgents: [] },
       { id: 'remote-id', name: 'remote', source: 'custom', transport: 'streamable_http', authState: 'unauthorized', attachedAgents: [] }];
     window.testCalls = [];
+    window.setMcpRows = rows => { connectors = rows; };
     window.__TAURI__ = { core: { invoke: async (cmd, args = {}) => {
       window.testCalls.push({ cmd, args });
-      if (cmd === 'get_config') return { connections: [], mode: 'proxy', provider: '', proxy_port: 18992, sandbox_port: 8991 };
+      if (cmd === 'get_config') return { ...features, connections: [], mode: 'proxy', provider: '', proxy_port: 18992, sandbox_port: 8991 };
+      if (cmd === 'set_science_features') {
+        if (window.featureFailure) throw new Error('设置保存失败，请重试');
+        features = { science_local_mcp: args.localMcp, science_zh: args.zh }; return { message: '已保存' };
+      }
       if (cmd === 'status') return { proxy: 'amber', sandbox: 'amber' };
       if (cmd === 'mcp_manage') {
         if (stopped) throw new Error('请先启动 CSSwitch 所管理的第三方 Science。');
@@ -32,7 +38,9 @@ async function setup(page, stopped = false, blocked = false) {
 test('directory 401 does not block independent MCP; binding, tools, permissions, OAuth and deletion work', async ({ page }) => {
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await setup(page);
-  await expect(page.locator('#content')).toContainText('HTTP 401');
+  await page.getByRole('button', { name: '官方目录说明', exact: true }).click();
+  await expect(page.locator('#helpPopover')).toContainText('HTTP 401');
+  await page.keyboard.press('Escape');
   await expect(page.locator('untrusted')).toHaveCount(0);
   const row = page.locator('[data-mcp-id="local:sample"]');
   await row.getByRole('button', { name: '绑定 Science' }).click();
@@ -52,6 +60,45 @@ test('directory 401 does not block independent MCP; binding, tools, permissions,
   const calls = await page.evaluate(() => window.testCalls);
   expect(calls.some(c => c.args.operation === 'grant' && c.args.params.decision === 'ask')).toBe(true);
   expect(errors).toEqual([]);
+});
+
+test('local MCP preference works before Science starts, preserves translation and recovers from save failure', async ({ page }) => {
+  await setup(page, true);
+  const toggle = page.getByRole('switch', { name: '使用本机 MCP', exact: true });
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await page.evaluate(() => { window.featureFailure = true; }); await toggle.click();
+  await expect(page.locator('#notice')).toContainText('设置保存失败');
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await page.evaluate(() => { window.featureFailure = false; }); await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  const calls = await page.evaluate(() => window.testCalls);
+  expect(calls.filter(c => c.cmd === 'set_science_features').at(-1).args).toEqual({ localMcp: false, zh: true });
+  expect(calls.some(c => ['one_click_login', 'stop_all'].includes(c.cmd))).toBe(false);
+  expect(calls.filter(c => c.cmd === 'mcp_manage').every(c => c.args.operation === 'list')).toBe(true);
+});
+
+test('dense connector list keeps controls compact and contextual help inside a narrow viewport', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => {
+    window.setMcpRows(['BioMart', 'Cancer Models', 'CellGuide', 'Chemistry', 'Clinical Genomics', 'Drug Regulatory', 'Expression', 'Genes & Ontologies', 'Genomes', 'Human Genetics', 'Ketcher Chemistry', 'Literature Graph'].map((name, i) => ({
+      id: 'bundled:' + i, name, displayName: name, source: 'bundled', transport: 'stdio', enabled: true,
+      description: 'Science 本机科研连接器，保留原始工具参数、审批与数据源许可。', connectionStatus: 'connected', attachedAgents: ['OPERON'],
+    })));
+  });
+  await page.locator('#refreshBtn').click();
+  await expect(page.locator('.mcp-row')).toHaveCount(12);
+  expect(await page.locator('.mcp-row').first().evaluate(el => el.getBoundingClientRect().top)).toBeLessThan(370);
+  await page.screenshot({ path: '../artifacts/mcp-redesign-dense.png' });
+  await page.setViewportSize({ width: 390, height: 844 }); await page.locator('#themeBtn').click();
+  await page.getByRole('button', { name: '本机 MCP说明', exact: true }).focus(); await page.keyboard.press('Enter');
+  await expect(page.locator('#helpPopover')).toBeVisible();
+  const bounds = await page.locator('#helpPopover').boundingBox();
+  expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+  await page.keyboard.press('Escape');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect(page.locator('#addMcp')).toHaveCSS('background-color', 'rgb(237, 237, 237)');
+  await expect(page.locator('#localMcpToggle')).toHaveCSS('background-color', 'rgb(237, 237, 237)');
+  await page.screenshot({ path: '../artifacts/mcp-redesign-mobile.png', animations: 'disabled' });
 });
 
 test('local add validates JSON, retains errors, and clears secret drafts after save', async ({ page }) => {

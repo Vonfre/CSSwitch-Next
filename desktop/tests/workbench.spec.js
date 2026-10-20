@@ -216,6 +216,7 @@ test('logs, usage export, shared history settings, ports and official mode remai
   await page.getByRole('button', { name: '运行日志', exact: true }).click(); await expect(page.locator('#logText')).toContainText('<unsafe-tag>');
   expect(await page.locator('unsafe-tag').count()).toBe(0);
   await page.getByRole('button', { name: '设置', exact: true }).click(); await expect(page.locator('#content')).toContainText('32,754');
+  await page.locator('.settings-advanced > summary').click();
   await page.locator('#proxyPort').fill('8765'); await page.getByRole('button', { name: '保存端口', exact: true }).click();
   await expect(page.locator('#notice')).toContainText('保留端口');
   await page.locator('#proxyPort').fill('18992'); await page.locator('#sandboxPort').fill('8765');
@@ -273,6 +274,7 @@ test('every saved connection can be removed, including old presets and the last 
   await page.getByRole('button', { name: '刷新状态', exact: true }).click();
   await expect(page.locator('.connection-row')).toHaveCount(0);
   await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.locator('.settings-advanced > summary').click();
   await page.locator('#proxyPort').fill('18993');
   await page.getByRole('button', { name: '保存端口', exact: true }).click();
   await expect(page.locator('#notice')).toContainText('端口已保存');

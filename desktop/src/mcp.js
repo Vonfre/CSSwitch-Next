@@ -9,36 +9,45 @@ async function loadMcp() {
 }
 const mcpSources = { 'local-stdio': '本地 stdio', custom: '远程 MCP', bundled: 'Science 内置', directory: 'Claude 目录', antmcp: '托管 MCP' };
 const mcpStatuses = { connected: '已连接', connecting: '连接中', pending: '加载中', failed: '连接失败', error: '连接失败', auth_required: '需要授权', disabled: '已停用', loaded: '工具已加载' };
+function mcpPreferences(data = null) {
+  const enabled = state.config.science_local_mcp !== false;
+  const pending = data && typeof data.localMcpActive === 'boolean' && enabled !== data.localMcpActive;
+  const total = data?.scienceProfiles?.length || 24;
+  const ready = (data?.scienceProfiles || []).filter(p => p.ready).length;
+  return `<section class="mcp-preferences"><div class="preference-row"><div class="preference-label"><div>使用本机 MCP ${help('本机 MCP', '第三方模式使用本机科研连接器。保留 20 个原生实现，PubMed、ChEMBL、bioRxiv、Clinical Trials 使用本地版本。工具权限和服务授权仍由 Science 管理。开关在下次启动 Science 后生效，不会立即重启研究任务。')}</div><span>${data ? `${ready}/${total} 已连接` : 'Science 本机科研连接器'}${pending ? ' · 下次启动生效' : enabled ? ' · 已开启' : ' · 已关闭'}</span></div><div class="actions">${data ? `<button class="btn quiet" id="installScienceMcp" aria-label="接入 24 个本机连接器" ${!data.customAllowed ? 'disabled' : ''}>${ready ? '修复接入' : '接入连接器'}</button><button class="icon-btn" id="exportScienceMcp" title="导出本机 MCP 配置" aria-label="导出本机 MCP 配置">${icon('download')}</button>` : ''}<button class="switch" role="switch" id="localMcpToggle" aria-label="使用本机 MCP" aria-checked="${enabled}"><span></span></button></div></div></section>`;
+}
+function bindMcpPreferences() {
+  $('#localMcpToggle').onclick = () => action(async () => {
+    await call('set_science_features', { localMcp: state.config.science_local_mcp === false, zh: Boolean(state.config.science_zh) });
+    await loadConfig(); renderMcp(); notice('本机 MCP 设置已保存，下次启动 Science 生效。');
+  });
+}
 function renderMcp() {
   if (!mcpState.data) {
-    $('#content').innerHTML = `<div class="empty">${icon('network')}<strong>MCP 管理暂不可用</strong><span>${esc(mcpState.error || '正在读取连接器…')}</span><button class="btn" id="mcpWorkbench">返回提供商</button></div>`;
-    $('#mcpWorkbench').onclick = () => showView('workbench'); icons(); return;
+    $('#content').innerHTML = `${mcpPreferences()}<div class="empty">${icon('network')}<strong>MCP 管理暂不可用</strong><span>${esc(mcpState.error || '正在读取连接器…')}</span><button class="btn" id="mcpWorkbench">返回提供商</button></div>`;
+    $('#mcpWorkbench').onclick = () => showView('workbench'); bindMcpPreferences(); icons(); return;
   }
   const data = mcpState.data;
   const selected = new Set((data.scienceProfiles || []).filter(p => p.kind === 'local' && p.ready).map(p => p.profile));
   const rows = (data.connectors || []).filter(c => !(c.source === 'bundled' && selected.has(c.name)));
-  const profiles = data.scienceProfiles || [];
-  const ready = profiles.filter(p => p.ready).length;
   const directoryUnavailable = data.directoryHealth && !data.directoryHealth.ok;
-  const mcpPolicyNote = data.localMcpActive ? '本机 MCP 策略已生效，Claude 托管的科研连接器已停用。' : '下次启动 Science 将停用 Claude 托管的科研连接器。';
-  $('#content').innerHTML = `<section class="mcp-intro"><div><h2>Science 本机连接器</h2><p>24 个连接器使用本机工具及数据源自己的接口，保留原始名称、工具参数和审批。已有的 20 个本机连接器继续使用；PubMed、ChEMBL、bioRxiv、Clinical Trials 接入本地版本。</p></div><button class="btn primary" id="installScienceMcp" ${!data.customAllowed ? 'disabled' : ''}>${icon('download')}接入 24 个本机连接器</button></section>
-    <div class="mcp-note">${ready}/24 已连接。<button class="btn" id="exportScienceMcp">导出 24 个本机配置</button></div>
-    ${state.config.science_local_mcp !== false || data.localMcpActive ? `<div class="mcp-note">${mcpPolicyNote}请把所需服务绑定到 Science；工具审批和服务商授权仍由 Science 管理。可在设置中关闭此策略。</div>` : ''}
-    ${directoryUnavailable ? `<div class="mcp-note">Claude 官方目录当前不可用${data.directoryHealth.status ? `（HTTP ${esc(data.directoryHealth.status)}）` : ''}。下面的本地和自定义 MCP 使用各自的连接与授权，不依赖 Claude 目录登录。</div>` : ''}
-    ${!data.customAllowed ? '<div class="notice error">Science 组织策略禁止自定义连接器。</div>' : ''}
+  $('#content').innerHTML = `${mcpPreferences(data)}
+    ${directoryUnavailable ? `<div class="inline-context">${icon('cloud-off')}<span>官方目录离线</span>${help('官方目录', `Claude 官方目录当前不可用${data.directoryHealth.status ? `（HTTP ${data.directoryHealth.status}）` : ''}。本地和自定义 MCP 使用各自的连接与授权，不依赖 Claude 目录登录。`)}</div>` : ''}
+    ${!data.customAllowed ? '<p class="inline-warning" role="alert">Science 组织策略禁止自定义连接器。</p>' : ''}
     <div class="section-heading"><h2>连接器 <span class="label-count">${rows.length} 个</span></h2><div class="actions"><button class="btn" id="importMcp" ${!data.customAllowed ? 'disabled' : ''}>${icon('file-json')}导入 JSON</button><button class="btn primary" id="addMcp" ${!data.customAllowed ? 'disabled' : ''}>${icon('plus')}添加 MCP</button></div></div><div class="filter-toolbar mcp-filters"><div class="search">${icon('search')}<input id="mcpSearch" type="search" aria-label="搜索 MCP" placeholder="搜索连接器名称、描述" value="${esc(mcpState.search)}" /></div><select id="mcpSource" aria-label="MCP 来源"><option value="all">全部来源</option>${[...new Set(rows.map(c => c.source))].map(source => `<option value="${esc(source)}" ${mcpState.source === source ? 'selected' : ''}>${esc(mcpSources[source] || source)}</option>`).join('')}</select><select id="mcpBound" aria-label="MCP 绑定状态"><option value="all">全部绑定状态</option><option value="bound" ${mcpState.bound === 'bound' ? 'selected' : ''}>已绑定 Science</option><option value="unbound" ${mcpState.bound === 'unbound' ? 'selected' : ''}>未绑定 Science</option></select></div>
     <div class="mcp-list">${rows.map(c => {
       const manageable = ['custom', 'local-stdio', 'antmcp'].includes(c.source);
       const bound = (c.attachedAgents || []).includes('OPERON');
       const blocked = c.admin_blocked || c.policyDisabled || (manageable && !data.customAllowed);
       const status = c.policyDisabled ? '第三方策略停用' : c.admin_blocked ? '策略禁用' : c.enabled === false ? '已停用' : mcpStatuses[c.connectionStatus] || (c.authState === 'unauthorized' ? '需要授权' : bound ? '已绑定 Science' : '未绑定 Science');
-      return `<article class="mcp-row" data-mcp-id="${esc(c.id)}"><div class="mcp-meta"><h3>${esc(c.displayName || c.name)} <span class="badge">${esc(mcpSources[c.source] || c.source)}</span></h3><p>${esc(c.description || c.name)}</p><span class="subtle">${esc(status)} · ${esc(c.transport)}${c.attachedAgents?.length ? ` · 绑定：${esc(c.attachedAgents.join(', '))}` : ''}</span></div><div class="actions">
+      return `<article class="mcp-row" data-mcp-id="${esc(c.id)}"><div class="mcp-meta"><h3>${esc(c.displayName || c.name)} ${c.description ? help(c.displayName || c.name, c.description) : ''} <span class="badge">${esc(mcpSources[c.source] || c.source)}</span></h3><span class="subtle">${esc(status)} · ${esc(c.transport)}${c.attachedAgents?.length ? ` · 绑定：${esc(c.attachedAgents.join(', '))}` : ''}</span></div><div class="actions">
         <button class="btn" data-mcp-op="tools">工具</button>
         ${manageable ? `<button class="btn" data-mcp-op="${bound ? 'detach' : 'attach'}" ${blocked ? 'disabled' : ''}>${bound ? '解绑 Science' : '绑定 Science'}</button>` : ''}
         ${c.source === 'bundled' ? `<button class="btn" data-mcp-op="enabled" ${blocked ? 'disabled' : ''}>${c.enabled === false ? '启用' : '停用'}</button>` : ''}
         ${['custom', 'antmcp'].includes(c.source) && c.authState !== 'not-required' ? `<button class="btn" data-mcp-op="authorize" ${blocked ? 'disabled' : ''}>授权</button>` : ''}
         ${['custom', 'local-stdio'].includes(c.source) ? `<button class="icon-btn danger" data-mcp-op="remove" title="删除 ${esc(c.name)}" aria-label="删除 ${esc(c.name)}">${icon('trash-2')}</button>` : ''}</div></article>`;
     }).join('') || '<div class="empty">暂无连接器。接入 Science 本机连接器或添加自己的服务。</div>'}</div><div id="mcpNoMatches" class="empty" hidden>没有匹配的连接器</div><section id="mcpTools"></section>`;
+  bindMcpPreferences();
   $('#addMcp').onclick = () => openMcpEditor();
   $('#importMcp').onclick = openMcpImport;
   $('#mcpSearch').oninput = e => { mcpState.search = e.target.value; filterMcp(); };
@@ -50,7 +59,7 @@ function renderMcp() {
     const data = await mcpCall('export_science');
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     const link = document.createElement('a'); link.href = url; link.download = 'science-local-mcp.json'; link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000); notice('已导出 24 个本机 MCP 配置，不包含已保存的密钥。');
+    setTimeout(() => URL.revokeObjectURL(url), 1000); notice('本机 MCP 配置已导出（不含密钥）。');
   });
   document.querySelectorAll('[data-mcp-op]').forEach(button => { button.onclick = () => action(async () => {
     const c = rows.find(c => c.id === button.closest('[data-mcp-id]').dataset.mcpId);

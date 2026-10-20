@@ -7,6 +7,7 @@
     <title>CSSwitch Next</title>
     <link rel="icon" href="./assets/app-icon.png" />
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./workspace.css" />
     <script src="./assets/lucide.min.js" defer></script>
     <script src="./assets/marked.min.js" defer></script>
     <script src="./assets/purify.min.js" defer></script>
@@ -17,12 +18,15 @@
     <script src="./skills.js" defer></script>
     <script src="./sessions.js" defer></script>
     <script src="./usage.js" defer></script>
+    <script src="./ui.js" defer></script>
+    <script src="./compatibility.js" defer></script>
+    <script src="./settings.js" defer></script>
     <script src="./main.js" defer></script>
   </head>
   <body>
     <div class="shell">
       <aside class="sidebar">
-        <div class="brand"><img src="./assets/app-icon.png" alt="" width="32" height="32" /><div>CSSwitch<span>Next <small>0.7</small></span></div><button class="icon-btn sidebar-collapse" id="sidebarToggle" aria-label="收起导航" title="收起 / 展开导航"><i data-lucide="panel-left-close"></i></button></div>
+        <div class="brand"><img src="./assets/app-icon.png" alt="" width="32" height="32" /><div>CSSwitch<span>Next <small id="appVersion"></small></span></div><button class="icon-btn sidebar-collapse" id="sidebarToggle" aria-label="收起导航" title="收起 / 展开导航"><i data-lucide="panel-left-close"></i></button></div>
         <nav aria-label="导航">
           <div class="sidebar-section">工作空间</div>
           <button class="nav-item active" data-view="workbench"><i data-lucide="plug-zap"></i>提供商</button>
@@ -39,6 +43,8 @@
       <main>
         <header class="topbar"><div><div class="eyebrow">CLAUDE SCIENCE</div><h1 id="pageTitle">提供商</h1></div><div class="top-actions"><button class="btn" id="updateBadge" hidden></button><span id="previewLabel" class="badge" hidden>浏览器预览</span><button class="icon-btn" id="themeBtn" title="切换深浅主题" aria-label="切换深浅主题"><i data-lucide="sun-moon"></i></button><button class="icon-btn" id="refreshBtn" title="刷新状态" aria-label="刷新状态"><i data-lucide="refresh-cw"></i></button></div></header>
         <div id="notice" class="notice" role="status" hidden></div>
+        <div id="launchProgress" class="launch-progress" hidden><i data-lucide="loader-circle" class="spin"></i><div><strong id="launchPhase" role="status"></strong><p id="launchElapsed"></p></div></div>
+        <div id="launchHelp" class="actions launch-help" hidden><button class="btn" id="launchDiagnostics">检查兼容性</button><button class="btn" id="launchLogs">查看运行日志</button></div>
         <div id="content" aria-busy="true"><div class="empty">正在读取本地配置...</div></div>
       </main>
     </div>
@@ -47,5 +53,6 @@
     <dialog id="modelDialog" class="model-dialog" aria-labelledby="modelTitle"><div class="dialog-heading"><div><h2 id="modelTitle">选择模型</h2><span id="modelCount" class="subtle"></span></div><button type="button" class="icon-btn" id="closeModels" title="关闭模型列表" aria-label="关闭模型列表"><i data-lucide="x"></i></button></div><div class="model-searchbar"><div class="search"><i data-lucide="search"></i><input id="modelSearch" type="search" placeholder="搜索名称或模型 ID" aria-label="搜索模型" autocomplete="off" /></div><button type="button" id="pickerRefresh" class="icon-btn outlined" title="刷新模型列表" aria-label="刷新模型列表"><i data-lucide="refresh-cw"></i></button></div><div id="pickerStatus" class="catalog-status" role="status"></div><div id="modelOptions" class="model-options" role="listbox" aria-label="可用模型"></div></dialog>
     <dialog id="workspaceDialog" class="workspace-dialog" aria-labelledby="workspaceTitle"></dialog>
     <dialog id="confirmDialog" aria-labelledby="confirmTitle"><form method="dialog"><h2 id="confirmTitle"></h2><p id="confirmBody"></p><div class="dialog-actions"><button value="cancel" class="btn">取消</button><button value="confirm" class="btn primary">确认</button></div></form></dialog>
+    <div id="helpPopover" class="help-popover" role="tooltip" popover="manual" hidden></div>
   </body>
 </html>

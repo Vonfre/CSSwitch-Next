@@ -7,6 +7,7 @@ mod oauth_forge;
 mod proc;
 mod science_shared;
 mod science_ui;
+mod science_compat;
 mod mcp;
 mod updater;
 mod workspace;
@@ -19,7 +20,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::json;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 const SCIENCE_BIN: &str = "/Applications/Claude Science.app/Contents/Resources/bin/claude-science";
 
@@ -720,11 +721,15 @@ fn read_logs() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn diagnostics() -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+async fn diagnostics(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         let data = science_shared::home().and_then(|h| science_shared::local_settings(&h).map(|s| s.0));
         let history = data.as_ref().ok().and_then(|dir| science_shared::history_summary(dir).ok());
+        let compatibility = asset_root(&app).ok_or("无法定位兼容性检查资源。".to_string())
+            .and_then(|root| science_compat::inspect(&root));
         json!({
+            "compatibility": compatibility.as_ref().ok(),
+            "compatibility_error": compatibility.as_ref().err(),
             "science_installed": science_bin().is_file(),
             "python": proc::find_exe("python3").map(|p| p.to_string_lossy().to_string()),
             "config_dir": config::default_dir().to_string_lossy(),
@@ -804,6 +809,8 @@ fn launch_inner(
     if cfg.mode != "proxy" {
         return Err("请先切换到第三方模式。".into());
     }
+    let progress = |phase: &str| { let _ = app.emit("science-launch-progress", json!({"phase": phase})); };
+    progress("gateway");
     let (pport, secret, _) = ensure_proxy(&app, &state)?;
     let sport = cfg.sandbox_port;
     let binary = science_bin();
@@ -811,7 +818,9 @@ fn launch_inner(
     if !bin.is_file() {
         return Err("请先安装 Claude Science。".into());
     }
-    if !sandbox_running_ours(sport) {
+    let needs_start = !sandbox_running_ours(sport);
+    if needs_start {
+        progress("prepare");
         let root = shared_root();
         science_shared::stop_owned(bin, &root)?;
         let home = science_shared::home()?;
@@ -822,10 +831,13 @@ fn launch_inner(
         science_shared::stop(bin, &session)?;
         science_shared::save(&root, &session)?;
         let logf = open_log("sandbox.log").map_err(|e| e.to_string())?;
+        progress("science");
         let status = science_shared::command(bin, &session, "serve")
             .args([
                 "--port",
                 &sport.to_string(),
+                "--sandbox-port",
+                "0",
                 "--no-browser",
                 "--detached",
             ])
@@ -853,12 +865,14 @@ fn launch_inner(
             return Err(format!("共享 Science 启动失败。请关闭原来的 Science 窗口后重试。原有凭据和历史未被替换。清理结果：{cleanup:?}\n{tail}"));
         }
     }
-    let mcp_notice = if cfg.science_local_mcp {
+    let mcp_notice = if cfg.science_local_mcp && needs_start {
+        progress("connectors");
         match asset_root(&app).and_then(|root| mcp::manage(&root, "install", json!({})).ok()) {
             Some(result) => result.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             None => "本机连接器接入未完成，请在 MCP 管理中查看并重试。".into(),
         }
     } else { String::new() };
+    progress("page");
     let native_url = sandbox_url(sport);
     let url = science_ui::entry(&app, &mut lock(&state), sport, &native_url)?;
     {

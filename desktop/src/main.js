@@ -23,13 +23,23 @@ async function call(command, args = {}) {
   return window.__TAURI__.core.invoke(command, args);
 }
 
+let noticeTimer;
 function notice(message, error = false) {
+  clearTimeout(noticeTimer);
   const node = $('#notice');
-  node.textContent = String(message);
+  node.replaceChildren();
+  const text = document.createElement('span'); text.textContent = String(message); node.append(text);
+  if (message) {
+    const dismiss = document.createElement('button'); dismiss.className = 'icon-btn';
+    dismiss.setAttribute('aria-label', '关闭提示'); dismiss.innerHTML = icon('x');
+    dismiss.onclick = () => notice(''); node.append(dismiss);
+    if (!error) noticeTimer = setTimeout(() => { node.hidden = true; }, 5000);
+  }
   node.classList.toggle('error', error);
   node.hidden = !message;
   const editorNotice = $('#editorNotice');
   if (editorNotice) { editorNotice.textContent = error ? String(message) : ''; editorNotice.hidden = !error || !message; }
+  icons();
 }
 
 async function confirmAction(title, body) {
@@ -109,10 +119,8 @@ function renderRuntime() {
   $('#startBtn').onclick = () => action(async () => {
     if (state.dirty) { notice('连接有未保存的修改，请先保存。', true); return; }
     if (native() && !running && !await confirmAction('启动第三方 Science？', '将使用原有对话记录并重启本机 Science 服务。第三方模式免登录。请先结束研究任务，并关闭原来的 Science 窗口。')) return;
-    notice('正在启动本地网关与 Claude Science...');
-    const result = await call('one_click_login');
-    notice([result.msg || 'Claude Science 已就绪。', result.mcp_notice].filter(Boolean).join(' '));
-    await refreshRuntime();
+    notice(running && gateway ? '正在打开 Science…' : '正在启动本地网关与 Claude Science…');
+    await launchScience(running && gateway);
   });
   $('#stopBtn').onclick = () => action(async () => {
     if (!await confirmAction('停止 Science？', '正在运行的研究任务会中断，对话记录保留。')) return;
@@ -137,37 +145,6 @@ function renderLogs() {
   icons();
 }
 
-function renderSettings() {
-  const d = state.diagnostics;
-  $('#content').innerHTML = `<section class="settings-section" id="updateCard"></section><section class="settings-section"><h2>Science 插件</h2><div class="diagnostic-row"><div><strong>使用本机 MCP</strong><p class="hint">第三方模式接入 24 个本机连接器，其中 4 个托管服务改用本地版本。连接器名称保留原文，工具仍由 Science 审批。</p></div><button class="switch" role="switch" id="localMcpToggle" aria-label="使用本机 MCP" aria-checked="${state.config.science_local_mcp !== false}"><span></span></button></div><div class="diagnostic-row"><div><strong>Science 页面汉化</strong><p class="hint">通过 CSSwitch 打开的页面使用本地词库汉化导航、菜单、按钮与提示，支持动态页面和即时关闭。对话正文、代码、输入内容保持原样；未收录的文案保留英文。</p></div><button class="switch" role="switch" id="scienceZhToggle" aria-label="Science 页面汉化" aria-checked="${Boolean(state.config.science_zh)}"><span></span></button></div><p class="hint">已在浏览器中打开的旧页面，请从提供商页面重新点击「打开 Science」。官方客户端窗口不加载此插件。</p></section><section class="settings-section"><h2>本地服务端口</h2><form id="settingsForm"><div class="form-grid"><div class="field"><label for="proxyPort">网关端口</label><input id="proxyPort" name="proxy_port" type="number" min="1024" max="65535" value="${state.config.proxy_port}" required /></div><div class="field"><label for="sandboxPort">Science 端口</label><input id="sandboxPort" name="sandbox_port" type="number" min="1024" max="65535" value="${state.config.sandbox_port}" required /></div></div><p class="hint">更改端口需要先停止服务。Science 可使用原端口 8765。</p><div class="actions"><button class="btn primary" type="submit">${icon('save')}保存端口</button></div></form></section><section class="settings-section" id="environmentCard"><h2>环境检查</h2>${d ? [['Claude Science', d.science_installed ? '已安装' : '未找到'], ['Python 3', d.python || '未找到'], ['配置目录', d.config_dir], ['对话数据目录', d.science_data_dir], ['本地认证目录', d.science_auth_dir], ['旧隔离目录（保留）', d.legacy_sandbox_home], ['应用版本', `${d.version} · ${d.platform}`]].map(([label, value]) => `<div class="diagnostic-row"><span>${esc(label)}</span><code>${esc(value)}</code></div>`).join('') : '<div class="empty">请在桌面应用中检查运行环境。</div>'}</section><section class="settings-section"><h2>本地存储</h2><p class="hint">API Key 以明文保存在配置文件中，权限为 0600。用量记录不保存对话内容。验证连接会向所选 API 发送一个最小请求，可能产生少量费用。</p></section>`;
-  const feature = (key) => action(async () => {
-    const local_mcp = key === 'local' ? state.config.science_local_mcp === false : state.config.science_local_mcp !== false;
-    const zh = key === 'zh' ? !state.config.science_zh : Boolean(state.config.science_zh);
-    const result = await call('set_science_features', { localMcp: local_mcp, zh });
-    await loadConfig(); notice(result.message); renderSettings();
-  });
-  $('#localMcpToggle').onclick = () => feature('local');
-  $('#scienceZhToggle').onclick = () => feature('zh');
-  $('#settingsForm').onsubmit = (e) => { e.preventDefault(); action(async () => {
-    const values = Object.fromEntries(new FormData(e.target));
-    const proxy_port = Number(values.proxy_port), sandbox_port = Number(values.sandbox_port);
-    if (proxy_port === sandbox_port || proxy_port === 8765) { notice('端口不能相同，网关不能使用 Science 保留端口 8765。', true); return; }
-    if (proxy_port === state.config.proxy_port && sandbox_port === state.config.sandbox_port) { notice('端口未变更。'); return; }
-    if (state.runtime.proxy === 'green' || state.runtime.sandbox === 'green') {
-      if (!await confirmAction('停止服务并更改端口？', '正在运行的研究任务会中断，对话记录保留。')) return;
-      await call('stop_all');
-    }
-    await call('set_config', { cfg: { provider: state.config.provider, proxy_port, sandbox_port } });
-    await loadConfig(); await refreshRuntime(); notice('端口已保存，可返回工作台重新启动。'); renderSettings();
-  }); };
-  if (d?.science_history) {
-    const row = document.createElement('div'); row.className = 'diagnostic-row';
-    row.innerHTML = `<span>本地历史总计</span><code>${fmt(d.science_history.projects)} 项目 · ${fmt(d.science_history.conversations)} 主会话 · ${fmt(d.science_history.messages)} 消息</code>`;
-    $('#environmentCard').append(row);
-  }
-  renderUpdater();
-  icons();
-}
 
 async function showView(view) {
   if (state.busy || view === state.view) return;
@@ -175,7 +152,9 @@ async function showView(view) {
     if (!await confirmAction('放弃未保存的修改？', '离开工作台会丢弃当前表单的修改。')) return;
     state.dirty = false; state.draft = null; state.selected = state.config.provider;
   }
+  closeHelp(); notice('');
   state.view = view;
+  $('#launchHelp').hidden = true;
   document.body.dataset.view = view;
   document.querySelectorAll('.nav-item').forEach(b => {
     b.classList.toggle('active', b.dataset.view === view);
@@ -197,6 +176,8 @@ async function showView(view) {
 }
 
 document.querySelectorAll('.nav-item[data-view]').forEach((b) => { b.onclick = () => showView(b.dataset.view); });
+$('#launchDiagnostics').onclick = () => showView('settings');
+$('#launchLogs').onclick = () => showView('logs');
 function applySidebarMode() {
   const collapsed = document.documentElement.dataset.sidebar === 'collapsed';
   $('#sidebarToggle').setAttribute('aria-label', collapsed ? '展开导航' : '收起导航');
@@ -211,9 +192,10 @@ $('#sidebarToggle').onclick = () => {
 };
 $('#themeBtn').onclick = () => {
   const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = theme; localStorage.setItem('csswitch-theme', theme);
+  localStorage.setItem('csswitch-theme', theme); applyTheme(theme);
 };
-document.documentElement.dataset.theme = localStorage.getItem('csswitch-theme') || 'light';
+applyTheme();
+applyFont();
 $('#workspaceDialog').oncancel = e => { if (state.busy) e.preventDefault(); };
 $('#workspaceDialog').onclose = () => { if (!$('#workspaceDialog').open) $('#workspaceDialog').innerHTML = ''; };
 $('#quitBtn').onclick = () => action(() => call('quit_app'));

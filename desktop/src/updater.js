@@ -13,13 +13,11 @@ function renderUpdater() {
   const status = { idle: '启动时自动检查，也可以手动检查。', checking: '正在检查更新…',
     checked: '当前已是最新版本。', available: `发现新版本 ${u.version}`, downloading: `正在下载… ${progress === null ? `${(u.downloadedBytes / 1048576).toFixed(1)} MB` : `${progress}%`}`,
     downloaded: '更新包已下载，签名验证通过。', installing: '正在安装，即将重启…' }[u.phase];
-  card.innerHTML = `<h2>应用更新 <span class="label-count">${esc(u.current || state.diagnostics?.version || '')}</span></h2>
-    <p class="hint" role="status">${esc(status)}</p>${u.error ? `<p class="update-error" role="alert">${esc(u.error)}</p>` : ''}
+  card.innerHTML = `<div class="preference-row"><div class="preference-label"><div>CSSwitch Next <span class="subtle">${esc(u.current || state.diagnostics?.version || '')}</span> ${help('应用更新', '从 GitHub Release 下载并验证签名。下载可在后台进行；安装前请结束研究任务并停止网关与 Science。提供商配置、密钥和对话记录保留。')}</div><span role="status">${esc(status)}</span></div>
+    <div class="actions"><button class="btn" id="checkUpdateBtn" ${busy || !native() ? 'disabled' : ''}>检查更新</button>${u.available ? `<button class="btn primary" id="applyUpdateBtn" ${busy ? 'disabled' : ''}>${u.downloaded ? '安装并重启' : '下载更新'}</button>` : ''}</div></div>
+    ${u.error ? `<p class="update-error" role="alert">${esc(u.error)}</p>` : ''}
     ${u.phase === 'downloading' ? `<progress aria-label="更新下载进度" ${progress === null ? '' : `value="${progress}" max="100"`}></progress>` : ''}
-    ${u.available && u.notes ? `<details class="update-notes"><summary>新版说明</summary><pre>${esc(u.notes)}</pre></details>` : ''}
-    <div class="actions"><button class="btn" id="checkUpdateBtn" ${busy || !native() ? 'disabled' : ''}>${icon('refresh-cw')}检查更新</button>
-    ${u.available ? `<button class="btn primary" id="applyUpdateBtn" ${busy ? 'disabled' : ''}>${icon(u.downloaded ? 'power' : 'download')}${u.downloaded ? '安装并重启' : '下载更新'}</button>` : ''}</div>
-    <p class="hint">更新从 GitHub Release 下载并验证签名。下载可在后台进行；安装前请结束研究任务并停止网关与 Science。</p>`;
+    ${u.available && u.notes ? `<details class="update-notes"><summary>新版说明</summary><pre>${esc(u.notes)}</pre></details>` : ''}`;
   $('#checkUpdateBtn').onclick = () => checkForUpdates();
   if ($('#applyUpdateBtn')) $('#applyUpdateBtn').onclick = () => u.downloaded ? installAppUpdate() : downloadAppUpdate();
   icons();
@@ -74,6 +72,7 @@ async function installAppUpdate() {
 async function initUpdater() {
   if (!native()) return;
   try { updateState.current = await call('app_version'); } catch { /* Diagnostics also provides the version. */ }
+  $('#appVersion').textContent = updateState.current || '';
   await checkForUpdates(true);
   setInterval(() => { if (!document.hidden) checkForUpdates(true); }, 6 * 60 * 60 * 1000);
 }

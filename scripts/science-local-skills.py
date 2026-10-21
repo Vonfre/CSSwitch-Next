@@ -42,7 +42,7 @@ def fingerprint(files):
 def source_key(value):
     if value is not None and (not isinstance(value, str) or len(value) > 1000
                               or re.search(r'[\x00-\x1f]', value)
-                              or not value.startswith(('codex:', 'agents:', 'claude:', 'repo:'))):
+                              or not (value.startswith(('codex:', 'agents:', 'claude:', 'repo:', 'library:', 'gemini:', 'opencode:', 'cursor:', 'windsurf:', 'pi:', 'hermes:', 'grok:', 'minimax:', 'cc-switch:', 'codex-system:')) or re.match(r'^(?:custom|linked)-[a-f0-9]{16}:', value))):
         raise LocalSkillError('技能更新来源无效。')
     return value
 

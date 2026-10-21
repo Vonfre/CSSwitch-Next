@@ -12,24 +12,36 @@ import json
 import os
 from pathlib import Path
 import select
+import secrets
 import socket
 import sys
+import threading
 from socketserver import TCPServer
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'proxy'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from science_local_files import FileActionError, native_json, open_artifact
 from routing import load_profile
 from csswitch_proxy import PROVIDERS
 from science_models import adapt_model_response
 
 
-BOOTSTRAP = "(()=>{const s=document.createElement('script');s.src='/__csswitch/zh.js';document.head.append(s)})();"
+BOOTSTRAP = "(()=>{for(const name of ['zh','files']){const s=document.createElement('script');s.src='/__csswitch/'+name+'.js';document.head.append(s)}})();"
 SCRIPT_HASH = "'sha256-" + base64.b64encode(hashlib.sha256(BOOTSTRAP.encode()).digest()).decode() + "'"
 HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'}
 
 
 class LoopbackServer(ThreadingHTTPServer):
+    # Native Science loads many lazy modules at once on a cold page entry.
+    request_queue_size = 128
+
+    def __init__(self, *args, **kwargs):
+        self.file_token = secrets.token_urlsafe(32)
+        self.file_lock = threading.Lock()
+        super().__init__(*args, **kwargs)
+
     def server_bind(self):
         # The listener always uses a numeric loopback address. HTTPServer's
         # reverse hostname lookup adds no value and can stall before readiness.
@@ -81,6 +93,43 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != 'HEAD':
             self.wfile.write(body)
 
+    def files_enabled(self):
+        try:
+            return json.loads(self.server.config.read_text()).get('science_local_files') is True
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def file_action(self, origins):
+        # Do not leave rejected request bodies on a keep-alive connection.
+        self.close_connection = True
+        try:
+            if self.command != 'POST':
+                raise FileActionError('请通过文件菜单操作。', 405)
+            if (self.headers.get('Origin') not in origins or
+                not secrets.compare_digest(self.headers.get('X-CSSwitch-Files', '').encode(), self.server.file_token.encode())):
+                raise FileActionError('页面验证失效，请刷新 Science 页面。', 403)
+            if not self.files_enabled():
+                raise FileActionError('请先在设置 → 通用中开启本地文件插件。', 403)
+            if self.headers.get_content_type() != 'application/json' or self.headers.get('Transfer-Encoding'):
+                raise FileActionError('不支持的文件请求。', 415)
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= 4096:
+                    raise ValueError()
+                payload = json.loads(self.rfile.read(length))
+            except (ValueError, UnicodeError):
+                raise FileActionError('文件请求格式无效。')
+            if not self.server.file_lock.acquire(blocking=False):
+                raise FileActionError('正在打开文件，请稍候。', 409)
+            try:
+                result = open_artifact(payload,
+                    lambda endpoint: native_json(self.server.upstream_port, self.headers, endpoint), self.files_enabled)
+            finally:
+                self.server.file_lock.release()
+            return self.local_reply(200, json.dumps(result, ensure_ascii=False).encode(), 'application/json')
+        except FileActionError as error:
+            return self.local_reply(error.status, json.dumps({'error': str(error)}, ensure_ascii=False).encode(), 'application/json')
+
     def handle_request(self):
         # A running 0.7.2 desktop still probes /health without the port in Host.
         # Permit only this empty loopback readiness response, so replacing the
@@ -105,6 +154,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.local_reply(200, json.dumps({'enabled': enabled}).encode(), 'application/json')
         if self.path == '/__csswitch/zh.js':
             return self.local_reply(200, Path(__file__).with_name('science-zh.js').read_bytes(), 'text/javascript; charset=utf-8')
+        if self.path == '/__csswitch/files.js':
+            return self.local_reply(200, Path(__file__).with_name('science-files.js').read_bytes(), 'text/javascript; charset=utf-8')
+        if self.path == '/__csswitch/files/config':
+            enabled = self.files_enabled()
+            return self.local_reply(200, json.dumps({'enabled': enabled, 'token': self.server.file_token if enabled else None}).encode(), 'application/json')
+        if self.path == '/__csswitch/files/action':
+            return self.file_action(origins)
         if self.path.startswith('/__csswitch/'):
             return self.local_reply(404)
         conn = http.client.HTTPConnection('127.0.0.1', self.server.upstream_port, timeout=90)

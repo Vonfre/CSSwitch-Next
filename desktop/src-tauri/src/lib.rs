@@ -370,6 +370,7 @@ fn public_config(cfg: &config::Config) -> serde_json::Value {
         "mode": cfg.mode,
         "science_local_mcp": cfg.science_local_mcp,
         "science_zh": cfg.science_zh,
+        "science_local_files": cfg.science_local_files,
         "connections": connections,
     })
 }

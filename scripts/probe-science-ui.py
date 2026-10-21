@@ -19,6 +19,7 @@ repo = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--settings', action='store_true', help='Inspect every native settings module')
 parser.add_argument('--models', action='store_true', help='Inspect model routing against an isolated local gateway')
+parser.add_argument('--files', action='store_true', help='Verify local-file menu identities against isolated native Science')
 parser.add_argument('--collect', action='store_true', help='Collect native settings text before asserting translations')
 options = parser.parse_args()
 candidate = Path.home() / '.claude-science/bin/claude-science'
@@ -66,7 +67,7 @@ try:
  nonce = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['nonce'][0]
  client = bridge.Bridge('http://127.0.0.1:'+str(port),nonce,str(auth),str(auth))
 
- ui_config = root/'ui-config.json'; ui_config.write_text(gateway_config.read_text() if options.models else '{"science_zh":true}')
+ ui_config = root/'ui-config.json'; ui_config.write_text(gateway_config.read_text() if options.models else json.dumps({'science_zh': True, 'science_local_files': options.files}))
  ui_config.chmod(0o600)
  ready=root/'ui-ready.json'
  ui_proc=subprocess.Popen([sys.executable,str(repo/'scripts/science-ui-proxy.py'),'--upstream-port',str(port),'--config',str(ui_config),'--ready',str(ready)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -79,7 +80,7 @@ try:
   link=next(line for line in fresh.stdout.splitlines() if line.startswith('http://'))
   u=urllib.parse.urlsplit(link)
   (root/'browser-input.json').write_text(json.dumps({'url':urllib.parse.urlunsplit(('http','127.0.0.1:'+str(ui_port),u.path,u.query,'')),'config':str(ui_config),'root':str(root), 'gateway_config':str(root/'gateway.json')}))
-  script = 'native-science-models.mjs' if options.models else 'native-science-settings.mjs' if options.settings else 'native-science-ui.mjs'
+  script = 'native-science-files.mjs' if options.files else 'native-science-models.mjs' if options.models else 'native-science-settings.mjs' if options.settings else 'native-science-ui.mjs'
   browser_args = [shutil.which('node'), str(repo/'desktop/tests'/script), str(root/'browser-input.json')]
   if options.collect: browser_args.append('--collect')
   result=subprocess.run(browser_args,capture_output=True,text=True,timeout=180 if options.settings else 90)

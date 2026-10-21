@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 
-async function setup(page, offline = false) {
+async function setup(page, offline = false, unified = false) {
   await page.addInitScript(({ offline }) => {
     const now = Math.floor(Date.now() / 1000);
     let skills = [{ name: 'paper-reader', description: '阅读科学文献并提取方法', source: 'local', enabled: true }, { name: 'data-analysis', description: '处理实验数据', source: 'anthropic', enabled: true }, { name: 'blocked', description: '<unsafe-skill>', source: 'organization', admin_blocked: true, enabled: false }];
@@ -14,12 +14,23 @@ async function setup(page, offline = false) {
       const titles=['蛋白质结构研究','单细胞数据分析与批次校正','整理肿瘤免疫相关文献','设计蛋白结合位点验证实验','RNA-seq 差异表达分析','研究计划与实验记录'];
       sessions.splice(5); sessions.forEach((r,i)=>{r.project_id='design-'+(i===0?0:i<4?1:2);r.project_name=i===0?'蛋白研究':i<4?'单细胞图谱':'文献综述';r.last_preview='已整理分析步骤、数据处理方法和后续验证方案。';r.title=titles[i%titles.length];r.preview=i===0?'比较 AlphaFold 预测结构和实验结构，整理验证方案。':'整理研究步骤、数据处理方法与验证思路。';});
     };
+    const library = [];
+    window.useSkillsPagingFixture = () => {
+      skills = Array.from({length: 351}, (_, i) => ({name: 'skill-' + String(i).padStart(3, '0'), displayName: i === 0 ? '文献助手' : undefined, description: 'description-only-term', source:'local', enabled:true}));
+      library.push(...skills.map(s => ({...s, key:'library:'+s.name, source:'library', targets:{}})));
+      window.discoveryFixture = [...skills, ...Array.from({length: 51}, (_, i) => ({name:'new-' + String(i).padStart(3, '0'), description:'description-only-term'}))].map(s => ({...s, key:'codex:'+s.name, source:'codex', repo:'repository-only-term'}));
+    };
+    const agentSources = [{ id:'codex', name:'Codex', path:'~/.codex/skills', target:true, detected:true, exists:true, count:2, links:1 }, { id:'claude', name:'Claude Code', path:'~/.claude/skills', target:true, detected:true, exists:true, count:0, links:0 }];
+    const defaultDiscovery = [{key:'codex:paper-reader', name:'paper-reader', source:'codex', description:'已安装技能', path:'~/.codex/skills/paper-reader'}, {key:'agents:lab-notes', name:'lab-notes', source:'agents', description:'整理实验笔记', path:'~/.agents/skills/lab-notes'}];
+    const discovered = () => window.discoveryFixture || defaultDiscovery;
+    const withLocations = item => { item.locations ||= [{source:item.source,key:item.key,path:item.path || '/fixture/'+item.source+'/'+item.name}]; return item; };
+    const countedSources = () => agentSources.map(source => ({...source, count:discovered().filter(item => withLocations(item).locations.some(l => l.source === source.id && !l.disabled)).length, pausedCount:discovered().filter(item => withLocations(item).locations.some(l => l.source === source.id && l.disabled)).length}));
     const repos = []; const pricing = { 'gpt-research': { input: 2, output: 8, cache_read: 0.2, cache_write: 2.5 } };
-    let features = {science_local_mcp:true, science_zh:false};
+    let features = {science_local_mcp:true, science_zh:false, science_local_files:false};
     window.testCalls = []; window.__TAURI__ = { core: { invoke: async (cmd, args = {}) => {
       window.testCalls.push({ cmd, args });
       if (cmd === 'get_config') return { ...features, provider: 'test', mode: 'proxy', proxy_port: 18992, sandbox_port: 8991, connections: [{ id: 'test', name: '研究 API', protocol: 'responses', model: 'gpt-research', base_url: 'https://example.com', has_key: true }] };
-      if (cmd === 'set_science_features') { features={science_local_mcp:args.localMcp, science_zh:args.zh};return {message:'插件设置已保存。'}; }
+      if (cmd === 'set_science_features') { features={...features, science_local_mcp:args.localMcp, science_zh:args.zh, ...(args.localFiles === undefined ? {} : {science_local_files:args.localFiles})};return {message:'插件设置已保存。'}; }
       if (cmd === 'status') return { proxy: 'amber', sandbox: 'amber' };
       if (cmd === 'read_usage') return { entries: Array.from({ length: 31 }, (_, i) => ({ time: now - i * 3600, provider: i === 30 ? 'other' : 'test', model: i === 30 ? 'unpriced' : 'gpt-research', protocol: 'responses', input_tokens: 1000, output_tokens: 250, cache_read_input_tokens: 400, latency_ms: 850, ok: i !== 1 })) };
       if (cmd === 'mcp_manage') {
@@ -37,7 +48,37 @@ async function setup(page, offline = false) {
       }
       if (cmd === 'workspace_manage') {
         const { operation: op, params: p } = args;
-        if (op === 'skills_discover') return { skills: [{ key: 'codex:paper-reader', name: 'paper-reader', directory: 'paper-reader', source: 'codex', description: '已安装技能', path: '~/.codex/skills/paper-reader' }, { key: 'agents:lab-notes', name: 'lab-notes', directory: 'lab-notes', source: 'agents', description: '整理实验笔记', path: '~/.agents/skills/lab-notes' }], repos: structuredClone(repos) };
+        if (op === 'agent_sources') return { sources:structuredClone(agentSources), skills:[] };
+        if (op === 'agent_source_add') { agentSources.push({id:'custom-fixture',name:p.name,path:p.path,target:true,detected:true,exists:true,count:1}); return {message:'已添加'}; }
+        if (op === 'skill_library_list') return { skills:structuredClone(library), sources:structuredClone(countedSources()), path:'~/.csswitch-next/skills' };
+        if (op === 'skill_library_import') {
+          const name=p.key.split(':').pop();
+          if(window.libraryFailImport===name) throw new Error('同名内容冲突');
+          if(!library.some(s=>s.name===name)) library.push({name,key:'library:'+name,source:'library',sourceKey:p.key,description:'统一管理技能',currentFingerprint:'fixture',targets:{}});
+          return {message:'已复制到统一技能库'};
+        }
+        if (op === 'skill_library_toggle') {
+          if (window.libraryFailTarget === p.name || window.libraryFailImport === p.name) throw new Error('文件冲突，未覆盖');
+          const variants = discovered().filter(s => s.name === p.name);
+          const locations = variants.flatMap(s => withLocations(s).locations).filter(l => l.source === p.target);
+          if (locations.length) locations.forEach(l => {l.disabled = !p.enabled;});
+          else if (p.enabled) {
+            if (!library.some(s => s.name === p.name)) library.push({name:p.name,key:'library:'+p.name,source:'library',description:'统一管理技能',currentFingerprint:'fixture',targets:{}});
+            library.find(s => s.name === p.name).targets[p.target] = {status:'on',method:p.method === 'copy' ? 'copy' : 'symlink'};
+            variants[0]?.locations.push({source:p.target,key:p.target+':'+p.name,path:'/fixture/'+p.target+'/'+p.name,linked:p.method !== 'copy'});
+          }
+          return {message:p.enabled ? '已启用' : '已停用，保留原技能'};
+        }
+        if (op === 'skill_library_preview') return {content:'# '+p.key+'\n<unsafe-content>'};
+        if (op === 'skill_library_deploy') {
+          if(window.libraryFailTarget===p.name) throw new Error('文件已修改，未覆盖');
+          library.find(s=>s.name===p.name).targets[p.target]={status:p.enabled?'on':'off',method:p.method==='copy'?'copy':'symlink'};
+          return {message:p.enabled?'已启用':'已停用'};
+        }
+        if (op === 'skill_library_content') return {content:'# '+p.name+'\n<unsafe-content>'};
+        if (op === 'skill_library_update') return {message:'已同步来源'};
+        if (op === 'skill_library_remove') { library.splice(library.findIndex(s=>s.name===p.name),1); return {message:'已备份并移出'}; }
+        if (op === 'skills_discover') return { skills:structuredClone(discovered().map(withLocations)), repos:structuredClone(repos), sources:structuredClone(countedSources()) };
         if (op === 'skill_bundle') return { filename: p.key.split(':').pop() + '.zip', bundle: 'dGVzdA==', sourceKey:p.key, fingerprint:'new-content' };
         if (op === 'skill_import_plan') return { skills:[{name:p.filename.replace(/\.(zip|skill|md)$/, ''),filename:p.filename,bundle:p.bundle}] };
         if (op === 'repo_add') { if (window.repoFails) throw new Error('无法下载 GitHub 仓库。'); repos.push({ key: p.repo + '@' + p.branch, repo: p.repo, branch: p.branch }); }
@@ -59,6 +100,7 @@ async function setup(page, offline = false) {
     } } };
   }, { offline });
   await page.goto('/');
+  if (!unified) await page.evaluate(() => { skillsState.tab = 'installed'; });
 }
 
 test('Skills supports preview, source filtering, enable, uninstall and local installation', async ({ page }) => {
@@ -71,19 +113,19 @@ test('Skills supports preview, source filtering, enable, uninstall and local ins
   await page.getByRole('button', { name: '关闭内容' }).click();
   await page.getByRole('switch', { name: '启用 paper-reader', exact: true }).click();
   await expect(page.getByRole('switch', { name: '启用 paper-reader', exact: true })).toHaveAttribute('aria-checked', 'false');
-  await page.getByRole('button', { name: '发现', exact: false }).click();
-  await page.getByLabel('搜索 Skills').fill('lab'); await expect(page.locator('.management-row')).toHaveCount(1);
-  await page.getByRole('button', { name: '安装到 Science', exact: true }).click();
-  await expect(page.locator('.management-row button')).toContainText('已安装');
-  await page.getByLabel('搜索 Skills').fill(''); await page.getByRole('button', { name: '已安装', exact: false }).first().click();
+  await page.getByRole('button', { name: '统一技能库', exact: false }).click();
+  await page.getByLabel('搜索统一技能库').fill('lab'); await expect(page.locator('.management-row')).toHaveCount(1);
+  await page.getByRole('switch', { name: '在目标启用 lab-notes', exact: true }).click();
+  await expect(page.getByRole('switch', {name:'在目标启用 lab-notes',exact:true})).toHaveAttribute('aria-checked','true');
+  await page.getByLabel('搜索统一技能库').fill(''); await page.getByRole('button', { name: 'Science 已安装', exact: false }).first().click();
   await page.getByRole('button', { name: '卸载 lab-notes', exact: true }).click(); await page.getByRole('button', { name: '确认', exact: true }).click();
   await expect(page.locator('#skillRows')).not.toContainText('lab-notes'); expect(errors).toEqual([]);
 });
 
 test('repository errors retain inputs and offline Science still allows local discovery', async ({ page }) => {
   await setup(page, true); await page.getByRole('button', { name: 'Skills 管理', exact: true }).click();
-  await expect(page.locator('#content')).toContainText('请先启动'); await page.getByRole('button', { name: '发现', exact: false }).click();
-  await expect(page.locator('.management-row')).toHaveCount(2); await expect(page.getByRole('button', { name: '安装到 Science' }).first()).toBeDisabled();
+  await expect(page.locator('#content')).toContainText('请先启动'); await page.getByRole('button', { name: '统一技能库', exact: false }).click();
+  await expect(page.locator('.management-row')).toHaveCount(2); await expect(page.locator('#libraryEnableAll')).toBeDisabled();
   await page.getByRole('button', { name: '仓库管理', exact: true }).click();
   await page.getByLabel('GitHub 仓库', { exact: true }).fill('anthropics/skills'); await page.evaluate(() => { window.repoFails = true; });
   await page.getByRole('button', { name: '添加并同步' }).click(); await expect(page.locator('#repoError')).toContainText('无法下载');
@@ -113,9 +155,9 @@ test('degraded Science catalog disables import and uninstall while preserving di
   await expect(page.getByRole('button', { name: '导入 Skill', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: '卸载 paper-reader', exact: true })).toBeDisabled();
   await expect(page.getByRole('switch', { name: '启用 paper-reader', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: '发现', exact: false }).click();
-  await expect(page.locator('.management-row')).toHaveCount(2);
-  await expect(page.getByRole('button', { name: '安装到 Science', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '统一技能库', exact: false }).click();
+  await expect(page.locator('.management-row')).toHaveCount(4);
+  await expect(page.locator('#libraryEnableAll')).toBeDisabled();
 });
 
 test('degraded cloud catalog allows verified local installation and uninstall', async ({ page }) => {
@@ -124,9 +166,9 @@ test('degraded cloud catalog allows verified local installation and uninstall', 
   await expect(page.locator('#content')).toContainText('本地 Skills 仍可安装');
   await expect(page.getByRole('button', { name: '导入 Skill', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: '卸载 paper-reader', exact: true })).toBeDisabled();
-  await page.getByRole('button', { name: '发现', exact: false }).click();
-  await page.getByRole('button', { name: '安装到 Science', exact: true }).click();
-  await page.getByRole('button', { name: '已安装', exact: false }).first().click();
+  await page.getByRole('button', { name: '统一技能库', exact: false }).click();
+  await page.getByRole('switch', { name: '在目标启用 lab-notes', exact: true }).click();
+  await page.getByRole('button', { name: 'Science 已安装', exact: false }).first().click();
   await expect(page.getByRole('button', { name: '卸载 lab-notes', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: '卸载 lab-notes', exact: true }).click();
   await page.getByRole('button', { name: '确认', exact: true }).click();
@@ -138,8 +180,8 @@ test('local import remains disabled when Science policy blocks custom skills', a
   await page.getByRole('button', { name: 'Skills 管理', exact: true }).click();
   await expect(page.getByRole('button', { name: '导入 Skill', exact: true })).toBeDisabled();
   await expect(page.locator('#content')).toContainText('组织策略禁止');
-  await page.getByRole('button', { name: '发现', exact: false }).click();
-  await expect(page.getByRole('button', { name: '安装到 Science', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '统一技能库', exact: false }).click();
+  await expect(page.locator('#libraryEnableAll')).toBeDisabled();
 });
 
 test('sessions filter, paginate, render escaped transcripts, export all pages, rename and archive', async ({ page }) => {
@@ -338,6 +380,9 @@ test('session execution timeline pairs tool results, preserves failures, expands
 test('Science plugin switches persist independently and stay reversible', async ({ page }) => {
   await setup(page); await page.getByRole('button',{name:'设置',exact:true}).click();
   await expect(page.getByRole('switch',{name:'使用本机 MCP'})).toHaveCount(0);
+  await expect(page.getByRole('switch',{name:'本地文件打开'})).toHaveAttribute('aria-checked','false');
+  await page.getByRole('switch',{name:'本地文件打开'}).click();
+  await expect(page.getByRole('switch',{name:'本地文件打开'})).toHaveAttribute('aria-checked','true');
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','false');
   await page.getByRole('switch',{name:'Science 页面汉化'}).click();
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','true');
@@ -348,6 +393,9 @@ test('Science plugin switches persist independently and stay reversible', async 
   await page.getByRole('button',{name:'设置',exact:true}).click();
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','true');
   await page.getByRole('switch',{name:'Science 页面汉化'}).click();
+  await expect(page.getByRole('switch',{name:'本地文件打开'})).toHaveAttribute('aria-checked','true');
+  await page.getByRole('switch',{name:'本地文件打开'}).click();
+  await expect(page.getByRole('switch',{name:'本地文件打开'})).toHaveAttribute('aria-checked','false');
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','false');
 });
 
@@ -359,4 +407,134 @@ test('Claude hosted MCP blocked by launch policy is clearly labeled and cannot b
   await expect(row).toContainText('第三方策略停用');
   await expect(row.getByRole('button',{name:'启用',exact:true})).toBeDisabled();
   await expect(page.locator('[data-mcp-id="local:memory"]').getByRole('button',{name:'解绑 Science',exact:true})).toBeEnabled();
+});
+
+test('unified catalog opens directly with existing target skills and one-click installation', async ({ page }) => {
+  const errors=[]; page.on('pageerror', e=>errors.push(e.message));
+  await setup(page,true,true); await page.getByRole('button',{name:'Skills 管理',exact:true}).click();
+  await expect(page.locator('.library-row')).toHaveCount(2);
+  await expect(page.getByRole('button',{name:/^发现/})).toHaveCount(0);
+  expect(await page.evaluate(()=>window.testCalls.some(c=>c.args.operation==='skill_library_import'))).toBe(false);
+  await expect(page.locator('#libraryEnableAll')).toBeDisabled();
+  await page.getByLabel('管理目标',{exact:true}).selectOption('codex');
+  await expect(page.getByRole('switch',{name:'在目标启用 paper-reader',exact:true})).toHaveAttribute('aria-checked','true');
+  await expect(page.locator('#libraryTargetSummary')).toContainText('1 个');
+  await page.locator('#libraryEnableAll').click();
+  await expect(page.locator('.library-row [aria-checked=true]')).toHaveCount(2);
+  await page.getByRole('switch',{name:'在目标启用 paper-reader',exact:true}).click();
+  await expect(page.getByRole('switch',{name:'在目标启用 paper-reader',exact:true})).toHaveAttribute('aria-checked','false');
+  await page.getByRole('switch',{name:'在目标启用 paper-reader',exact:true}).click();
+  await expect(page.getByRole('switch',{name:'在目标启用 paper-reader',exact:true})).toHaveAttribute('aria-checked','true');
+  await page.getByRole('button',{name:'查看统一技能 lab-notes',exact:true}).click();
+  await expect(page.locator('#workspaceText')).toContainText('<unsafe-content>');
+  await page.getByRole('button',{name:'关闭内容',exact:true}).click();
+  await page.screenshot({path:'../artifacts/skills-unified-desktop.png',fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:'../artifacts/skills-unified-mobile.png',fullPage:true});
+  expect(errors).toEqual([]);
+});
+
+test('one-click installs all filtered pages, groups names and preserves partial successes', async ({page}) => {
+  await setup(page,true,true); await page.evaluate(()=>{window.useSkillsPagingFixture();window.libraryFailTarget='new-020';});
+  await page.getByRole('button',{name:'Skills 管理',exact:true}).click();
+  await page.getByLabel('管理目标',{exact:true}).selectOption('claude');
+  await page.getByLabel('搜索统一技能库').fill('new-');
+  await expect(page.locator('.library-row')).toHaveCount(50);
+  await expect(page.locator('#libraryEnableAll')).toContainText('51 个');
+  await page.locator('#libraryEnableAll').click();
+  const calls=await page.evaluate(()=>window.testCalls.filter(c=>c.args.operation==='skill_library_toggle'));
+  expect(calls).toHaveLength(51); expect(calls.every(c=>c.args.params.target==='claude')).toBe(true);
+  expect(calls.some(c=>c.args.params.name==='new-050')).toBe(true);
+  await expect(page.locator('#libraryReport')).toContainText('文件冲突');
+  await expect(page.locator('#libraryReport')).toContainText('new-050');
+  await expect(page.locator('#libraryEnableAll')).toContainText('1 个');
+  await page.getByLabel('目标启用状态').selectOption('on');
+  await expect(page.locator('.library-row')).toHaveCount(50);
+});
+
+test('unified catalog filters by names and sources, pages and puts missing skills first', async ({page}) => {
+  await setup(page,false,true); await page.evaluate(()=>window.useSkillsPagingFixture());
+  await page.getByRole('button',{name:'Skills 管理',exact:true}).click();
+  await expect(page.locator('#libraryRows h3').first()).toHaveText('new-000');
+  await page.getByRole('checkbox',{name:'选择统一技能 new-000',exact:true}).check();
+  await page.getByRole('button',{name:'第 2 页',exact:true}).click();
+  await expect(page.locator('#libraryRows h3').first()).toHaveText('new-050');
+  await expect(page.locator('#libraryRows h3').nth(1)).toHaveText('文献助手');
+  await page.getByLabel('跳转页码').fill('9'); await page.getByRole('button',{name:'跳转',exact:true}).click();
+  await expect(page.locator('.library-row')).toHaveCount(2);
+  await page.getByRole('button',{name:'第 1 页',exact:true}).click();
+  await expect(page.getByRole('checkbox',{name:'选择统一技能 new-000',exact:true})).toBeChecked();
+  await page.getByLabel('搜索统一技能库').fill('description-only-term');
+  await expect(page.locator('.library-row')).toHaveCount(0);
+  await page.getByLabel('搜索统一技能库').fill('repository-only-term');
+  await expect(page.locator('.library-row')).toHaveCount(0);
+  await page.getByLabel('搜索统一技能库').fill(' NEW-050 ');
+  await expect(page.locator('#libraryRows h3')).toHaveText('new-050');
+  await page.getByLabel('搜索统一技能库').fill('');
+  await page.getByLabel('技能来源').selectOption('library');
+  await expect(page.locator('#libraryPages')).toContainText('351 个技能');
+  await page.getByLabel('目标启用状态').selectOption('on');
+  await expect(page.locator('#libraryPages')).toContainText('351 个技能');
+});
+
+test('unified library adds and counts custom targets while leaving originals visible', async ({page}) => {
+  await setup(page,true,true); await page.getByRole('button',{name:'Skills 管理',exact:true}).click();
+  await page.getByRole('button',{name:'本机目录',exact:true}).click();
+  await page.locator('#workspaceDialog summary').click();
+  await page.getByLabel('Agent 名称',{exact:true}).fill('My Agent');
+  await page.getByLabel('Skills 目录',{exact:true}).fill('/Users/test/my-agent/skills');
+  await page.getByRole('button',{name:'添加并扫描',exact:true}).click();
+  await expect(page.locator('#workspaceDialog')).toContainText('My Agent');
+  await page.getByRole('button',{name:'关闭本机目录',exact:true}).click();
+  await page.getByLabel('管理目标',{exact:true}).selectOption('custom-fixture');
+  await page.getByLabel('技能来源').selectOption('agents');
+  await expect(page.locator('.library-row')).toHaveCount(1);
+  await page.locator('#libraryEnableAll').click();
+  await expect(page.locator('#libraryTargetSummary')).toContainText('1 个');
+  await expect(page.getByRole('switch',{name:'在目标启用 lab-notes',exact:true})).toHaveAttribute('aria-checked','true');
+});
+
+test('Skills views keep the same toolbar, filters, row columns and switch position', async ({page}) => {
+  await setup(page,false,true);
+  await page.evaluate(()=>{
+    window.useDesignPreview();
+    window.discoveryFixture=[{key:'codex:paper-reader',name:'paper-reader',source:'codex',description:'阅读科学文献，提取研究问题、方法与核心结论。',path:'/fixture/paper-reader'},
+      {key:'agents:canvas-design',name:'canvas-design',source:'agents',description:'创建海报、信息图与研究展示图，支持统一配色和排版。',path:'/fixture/canvas-design'}];
+    window.catalogDegraded=true; window.localImportAvailable=true;
+  });
+  await page.setViewportSize({width:1180,height:780});
+  await page.getByRole('button',{name:'Skills 管理',exact:true}).click();
+  const layout=async()=>({
+    tabs:await page.locator('[data-skill-tab]').allTextContents(),
+    search:await page.locator('.skills-page .search').boundingBox(),
+    columns:await page.locator('.skill-row').first().evaluate(node=>getComputedStyle(node).gridTemplateColumns),
+    toggle:await page.getByRole('switch',{name:/^(在目标启用|启用) paper-reader$/}).boundingBox(),
+  });
+  const library=await layout();
+  await expect(page.locator('.skills-page h2')).toHaveCount(0);
+  await expect(page.locator('.skills-notice')).toContainText('本地可用');
+  await page.getByLabel('技能状态提示').click();
+  await expect(page.locator('.skills-notice p')).toContainText('云端目录离线');
+  await page.getByLabel('技能状态提示').click();
+  await page.screenshot({path:'../artifacts/skills-consistent-library.png'});
+  await page.locator('[data-skill-tab="installed"]').click();
+  const installed=await layout();
+  expect(installed.tabs).toEqual(library.tabs);
+  expect(installed.search).toEqual(library.search);
+  expect(installed.columns).toBe(library.columns);
+  expect(installed.toggle.x).toBe(library.toggle.x);
+  await page.screenshot({path:'../artifacts/skills-consistent-installed.png'});
+  for(const theme of ['light','dark']) {
+    await page.evaluate(theme=>applyTheme(theme),theme);
+    for(const width of [980,390]) {
+      await page.setViewportSize({width,height:844});
+      for(const tab of ['library','installed']) {
+        await page.locator(`[data-skill-tab="${tab}"]`).click();
+        expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+        await expect(page.getByRole('switch',{name:/^(在目标启用|启用) paper-reader$/})).toBeVisible();
+        if(width===390)await page.screenshot({path:`../artifacts/skills-consistent-${tab}-${theme}-mobile.png`});
+      }
+    }
+  }
 });

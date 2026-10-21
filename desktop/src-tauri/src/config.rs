@@ -156,6 +156,8 @@ pub struct Config {
     #[serde(default)]
     pub science_zh: bool,
     #[serde(default)]
+    pub science_local_files: bool,
+    #[serde(default)]
     pub providers: BTreeMap<String, ProviderCfg>,
 }
 
@@ -169,6 +171,7 @@ impl Default for Config {
             mode: default_mode(),
             science_local_mcp: true,
             science_zh: false,
+            science_local_files: false,
             providers: BTreeMap::new(),
         }
     }
@@ -370,6 +373,7 @@ mod tests {
     fn legacy_key_only_connections_gain_defaults() {
         let cfg: Config =
             serde_json::from_str(r#"{"providers":{"qwen":{"key":"test-key"}}}"#).unwrap();
+        assert!(!cfg.science_local_files);
         let p = cfg.connection_for("qwen").unwrap();
         assert_eq!(p.key, "test-key");
         assert_eq!(p.protocol, "openai");
@@ -434,6 +438,7 @@ mod tests {
         let mut cfg = Config {
             provider: "qwen".into(),
             proxy_port: 12345,
+            science_local_files: true,
             ..Default::default()
         };
         cfg.providers.insert(

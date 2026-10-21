@@ -1,13 +1,13 @@
 // Science owns installed skills; CSSwitch keeps the source of managed local drafts.
-const skillsState = { tab: 'installed', search: '', source: 'all', status: 'all', page: 0, selected: new Set(), installed: [], discovered: [], repos: [], error: '', degraded: false, localImportAvailable: false, customAllowed: true, warnings: [], updates: {}, checked: false, report: [], importFiles: [] };
-const skillSources = { anthropic: 'Science 内置', bundled: 'Science 内置', personal: '个人 Skill', organization: '组织 Skill', imported: '已导入', 'csswitch-local': 'Science 本地', draft: '本地草稿', local: '本地 Skill', codex: 'Codex 本地', agents: '共享本地', claude: 'Claude 本地', github: 'GitHub 仓库' };
+const skillsState = { tab: 'library', search: '', source: 'all', status: 'all', page: 0, selected: new Set(), installed: [], discovered: [], repos: [], error: '', degraded: false, localImportAvailable: false, customAllowed: true, warnings: [], updates: {}, checked: false, report: [], importFiles: [] };
+const skillSources = { library:'统一副本', science:'Science', anthropic: 'Science 内置', bundled: 'Science 内置', personal: '个人 Skill', organization: '组织 Skill', imported: '已导入', 'csswitch-local': 'Science 本地', draft: '本地草稿', local: '本地 Skill', codex: 'Codex 本地', agents: '共享本地', claude: 'Claude 本地', github: 'GitHub 仓库' };
 const workspaceCall = (operation, params = {}) => call('workspace_manage', { operation, params });
 const skillId = s => skillsState.tab === 'installed' ? s.name : s.key;
 function skillsImportBlocked() { return !native() || Boolean(skillsState.error) || !skillsState.customAllowed || (skillsState.degraded && !skillsState.localImportAvailable); }
 function installedSkill(s) { return skillsState.installed.find(v => v.name === s.name); }
 function removableSkill(s) { return !s.admin_blocked && skillsState.customAllowed && ['csswitch-local', 'local', 'draft', 'personal', 'imported', 'custom'].includes(s.source) && (s.source === 'csswitch-local' || !skillsState.degraded); }
 function skillOrigin(s) {
-  if (s.sourceKey) return skillsState.discovered.find(d => d.key === s.sourceKey);
+  if (s.sourceKey) return [...skillsState.discovered, ...agentLibrary.skills].find(d => d.key === s.sourceKey || d.locations?.some(l => l.key === s.sourceKey));
   const candidates = skillsState.discovered.filter(d => d.name === s.name);
   return candidates.length === 1 ? candidates[0] : null;
 }
@@ -15,7 +15,7 @@ async function loadSkills() {
   skillsState.error = ''; skillsState.degraded = false; skillsState.localImportAvailable = false; skillsState.customAllowed = true; skillsState.warnings = [];
   skillsState.installed = []; skillsState.discovered = []; skillsState.repos = [];
   if (!native()) { skillsState.error = '请在桌面应用中管理 Skills。'; return; }
-  const [catalog, discovery] = await Promise.allSettled([mcpCall('skills_list'), workspaceCall('skills_discover')]);
+  const [catalog, discovery] = await Promise.allSettled([mcpCall('skills_list'), workspaceCall('skills_discover'), loadAgentLibrary()]);
   if (catalog.status === 'fulfilled') {
     skillsState.installed = (catalog.value.skills || []).filter(s => !s.userHidden);
     skillsState.degraded = Boolean(catalog.value.degraded);
@@ -27,42 +27,74 @@ async function loadSkills() {
   if (discovery.status === 'fulfilled') {
     skillsState.discovered = discovery.value.skills || []; skillsState.repos = discovery.value.repos || [];
     skillsState.warnings.push(...(discovery.value.warnings || []));
+    for (const source of discovery.value.sources || []) skillSources[source.id] = source.name;
   } else skillsState.warnings.push(String(discovery.reason.message || discovery.reason));
   const present = new Set((skillsState.tab === 'installed' ? skillsState.installed : skillsState.discovered).map(skillId));
   skillsState.selected = new Set([...skillsState.selected].filter(id => present.has(id)));
 }
+function skillNameMatches(skill, query) {
+  const q = query.trim().toLowerCase();
+  return [skill.name, skill.displayName].some(name => typeof name === 'string' && name.toLowerCase().includes(q));
+}
+function renderSkillsPagination(container, prefix, total, page, onPage) {
+  const pages = Math.max(1, Math.ceil(total / 50));
+  const numbers = [...new Set([0, pages - 1, page - 1, page, page + 1])].filter(n => n >= 0 && n < pages).sort((a, b) => a - b);
+  const buttons = numbers.map((n, i) => `${i && n > numbers[i - 1] + 1 ? '<span class="page-gap" aria-hidden="true">…</span>' : ''}<button class="btn page-number" data-page="${n}" aria-label="第 ${n + 1} 页" ${n === page ? 'aria-current="page"' : ''}>${n + 1}</button>`).join('');
+  container.innerHTML = `<div class="pagination skills-pagination"><span>${fmt(total)} 个技能 · 第 ${page + 1} / ${pages} 页</span><div class="skills-page-controls"><nav class="page-numbers" aria-label="技能列表分页"><button class="btn" id="${prefix}Prev" data-page="${page - 1}" ${page === 0 ? 'disabled' : ''}>上一页</button>${buttons}<button class="btn" id="${prefix}Next" data-page="${page + 1}" ${page + 1 >= pages ? 'disabled' : ''}>下一页</button></nav>${pages > 1 ? `<form class="page-jump"><label>跳至<input type="number" inputmode="numeric" min="1" max="${pages}" step="1" required aria-label="跳转页码" value="${page + 1}" /></label><button class="btn" type="submit">跳转</button></form>` : ''}</div></div>`;
+  const go = value => {
+    if (!Number.isInteger(value) || value < 0 || value >= pages) return;
+    onPage(value);
+    container.querySelector(`[data-page="${value}"]`)?.focus({ preventScroll: true });
+  };
+  container.querySelectorAll('[data-page]').forEach(button => button.onclick = () => go(Number(button.dataset.page)));
+  const form = container.querySelector('form');
+  if (form) form.onsubmit = event => { event.preventDefault(); go(Number(form.querySelector('input').value) - 1); };
+}
 function filteredSkills() {
   const installed = skillsState.tab === 'installed', q = skillsState.search.trim().toLowerCase();
-  return (installed ? skillsState.installed : skillsState.discovered).filter(s =>
-    (skillsState.source === 'all' || s.source === skillsState.source) &&
-    `${s.name} ${s.description || ''} ${s.repo || ''}`.toLowerCase().includes(q) &&
-    (skillsState.status === 'all' || skillsState.status === 'updates' && skillsState.updates[s.name]?.available || skillsState.status === 'enabled' && s.enabled !== false || skillsState.status === 'disabled' && s.enabled === false || skillsState.status === 'new' && !installedSkill(s)));
+  const installedNames = new Set(skillsState.installed.map(s => s.name));
+  const rows = (installed ? skillsState.installed : skillsState.discovered).filter(s =>
+    (skillsState.source === 'all' || s.source === skillsState.source || s.locations?.some(l => l.source === skillsState.source)) &&
+    skillNameMatches(s, q) &&
+    (skillsState.status === 'all' || skillsState.status === 'updates' && skillsState.updates[s.name]?.available || skillsState.status === 'enabled' && s.enabled !== false || skillsState.status === 'disabled' && s.enabled === false || skillsState.status === 'new' && !installedNames.has(s.name)));
+  return installed ? rows : rows.sort((a, b) => Number(installedNames.has(a.name)) - Number(installedNames.has(b.name)));
 }
-function renderSkills() {
-  const installed = skillsState.tab === 'installed', rows = installed ? skillsState.installed : skillsState.discovered;
-  const sources = [...new Set(rows.map(s => s.source))], nUpdates = Object.values(skillsState.updates).filter(v => v.available).length;
-  $('#content').innerHTML = `<div class="page-intro compact-intro"><div><h2>技能库 ${help('技能库', '从本机目录或 GitHub 发现技能，也可导入 Markdown、ZIP 或 .skill 文件。更新保留启停状态和代理绑定，跳过已被本地修改的技能。')}</h2></div><div class="actions"><button class="btn" id="skillRepos">${icon('git-branch')}仓库管理</button><button class="btn" id="checkSkillUpdates" ${skillsImportBlocked() ? 'disabled' : ''}>${icon('refresh-cw')}检查更新</button><button class="btn primary" id="importSkill" ${skillsImportBlocked() ? 'disabled' : ''}>${icon('plus')}导入 Skill</button><input id="skillFile" type="file" accept=".zip,.skill,.md" multiple hidden /></div></div>
-    ${skillsState.error ? `<div class="mcp-note">${icon('info')}${esc(skillsState.error)} · 本地发现仍可使用。</div>` : ''}
-    ${skillsState.warnings.length ? `<details class="workspace-warning"><summary>${icon('info')}${skillsState.degraded && skillsState.localImportAvailable ? '云端目录离线 · 本地技能可用' : `${skillsState.warnings.length} 条提示`}</summary>${skillsState.warnings.map(w => `<p>${esc(w)}</p>`).join('')}<p>云端技能的导入与卸载需要恢复官方登录。</p></details>` : ''}
-    <div class="management-toolbar page-tabs"><div role="group" aria-label="Skills 视图"><button data-skill-tab="installed" class="${installed ? 'active' : ''}">已安装 <span class="label-count">${skillsState.installed.length}</span></button><button data-skill-tab="discover" class="${!installed ? 'active' : ''}">发现 <span class="label-count">${skillsState.discovered.length}</span></button></div><div class="actions"><span class="subtle">${nUpdates ? `${nUpdates} 个可更新` : skillsState.checked ? '已检查更新' : '安装目标：Claude Science'}</span>${nUpdates ? `<button class="btn quiet" id="updateAllSkills" ${skillsImportBlocked() ? 'disabled' : ''}>全部更新</button>` : ''}</div></div>
-    <div class="filter-toolbar skill-filters"><div class="search">${icon('search')}<input id="skillSearch" type="search" placeholder="搜索技能名称、描述或仓库" aria-label="搜索 Skills" value="${esc(skillsState.search)}" /></div><select id="skillSource" aria-label="Skills 来源"><option value="all">全部来源</option>${sources.map(s => `<option value="${esc(s)}" ${skillsState.source === s ? 'selected' : ''}>${esc(skillSources[s] || s)}</option>`).join('')}</select><select id="skillStatus" aria-label="Skills 状态"><option value="all">全部状态</option>${(installed ? [['updates','可更新'],['enabled','已启用'],['disabled','已停用']] : [['new','未安装']]).map(([v,label]) => `<option value="${v}" ${skillsState.status === v ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
-    <div id="skillBatchBar" class="batch-bar"></div><div class="skill-table"><div class="skill-table-head"><span></span><span>技能 / 描述</span><span>来源 / 状态</span><span>操作</span></div><div id="skillRows" class="management-list"></div></div><div id="skillPagination"></div><div id="skillReport"></div>`;
-  document.querySelectorAll('[data-skill-tab]').forEach(b => b.onclick = () => { skillsState.tab = b.dataset.skillTab; skillsState.source = 'all'; skillsState.status = 'all'; skillsState.page = 0; skillsState.selected.clear(); renderSkills(); });
-  $('#skillSearch').oninput = e => { skillsState.search = e.target.value; skillsState.page = 0; renderSkillRows(); };
-  $('#skillSource').onchange = e => { skillsState.source = e.target.value; skillsState.page = 0; renderSkillRows(); };
-  $('#skillStatus').onchange = e => { skillsState.status = e.target.value; skillsState.page = 0; renderSkillRows(); };
+function skillsChrome() {
+  return `<div class="skills-header"><div class="management-toolbar page-tabs"><div role="group" aria-label="Skills 视图"><button data-skill-tab="library" class="${skillsState.tab === 'library' ? 'active' : ''}">统一技能库 <span class="label-count">${unifiedSkills().length}</span></button><button data-skill-tab="installed" class="${skillsState.tab === 'installed' ? 'active' : ''}">Science 已安装 <span class="label-count">${skillsState.installed.length}</span></button></div></div><div class="actions skills-tools"><button class="btn quiet" id="agentDirectories">${icon('folder-search')}本机目录</button><button class="btn quiet" id="skillRepos">${icon('git-branch')}仓库管理</button><button class="icon-btn" id="checkSkillUpdates" aria-label="检查更新" title="检查 Science 技能更新" ${skillsImportBlocked() ? 'disabled' : ''}>${icon('refresh-cw')}</button><button class="btn" id="importSkill" title="导入技能到 Science" ${skillsImportBlocked() ? 'disabled' : ''}>${icon('plus')}导入 Skill</button><input id="skillFile" type="file" accept=".zip,.skill,.md" multiple hidden /></div></div>`;
+}
+function skillsNotices() {
+  const messages = [...(skillsState.error ? [skillsState.error] : []), ...skillsState.warnings, ...(agentLibrary.error ? [agentLibrary.error] : [])];
+  return messages.length ? `<details class="skills-notice"><summary aria-label="技能状态提示" title="查看技能状态提示">${icon('info')}<span>${skillsState.degraded && skillsState.localImportAvailable ? '本地可用' : '状态提示'}</span></summary><div>${messages.map(text => `<p>${esc(text)}</p>`).join('')}</div></details>` : '';
+}
+function skillTableHeading() { return '<div class="skill-table-head"><span></span><span>技能 / 描述</span><span>来源 / 状态</span><span>操作</span></div>'; }
+function bindSkillsChrome() {
+  document.querySelectorAll('[data-skill-tab]').forEach(b => b.onclick = () => { skillsState.tab = b.dataset.skillTab; renderSkills(); });
   $('#skillRepos').onclick = openSkillRepos;
+  $('#agentDirectories').onclick = () => action(openAgentDirectories);
   $('#checkSkillUpdates').onclick = () => action(checkSkillUpdates);
-  $('#updateAllSkills')?.addEventListener('click', () => action(async () => {
-    const items = skillsState.installed.filter(s => skillsState.updates[s.name]?.available);
-    if (await confirmAction(`更新 ${items.length} 个 Skills？`, '使用安装来源的最新内容，保留启停状态和代理绑定。')) await runSkillBatch(items, 'update');
-  }));
   $('#importSkill').onclick = () => $('#skillFile').click();
   $('#skillFile').onchange = e => {
     const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
     if (files.length > 50) { notice('一次最多导入 50 个技能包。', true); return; }
     openSkillFileImport(files);
   };
+}
+function renderSkills() {
+  if (skillsState.tab !== 'installed') { renderAgentLibrary(); return; }
+  const installed = skillsState.tab === 'installed', rows = installed ? skillsState.installed : skillsState.discovered;
+  const sources = [...new Set(rows.flatMap(s => [s.source, ...(s.locations || []).map(l => l.source)]))], nUpdates = Object.values(skillsState.updates).filter(v => v.available).length;
+  $('#content').innerHTML = `<div class="skills-page">${skillsChrome()}
+    <div class="library-destination"><label>安装目标<select aria-label="管理目标" disabled><option>Claude Science · ${skillsState.installed.length} 个</option></select></label><span class="subtle" title="Science 中的实际启用状态">${skillsState.installed.filter(s => s.enabled !== false && !s.admin_blocked).length} 个已启用${nUpdates ? ` · ${nUpdates} 个可更新` : skillsState.checked ? ' · 已检查更新' : ''}</span>${skillsNotices()}<div class="skills-target-action">${nUpdates ? `<button class="btn" id="updateAllSkills" ${skillsImportBlocked() ? 'disabled' : ''}>全部更新</button>` : ''}</div></div>
+    <div class="filter-toolbar skill-filters"><div class="search">${icon('search')}<input id="skillSearch" type="search" placeholder="搜索技能名称" aria-label="搜索 Skills" value="${esc(skillsState.search)}" /></div><select id="skillSource" aria-label="Skills 来源"><option value="all">全部来源</option>${sources.map(s => `<option value="${esc(s)}" ${skillsState.source === s ? 'selected' : ''}>${esc(skillSources[s] || s)}</option>`).join('')}</select><select id="skillStatus" aria-label="Skills 状态"><option value="all">${installed ? '全部状态' : '全部状态 · 未安装优先'}</option>${(installed ? [['updates','可更新'],['enabled','已启用'],['disabled','已停用']] : [['new','未安装']]).map(([v,label]) => `<option value="${v}" ${skillsState.status === v ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+    <div id="skillBatchBar" class="batch-bar"></div><div class="skill-table">${skillTableHeading()}<div id="skillRows" class="management-list"></div></div><div id="skillPagination"></div><div id="skillReport"></div></div>`;
+  bindSkillsChrome();
+  $('#skillSearch').oninput = e => { skillsState.search = e.target.value; skillsState.page = 0; renderSkillRows(); };
+  $('#skillSource').onchange = e => { skillsState.source = e.target.value; skillsState.page = 0; renderSkillRows(); };
+  $('#skillStatus').onchange = e => { skillsState.status = e.target.value; skillsState.page = 0; renderSkillRows(); };
+  $('#updateAllSkills')?.addEventListener('click', () => action(async () => {
+    const items = skillsState.installed.filter(s => skillsState.updates[s.name]?.available);
+    if (await confirmAction(`更新 ${items.length} 个 Skills？`, '使用安装来源的最新内容，保留启停状态和代理绑定。')) await runSkillBatch(items, 'update');
+  }));
   renderSkillRows(); renderSkillReport(); icons();
 }
 function renderSkillRows() {
@@ -71,11 +103,12 @@ function renderSkillRows() {
   const visible = rows.slice(skillsState.page * 50, (skillsState.page + 1) * 50);
   $('#skillRows').innerHTML = visible.map((s, i) => {
     const exists = installedSkill(s), update = skillsState.updates[s.name];
-    const blocked = installed ? !native() || Boolean(skillsState.error) || s.admin_blocked : skillsImportBlocked() || Boolean(exists && exists.source !== 'csswitch-local');
+    const blocked = installed ? !native() || Boolean(skillsState.error) || s.admin_blocked : !native();
     const status = installed ? s.admin_blocked ? '组织禁用' : s.locallyModified ? '本地已修改' : update?.available ? '可更新' : s.enabled === false ? '已停用' : '已启用' : exists ? '已安装' : '未安装';
-    return `<article class="management-row skill-row ${skillsState.selected.has(skillId(s)) ? 'is-selected' : ''}" data-skill-index="${i}"><input class="row-check" type="checkbox" data-select-skill="${i}" aria-label="选择 ${esc(s.name)}${installed ? '' : `（${esc(skillSources[s.source] || s.source)}）`}" ${skillsState.selected.has(skillId(s)) ? 'checked' : ''} ${blocked ? 'disabled' : ''} /><div class="row-detail"><h3><span class="skill-glyph">${icon('book-open')}</span>${esc(s.displayName || s.name)}</h3><p title="${esc(s.description || '')}">${esc(s.description || '暂无描述')}</p></div><div class="skill-origin"><span>${esc(skillSources[s.source] || s.source)}</span><span class="status-badge ${status === '可更新' ? 'update' : ''}">${status}</span></div><div class="actions">${installed ? `<button class="icon-btn" data-skill-action="content" aria-label="查看内容" title="查看内容">${icon('file-text')}</button>${s.source === 'csswitch-local' && update?.available ? `<button class="icon-btn" data-skill-action="update" aria-label="更新 ${esc(s.name)}" title="更新" ${skillsImportBlocked() || s.locallyModified || s.admin_blocked ? 'disabled' : ''}>${icon('refresh-cw')}</button>` : ''}<button class="switch" role="switch" aria-label="启用 ${esc(s.name)}" aria-checked="${s.enabled !== false}" data-skill-action="enabled" ${s.admin_blocked ? 'disabled' : ''}><span></span></button>${['csswitch-local', 'local', 'draft', 'personal', 'imported', 'custom'].includes(s.source) ? `<button class="icon-btn danger" data-skill-action="remove" ${!removableSkill(s) ? 'disabled' : ''} aria-label="卸载 ${esc(s.name)}" title="卸载">${icon('trash-2')}</button>` : ''}` : `<button class="btn ${exists ? '' : 'primary'}" data-skill-action="install" ${exists || skillsImportBlocked() ? 'disabled' : ''}>${icon(exists ? 'check' : 'plus')}${exists ? '已安装' : '安装到 Science'}</button>`}</div></article>`;
-  }).join('') || `<div class="empty">${icon('book-open')}<strong>${skillsState.search || skillsState.status !== 'all' ? '没有匹配的 Skills' : installed ? '建立你的技能库' : '没有发现新技能'}</strong><span>${installed ? '从本机和仓库发现技能，或一次导入多个技能包。' : '扫描 Codex、共享目录和 Claude 本地 Skills，也可添加 GitHub 仓库。'}</span>${installed ? '<button class="btn" id="discoverSkills">浏览可安装技能</button>' : ''}</div>`;
-  $('#discoverSkills')?.addEventListener('click', () => { skillsState.tab = 'discover'; renderSkills(); });
+    return `<article class="management-row skill-row ${skillsState.selected.has(skillId(s)) ? 'is-selected' : ''}" data-skill-index="${i}"><input class="row-check" type="checkbox" data-select-skill="${i}" aria-label="选择 ${esc(s.name)}${installed ? '' : `（${esc(skillSources[s.source] || s.source)}）`}" ${skillsState.selected.has(skillId(s)) ? 'checked' : ''} ${blocked ? 'disabled' : ''} /><div class="row-detail"><h3><span class="skill-glyph">${icon('book-open')}</span>${esc(s.displayName || s.name)}</h3><p title="${esc(s.description || '')}">${esc(s.description || '暂无描述')}</p></div><div class="skill-origin"><span>${esc(s.locations?.length ? [...new Set(s.locations.map(l => skillSources[l.source] || l.source))].join(' · ') : skillSources[s.source] || s.source)}</span><span class="status-badge ${status === '可更新' ? 'update' : ''}">${status}</span></div><div class="actions">${installed ? `<button class="icon-btn" data-skill-action="content" aria-label="查看内容" title="查看内容">${icon('file-text')}</button>${s.source === 'csswitch-local' && update?.available ? `<button class="icon-btn" data-skill-action="update" aria-label="更新 ${esc(s.name)}" title="更新" ${skillsImportBlocked() || s.locallyModified || s.admin_blocked ? 'disabled' : ''}>${icon('refresh-cw')}</button>` : ''}${['csswitch-local', 'local', 'draft', 'personal', 'imported', 'custom'].includes(s.source) ? `<button class="icon-btn danger" data-skill-action="remove" ${!removableSkill(s) ? 'disabled' : ''} aria-label="卸载 ${esc(s.name)}" title="卸载">${icon('trash-2')}</button>` : ''}<button class="switch" role="switch" aria-label="启用 ${esc(s.name)}" aria-checked="${s.enabled !== false}" data-skill-action="enabled" ${s.admin_blocked ? 'disabled' : ''}><span></span></button>` : `<button class="icon-btn" data-library-import="${i}" title="加入统一库" aria-label="加入统一库 ${esc(s.name)}">${icon('library')}</button><button class="btn ${exists ? '' : 'primary'}" data-skill-action="install" ${exists || skillsImportBlocked() ? 'disabled' : ''}>${icon(exists ? 'check' : 'plus')}${exists ? '已安装' : '安装到 Science'}</button>`}</div></article>`;
+  }).join('') || `<div class="empty">${icon('book-open')}<strong>${skillsState.search || skillsState.status !== 'all' ? '没有匹配的 Skills' : installed ? '建立你的技能库' : '没有发现新技能'}</strong><span>${installed ? '从本机和仓库发现技能，或一次导入多个技能包。' : '扫描本机 Agent 的 Skills 目录和软链接，也可添加自定义目录与 GitHub 仓库。'}</span>${installed ? '<button class="btn" id="discoverSkills">浏览可安装技能</button>' : ''}</div>`;
+  document.querySelectorAll('[data-library-import]').forEach(b => b.onclick = () => action(() => runLibraryBatch([visible[Number(b.dataset.libraryImport)]], 'import')));
+  $('#discoverSkills')?.addEventListener('click', () => { skillsState.tab = 'library'; renderSkills(); });
   document.querySelectorAll('[data-select-skill]').forEach(b => b.onchange = () => { const id = skillId(visible[Number(b.dataset.selectSkill)]); b.checked ? skillsState.selected.add(id) : skillsState.selected.delete(id); b.closest('article').classList.toggle('is-selected', b.checked); renderSkillBatchBar(visible); });
   document.querySelectorAll('[data-skill-action]').forEach(b => b.onclick = () => action(async () => {
     const s = visible[Number(b.closest('[data-skill-index]').dataset.skillIndex)], op = b.dataset.skillAction;
@@ -84,14 +117,14 @@ function renderSkillRows() {
     if (op === 'update' && !await confirmAction(`更新 ${s.name}？`, '使用原来源的最新文件，保留启停状态和代理绑定。验证失败时会恢复原内容。')) return;
     await runSkillBatch([s], op === 'enabled' ? s.enabled === false ? 'enable' : 'disable' : op);
   }));
-  $('#skillPagination').innerHTML = `<div class="pagination"><span>${fmt(rows.length)} 个技能 · 第 ${skillsState.page + 1} / ${pages} 页</span><div class="actions"><button class="btn" id="skillPrev" ${skillsState.page === 0 ? 'disabled' : ''}>上一页</button><button class="btn" id="skillNext" ${skillsState.page + 1 >= pages ? 'disabled' : ''}>下一页</button></div></div>`;
-  $('#skillPrev').onclick = () => { skillsState.page--; renderSkillRows(); }; $('#skillNext').onclick = () => { skillsState.page++; renderSkillRows(); };
+  renderSkillsPagination($('#skillPagination'), 'skill', rows.length, skillsState.page, page => { skillsState.page = page; renderSkillRows(); });
   renderSkillBatchBar(visible); icons();
 }
 function renderSkillBatchBar(visible) {
   const installed = skillsState.tab === 'installed', n = skillsState.selected.size;
-  const eligible = visible.filter(s => installed ? !s.admin_blocked && !skillsState.error : !skillsImportBlocked() && (!installedSkill(s) || installedSkill(s).source === 'csswitch-local'));
-  $('#skillBatchBar').innerHTML = `<label class="select-all"><input type="checkbox" id="selectAllSkills" aria-label="全选当前页 Skills" ${eligible.length && eligible.every(s => skillsState.selected.has(skillId(s))) ? 'checked' : ''} ${!eligible.length ? 'disabled' : ''} /><span>${n ? `已选 ${n} 个` : '全选当前页'}</span></label><div class="actions">${n ? installed ? `<button class="btn quiet" data-skill-batch="enable">批量启用</button><button class="btn quiet" data-skill-batch="disable">批量停用</button><button class="btn quiet" data-skill-batch="update" ${skillsImportBlocked() ? 'disabled' : ''}>${icon('refresh-cw')}更新所选</button><button class="btn quiet danger" data-skill-batch="remove">${icon('trash-2')}卸载所选</button>` : `<button class="btn primary" data-skill-batch="install" ${skillsImportBlocked() ? 'disabled' : ''}>${icon('plus')}安装所选</button>` : `<span class="subtle">${installed ? '多选后批量启停、更新或卸载' : '多选技能，一次安装到 Science'}</span>`}${n ? '<button class="icon-btn" id="clearSkillSelection" aria-label="清除 Skills 选择">' + icon('x') + '</button>' : ''}</div>`;
+  const eligible = visible.filter(s => installed ? !s.admin_blocked && !skillsState.error : native());
+  $('#skillBatchBar').innerHTML = `<label class="select-all"><input type="checkbox" id="selectAllSkills" aria-label="全选当前页 Skills" ${eligible.length && eligible.every(s => skillsState.selected.has(skillId(s))) ? 'checked' : ''} ${!eligible.length ? 'disabled' : ''} /><span>${n ? `已选 ${n} 个` : '全选当前页'}</span></label><div class="actions">${n ? installed ? `<button class="btn quiet" data-skill-batch="enable">批量启用</button><button class="btn quiet" data-skill-batch="disable">批量停用</button><button class="btn quiet" data-skill-batch="update" ${skillsImportBlocked() ? 'disabled' : ''}>${icon('refresh-cw')}更新所选</button><button class="btn quiet danger" data-skill-batch="remove">${icon('trash-2')}卸载所选</button>` : `<button class="btn" id="libraryImportSelected">${icon('library')}加入统一库</button><button class="btn primary" data-skill-batch="install" ${skillsImportBlocked() ? 'disabled' : ''}>${icon('plus')}安装所选</button>` : help('批量操作', '勾选技能后可批量启用、停用、更新或卸载。全选仅选择当前页，已选项可以跨页保留。')}${n ? '<button class="icon-btn" id="clearSkillSelection" aria-label="清除 Skills 选择">' + icon('x') + '</button>' : ''}</div>`;
+  $('#libraryImportSelected')?.addEventListener('click', () => action(() => runLibraryBatch(skillsState.discovered.filter(s => skillsState.selected.has(s.key)), 'import')));
   $('#selectAllSkills').indeterminate = eligible.some(s => skillsState.selected.has(skillId(s))) && !eligible.every(s => skillsState.selected.has(skillId(s)));
   $('#selectAllSkills').onchange = e => { eligible.forEach(s => e.target.checked ? skillsState.selected.add(skillId(s)) : skillsState.selected.delete(skillId(s))); renderSkillRows(); };
   $('#clearSkillSelection')?.addEventListener('click', () => { skillsState.selected.clear(); renderSkillRows(); });
@@ -206,7 +239,7 @@ function openSkillRepos() {
     try {
       notice('正在下载仓库并扫描 Skills…');
       await workspaceCall('repo_add', { repo: $('#repoUrl').value.trim(), branch: $('#repoBranch').value.trim() });
-      await loadSkills(); skillsState.tab = 'discover'; renderSkills(); dialog.close(); notice('仓库已同步，选择 Skill 即可安装。');
+      await loadSkills(); skillsState.tab = 'library'; renderSkills(); dialog.close(); notice('仓库已同步，选择 Skill 即可安装。');
     } catch (err) { $('#repoError').hidden = false; $('#repoError').textContent = String(err.message || err); }
     finally { form.inert = false; }
   }); };

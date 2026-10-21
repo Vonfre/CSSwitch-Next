@@ -23,7 +23,7 @@ pub fn entry(
         .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
     if !alive || state.science_ui_upstream != upstream {
         super::kill_child(&mut state.science_ui);
-        let root = super::asset_root(app).ok_or("找不到 Science 汉化插件资源。")?;
+        let root = super::asset_root(app).ok_or("找不到 Science 页面插件资源。")?;
         let ready = super::config::default_dir().join(format!(
             "ui-{}.json",
             super::proc::gen_secret().map_err(|_| "无法初始化页面入口。")?
@@ -51,7 +51,7 @@ fn start_proxy(
     ready: &Path,
     upstream: u16,
 ) -> Result<(Child, u16), String> {
-    let py = super::proc::find_exe("python3").ok_or("Science 汉化插件需要 Python 3。")?;
+    let py = super::proc::find_exe("python3").ok_or("Science 页面插件需要 Python 3。")?;
     let mut child = Command::new(py)
         .arg("-B")
         .arg(root.join("scripts/science-ui-proxy.py"))
@@ -147,17 +147,19 @@ pub async fn set_science_features(
     app: tauri::AppHandle,
     local_mcp: bool,
     zh: bool,
+    local_files: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = super::RUNTIME_OPERATION.lock().unwrap_or_else(|e| e.into_inner());
         super::config::update(&super::config::default_dir(), |cfg| {
             cfg.science_local_mcp = local_mcp; cfg.science_zh = zh;
+            if let Some(enabled) = local_files { cfg.science_local_files = enabled; }
         }).map_err(|_| "无法保存 Science 插件设置。")?;
         let cfg = super::config::load_from(&super::config::default_dir()).map_err(|_| "无法读取插件设置。")?;
         let running = super::sandbox_running_ours(cfg.sandbox_port);
         let pending = running && super::science_shared::load(&super::shared_root())?.and_then(|s| running_policy(&s.config)) != Some(local_mcp);
         let state = app.state::<std::sync::Mutex<super::AppState>>();
         let st = super::lock(&state);
-        Ok(serde_json::json!({"mcp_pending": pending, "ui_open": st.science_ui.is_some(), "message": if pending { "汉化设置已保存；MCP 策略在下次启动 Science 时生效。" } else { "设置已保存；通过 CSSwitch 打开的 Science 页面会在 3 秒内切换语言。" }}))
+        Ok(serde_json::json!({"mcp_pending": pending, "ui_open": st.science_ui.is_some(), "message": if pending { "插件设置已保存；MCP 策略在下次启动 Science 时生效。" } else { "设置已保存；通过 CSSwitch 打开的 Science 页面会自动应用插件设置。" }}))
     }).await.map_err(|_| "保存插件设置失败。".to_string())?
 }

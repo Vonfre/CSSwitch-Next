@@ -2,6 +2,29 @@ import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 const plugin = readFileSync(new URL('../../scripts/science-zh.js', import.meta.url), 'utf8');
 
+test('artifact provenance menus translate fully and restore without changing document text', async ({page}) => {
+  await page.route('**/__csswitch/config',route=>route.fulfill({json:{enabled:true}}));
+  await page.goto('/');
+  await page.setContent('<section class="markdown-content"><h2>Provenance</h2><p>View in context</p></section>');
+  await page.addScriptTag({content:plugin});
+  await page.evaluate(()=>{
+    const menu=document.createElement('div');menu.setAttribute('role','menu');menu.setAttribute('aria-label','Artifact actions');
+    menu.innerHTML='<button role="menuitem" title="View provenance"><span aria-hidden="true">↗</span><span>Provenance</span></button><button role="menuitem">View in context</button><button role="menuitem">Open in Artifact Viewer</button>';
+    document.body.append(menu);
+  });
+  await expect(page.getByRole('menu')).toHaveAttribute('aria-label','文件操作');
+  await expect(page.getByRole('menuitem').nth(0)).toContainText('来源追溯');
+  await expect(page.getByRole('menuitem').nth(0)).toHaveAttribute('title','查看来源追溯');
+  await expect(page.getByRole('menuitem').nth(1)).toHaveText('查看上下文');
+  await expect(page.getByRole('menuitem').nth(2)).toHaveText('在产物预览中打开');
+  await expect(page.locator('.markdown-content h2')).toHaveText('Provenance');
+  await expect(page.locator('.markdown-content p')).toHaveText('View in context');
+  await page.evaluate(()=>window.__csswitchZh.setEnabled(false));
+  await expect(page.getByRole('menu')).toHaveAttribute('aria-label','Artifact actions');
+  await expect(page.getByRole('menuitem').nth(0)).toHaveAttribute('title','View provenance');
+  await expect(page.getByRole('menuitem').nth(1)).toHaveText('View in context');
+});
+
 test('Science UI translation restores original UI and leaves research content intact', async ({ page }) => {
   await page.route('**/__csswitch/config', route => route.fulfill({json:{enabled:true}}));
   await page.goto('/');

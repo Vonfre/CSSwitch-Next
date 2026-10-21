@@ -20,6 +20,15 @@ class Native(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     def log_message(self, *args): pass
     def do_GET(self):
+        if self.path.startswith('/api/artifacts/'):
+            self.server.artifact_requests = getattr(self.server, 'artifact_requests', []) + [(self.path, self.headers.get('Cookie'), self.headers.get('Authorization'))]
+            authorized = self.headers.get('Cookie') == 'operon_auth=fixture' or self.headers.get('Authorization') == 'Bearer fixture'
+            body = json.dumps(getattr(self.server, 'artifact', {})).encode()
+            self.send_response(200 if authorized else 401)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers(); self.wfile.write(body)
+            return
         if self.path == '/ws':
             self.send_response(101)
             self.send_header('Connection', 'Upgrade')
@@ -162,6 +171,66 @@ class ProxyTests(unittest.TestCase):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         with self.assertRaises(urllib.error.HTTPError) as error: opener.open(self.base+'/redirect')
         self.assertEqual(error.exception.headers['Location'], self.base+'/setup?nonce=fixture')
+
+    def enable_files(self):
+        self.proxy.config.write_text('{"science_local_files":true}')
+        self.document = Path(self.temp.name) / 'document.md'; self.document.write_text('fixture')
+        self.native.artifact = {'version_id': 'v1', 'file_path': str(self.document)}
+        with self.request('/__csswitch/files/config') as response:
+            config = json.load(response)
+        self.assertTrue(config['enabled'])
+        self.file_headers = {'Origin': self.base, 'Content-Type': 'application/json', 'X-CSSwitch-Files': config['token'], 'Cookie': 'operon_auth=fixture'}
+        self.file_payload = json.dumps({'artifactId': 'art_1', 'versionId': 'v1', 'action': 'reveal'}).encode()
+
+    def test_local_files_plugin_config_is_independent_and_script_is_injected(self):
+        with self.request('/__csswitch/files/config') as r: self.assertEqual(json.load(r), {'enabled': False, 'token': None})
+        self.enable_files()
+        with self.request('/__csswitch/config') as r: self.assertEqual(json.load(r), {'enabled': False})
+        with self.request('/__csswitch/files.js') as r: self.assertIn(b'/__csswitch/files/action', r.read())
+        with self.request('/') as r: self.assertIn(b"['zh','files']", r.read())
+
+    def test_local_file_action_requires_origin_token_json_enabled_and_native_auth(self):
+        self.enable_files()
+        import science_local_files as files
+        with patch.object(files.subprocess, 'run') as run:
+            for key, value, status in [('Origin', None, 403), ('Origin', 'https://foreign.test', 403),
+                    ('X-CSSwitch-Files', 'wrong', 403), ('Content-Type', 'text/plain', 415), ('Cookie', 'bad', 401)]:
+                headers = {k: v for k, v in {**self.file_headers, key: value}.items() if v is not None}
+                with self.subTest(key=key, value=value), self.assertRaises(urllib.error.HTTPError) as error:
+                    self.request('/__csswitch/files/action', data=self.file_payload, headers=headers)
+                self.assertEqual(error.exception.code, status)
+            self.proxy.config.write_text('{"science_local_files":false}')
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request('/__csswitch/files/action', data=self.file_payload, headers=self.file_headers)
+            self.assertEqual(error.exception.code, 403)
+        run.assert_not_called()
+
+    def test_authenticated_local_action_and_auth_forwarding_without_downloads(self):
+        self.enable_files()
+        import science_local_files as files
+        with patch.object(files.sys, 'platform', 'darwin'), patch.object(files.subprocess, 'run') as run:
+            for credentials in [{'Cookie': 'operon_auth=fixture'}, {'Authorization': 'Bearer fixture'}]:
+                headers = {k: v for k, v in self.file_headers.items() if k != 'Cookie'} | credentials
+                with self.request('/__csswitch/files/action', data=self.file_payload, headers=headers) as response:
+                    self.assertIn('Finder', json.load(response)['message'])
+            self.assertEqual(run.call_count, 2)
+        self.assertEqual(self.native.artifact_requests, [('/api/artifacts/art_1/metadata', 'operon_auth=fixture', None),
+            ('/api/artifacts/art_1/metadata', None, 'Bearer fixture')])
+
+    def test_action_rejects_get_raw_path_and_overlapping_operations(self):
+        self.enable_files()
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/__csswitch/files/action', headers=self.file_headers)
+        self.assertEqual(error.exception.code, 405)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/__csswitch/files/action', data=json.dumps({'path': str(self.document), 'action': 'open'}).encode(), headers=self.file_headers)
+        self.assertEqual(error.exception.code, 400)
+        self.proxy.file_lock.acquire()
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request('/__csswitch/files/action', data=self.file_payload, headers=self.file_headers)
+            self.assertEqual(error.exception.code, 409)
+        finally: self.proxy.file_lock.release()
 
 
 if __name__ == '__main__': unittest.main()

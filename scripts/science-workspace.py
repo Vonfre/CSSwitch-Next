@@ -25,6 +25,9 @@ NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
 _spec = importlib.util.spec_from_file_location('local_skill_files', Path(__file__).with_name('science-local-skills.py'))
 local_skill_files = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(local_skill_files)
+_agent_spec = importlib.util.spec_from_file_location('agent_skills', Path(__file__).with_name('agent-skills.py'))
+agent_skills = importlib.util.module_from_spec(_agent_spec)
+_agent_spec.loader.exec_module(agent_skills)
 
 
 class WorkspaceError(Exception):
@@ -139,8 +142,8 @@ class Workspace:
     def __init__(self, home, data, config):
         self.home, self.data, self.config = Path(home), Path(data), Path(config)
         self.pref = self.config / 'workspace.json'
-        self.roots = {'codex': self.home / '.codex/skills', 'agents': self.home / '.agents/skills',
-                      'claude': self.home / '.claude/skills'}
+        self.roots = agent_skills.roots(self.home)
+        self.library = agent_skills.Library(self, WorkspaceError, read_json, write_json, metadata, local_skill_files)
 
     def preferences(self):
         value = read_json(self.pref, {})
@@ -243,22 +246,7 @@ class Workspace:
         return {'messages': messages, 'total': count, 'offset': offset, 'has_more': offset + len(messages) < count}
 
     def discover_local(self):
-        result = []
-        for source, root in self.roots.items():
-            if root.is_symlink() or not root.is_dir():
-                continue
-            for p in sorted(root.iterdir()):
-                if p.name.startswith('.') or not p.is_dir() or p.is_symlink() or not regular(p / 'SKILL.md'):
-                    continue
-                try:
-                    if (p / 'SKILL.md').stat().st_size > 256 * 1024:
-                        continue
-                    info = metadata((p / 'SKILL.md').read_text(), p.name)
-                except (OSError, UnicodeError):
-                    continue
-                if info:
-                    result.append({**info, 'key': source + ':' + p.name, 'source': source, 'directory': p.name, 'path': str(p)})
-        return result
+        return self.library.discover()['skills']
 
     def repos(self):
         return self.preferences().get('repos', [])
@@ -300,7 +288,8 @@ class Workspace:
         return {'message': '仓库已同步。'}
 
     def discover(self):
-        result, warnings = self.discover_local(), []
+        local = self.library.discover()
+        result, warnings = local['skills'], local['warnings']
         for repo in self.repos():
             path = self.repo_path(repo['key'])
             if not regular(path):
@@ -317,16 +306,22 @@ class Workspace:
                             result.append({**info, 'key': 'repo:' + repo['key'] + ':' + directory, 'source': 'github', 'repo': repo['key'], 'directory': directory})
             except (zipfile.BadZipFile, UnicodeError):
                 warnings.append(repo['repo'] + ' 的缓存格式不正确，请重新同步。')
-        return {'skills': result, 'repos': self.repos(), 'warnings': warnings}
+        return {'skills': result, 'repos': self.repos(), 'warnings': warnings, 'sources': local['sources']}
 
     def skill_bundle(self, key):
-        item = next((s for s in self.discover()['skills'] if s['key'] == key), None)
+        if isinstance(key, str) and key.startswith('library:'):
+            name = key.removeprefix('library:')
+            _, path = self.library.record(self.library.index(), name)
+            files = self.library.tree(path)
+            return {**bundle(list(files.items()), name), 'sourceKey': key, 'executable': self.library.executable_files(path, files)}
+        item = next((s for s in self.discover()['skills'] if s['key'] == key or any(v['key'] == key for v in s.get('locations', []))), None)
         if not item:
             raise WorkspaceError('Skill 已不存在，请刷新。')
-        name = PurePosixPath(item['directory']).name
+        if item.get('error'): raise WorkspaceError(item['error'])
+        name = item['name'] if NAME.fullmatch(item['name']) else PurePosixPath(item['directory']).name
         if not NAME.fullmatch(name):
             raise WorkspaceError('Skill 目录名称无效。')
-        files, total = [], 0
+        files, total, executable = [], 0, []
         if item['source'] == 'github':
             with zipfile.ZipFile(self.repo_path(item['repo'])) as z:
                 prefix = item['directory'] + '/'
@@ -334,18 +329,13 @@ class Workspace:
                     if f.filename.startswith(prefix) and not f.is_dir():
                         total += f.file_size
                         if total > MAX_BUNDLE: raise WorkspaceError('Skill 超过 4 MB。')
-                        files.append((f.filename[len(prefix):], z.read(f)))
+                        rel = f.filename[len(prefix):]
+                        files.append((rel, z.read(f)))
+                        if (f.external_attr >> 16) & 0o111: executable.append(rel)
         else:
-            path = Path(item['path'])
-            for base, dirs, names in os.walk(path, followlinks=False):
-                dirs[:] = [d for d in dirs if not d.startswith('.') and not (Path(base) / d).is_symlink() and d not in ('node_modules', '__pycache__')]
-                for filename in names:
-                    p = Path(base) / filename
-                    if filename.startswith('.') or not regular(p): continue
-                    total += p.stat().st_size
-                    if total > MAX_BUNDLE: raise WorkspaceError('Skill 超过 4 MB。')
-                    files.append((p.relative_to(path).as_posix(), p.read_bytes()))
-        return {**bundle(files, name), 'sourceKey': item['key']}
+            files = list(self.library.tree(Path(item['path']), source=True).items())
+            executable = self.library.executable_files(Path(item['path']), dict(files))
+        return {**bundle(files, name), 'sourceKey': key, 'executable': executable}
 
     def import_plan(self, p):
         """Split a multi-skill archive into individually validated native imports."""
@@ -404,6 +394,8 @@ class Workspace:
             prefs.setdefault('sessions', {}).setdefault(p['key'], {}).update(changes)
             write_json(self.pref, prefs)
             return {'message': '会话显示设置已保存。'}
+        if operation.startswith(('skill_library_', 'agent_source')):
+            return self.library.run(operation, p)
         if operation == 'skills_discover': return self.discover()
         if operation == 'skill_bundle': return self.skill_bundle(p.get('key'))
         if operation == 'skill_import_plan': return self.import_plan(p)
@@ -434,7 +426,7 @@ def main():
         data = json.loads(sys.stdin.read(6 * 1024 * 1024))
         value = Workspace(data['home'], data['data'], data['config']).run(data['operation'], data.get('params', {}))
         print(json.dumps({'ok': True, 'value': value}, ensure_ascii=False))
-    except WorkspaceError as e:
+    except (WorkspaceError, local_skill_files.LocalSkillError) as e:
         print(json.dumps({'ok': False, 'message': str(e)}, ensure_ascii=False))
     except Exception:
         print(json.dumps({'ok': False, 'message': '本地数据暂不可读或格式不兼容，请刷新并检查 Science 版本。'}, ensure_ascii=False))

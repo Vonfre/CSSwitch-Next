@@ -69,10 +69,10 @@ test('add from preset, pick models, test an unsaved draft, save and activate', a
   await page.locator('#key').fill('test-only-key-1234');
   await tab(page, '模型');
   await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
-  await expect(page.locator('#catalogStatus')).toContainText('3 个模型');
+  await expect(page.locator('#catalogStatus')).toContainText('3 个可选模型');
   await chooseModel(page, '默认模型', 'GPT', 'gpt-6.1-sol');
   await chooseModel(page, '质量模型', 'Sonnet', 'claude-sonnet');
-  await page.locator('#fast_model').fill('custom-fast');
+  await page.locator('#quality_model').fill('custom-quality');
   await tab(page, '测试');
   await page.getByRole('button', { name: '测试连接', exact: true }).click();
   await expect(page.locator('#verification')).toContainText('测试通过');
@@ -174,16 +174,16 @@ test('catalog failures, stale queries, endpoint changes and custom models keep t
   await expect(page.locator('#model')).toHaveValue('gpt-6.1-sol');
   await chooseModel(page, '质量模型', 'Sonnet', 'claude-sonnet');
   await chooseModel(page, '质量模型', '', ''); await expect(page.locator('#quality_model')).toHaveValue('');
-  await page.locator('#fast_model').fill('my-custom-fast-model');
+  await page.locator('#quality_model').fill('my-custom-quality-model');
   await page.getByRole('button', { name: '保存连接', exact: true }).click();
   const saved = await page.evaluate(() => window.testCalls.findLast((c) => c.cmd === 'save_connection').args.input);
-  expect(saved.name).toBe('保留的修改'); expect(saved.fast_model).toBe('my-custom-fast-model');
+  expect(saved.name).toBe('保留的修改'); expect(saved.quality_model).toBe('my-custom-quality-model');
   expect(await page.locator('unsafe-model').count()).toBe(0);
 });
 
 test('saved credentials auto-fetch once and model picker handles empty search safely', async ({ page }) => {
   await fixture(page); await page.goto('/'); await edit(page, 'GPT');
-  await tab(page, '模型'); await expect(page.locator('#catalogStatus')).toContainText('3 个模型');
+  await tab(page, '模型'); await expect(page.locator('#catalogStatus')).toContainText('3 个可选模型');
   await page.getByRole('button', { name: '选择默认模型', exact: true }).click();
   await page.locator('#modelSearch').fill('no-match'); await expect(page.locator('#modelOptions')).toContainText('没有匹配');
   await page.keyboard.press('Escape'); await expect(page.locator('#modelDialog')).not.toBeVisible();
@@ -296,38 +296,40 @@ test('active connection deletion is protected only while the gateway runs', asyn
 });
 
 
-test('mixed API protocols persist, inherit when empty and test each role separately', async ({ page }) => {
+test('two mappings support mixed protocols and inherit the default when empty', async ({ page }) => {
   await fixture(page); await page.goto('/'); await edit(page, 'GPT');
   await tab(page, '模型');
-  await expect(page.locator('#fast_protocol')).toBeDisabled();
-  await page.locator('#quality_model').fill('gpt-6-astra');
-  await page.locator('#fast_model').fill('claude-sonnet-5-5');
-  await page.locator('#fast_protocol').selectOption('anthropic');
-  await page.getByRole('button', { name: '选择快速模型', exact: true }).click();
+  await expect(page.locator('#fast_model, #fast_protocol')).toHaveCount(0);
+  await expect(page.locator('.route-field')).toHaveCount(2);
+  await expect(page.locator('#quality_protocol')).toBeDisabled();
+  await page.locator('#quality_model').fill('claude-sonnet-5-5');
+  await page.locator('#quality_protocol').selectOption('anthropic');
+  await page.getByRole('button', { name: '选择质量模型', exact: true }).click();
   await expect.poll(async () => (await page.evaluate(() => window.testCalls.filter(c => c.cmd === 'list_models').at(-1)))?.args.query.model_protocol).toBe('anthropic');
   await page.locator('#closeModels').click();
   await tab(page, '测试');
-  await page.locator('#test_role').selectOption('fast');
+  await expect(page.locator('#test_role option')).toHaveCount(2);
+  await page.locator('#test_role').selectOption('quality');
   await expect(page.locator('#testModel')).toHaveText('claude-sonnet-5-5');
   await expect(page.locator('#testProtocol')).toHaveText('Anthropic Messages');
   await page.getByRole('button', { name: '测试连接', exact: true }).click();
   await expect(page.locator('#verification')).toContainText('测试通过');
   const probe = await page.evaluate(() => window.testCalls.filter(c => c.cmd === 'test_connection').at(-1).args.input);
-  expect(probe.test_role).toBe('fast'); expect(probe.fast_protocol).toBe('anthropic');
+  expect(probe.test_role).toBe('quality'); expect(probe.quality_protocol).toBe('anthropic');
+  expect(probe).not.toHaveProperty('fast_model'); expect(probe).not.toHaveProperty('fast_protocol');
   expect(probe.key).toBeNull();
-  await page.locator('#test_role').selectOption('quality');
+  await page.locator('#test_role').selectOption('default');
   await expect(page.locator('#testProtocol')).toHaveText('OpenAI Responses');
   await expect(page.locator('#verification')).not.toContainText('测试通过');
   await page.getByRole('button', { name: '保存连接', exact: true }).click();
   await edit(page, 'GPT'); await tab(page, '模型');
-  await expect(page.locator('#fast_protocol')).toHaveValue('anthropic');
-  await expect(page.locator('#quality_protocol')).toHaveValue('');
-  await page.locator('#fast_model').fill('');
-  await expect(page.locator('#fast_protocol')).toBeDisabled();
-  await tab(page, '测试'); await page.locator('#test_role').selectOption('fast');
+  await expect(page.locator('#quality_protocol')).toHaveValue('anthropic');
+  await page.locator('#quality_model').fill('');
+  await expect(page.locator('#quality_protocol')).toBeDisabled();
+  await tab(page, '测试'); await page.locator('#test_role').selectOption('quality');
   await expect(page.locator('#testModel')).toHaveText('gpt-6.1-sol');
   await expect(page.locator('#testProtocol')).toHaveText('OpenAI Responses');
-  await tab(page, '模型'); await page.locator('#fast_model').fill('claude-sonnet-5-5');
+  await tab(page, '模型'); await page.locator('#quality_model').fill('claude-sonnet-5-5');
   mkdirSync('../artifacts', { recursive: true });
-  await page.screenshot({ path: '../artifacts/mixed-protocol-settings.png' });
+  await page.screenshot({ path: '../artifacts/two-model-mappings.png' });
 });

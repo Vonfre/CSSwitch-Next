@@ -148,12 +148,19 @@ pub async fn set_science_features(
     local_mcp: bool,
     zh: bool,
     local_files: Option<bool>,
+    online_zh: Option<bool>,
+    translation_engine: Option<String>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if translation_engine.as_deref().is_some_and(|s| !matches!(s, "edge" | "api")) {
+            return Err("不支持的翻译服务。".to_string());
+        }
         let _guard = super::RUNTIME_OPERATION.lock().unwrap_or_else(|e| e.into_inner());
         super::config::update(&super::config::default_dir(), |cfg| {
             cfg.science_local_mcp = local_mcp; cfg.science_zh = zh;
             if let Some(enabled) = local_files { cfg.science_local_files = enabled; }
+            if let Some(enabled) = online_zh { cfg.science_zh_online = enabled; }
+            if let Some(engine) = translation_engine { cfg.science_zh_engine = engine; }
         }).map_err(|_| "无法保存 Science 插件设置。")?;
         let cfg = super::config::load_from(&super::config::default_dir()).map_err(|_| "无法读取插件设置。")?;
         let running = super::sandbox_running_ours(cfg.sandbox_port);

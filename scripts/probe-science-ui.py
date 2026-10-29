@@ -16,11 +16,15 @@ import time
 import urllib.parse
 
 repo = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(repo / 'proxy'))
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--settings', action='store_true', help='Inspect every native settings module')
 parser.add_argument('--models', action='store_true', help='Inspect model routing against an isolated local gateway')
 parser.add_argument('--files', action='store_true', help='Verify local-file menu identities against isolated native Science')
+parser.add_argument('--translation', action='store_true', help='Verify online translation with native Science and Edge, without model requests')
+parser.add_argument('--audit-output', type=Path, help='Save a public UI translation report outside the cleaned fixture')
 parser.add_argument('--collect', action='store_true', help='Collect native settings text before asserting translations')
+parser.add_argument('--keep-fixture', action='store_true', help='Keep the isolated test data for debugging after stopping Science')
 options = parser.parse_args()
 candidate = Path.home() / '.claude-science/bin/claude-science'
 binary = candidate if candidate.is_file() else Path('/Applications/Claude Science.app/Contents/Resources/bin/claude-science')
@@ -44,12 +48,20 @@ args = ['--data-dir', str(auth), '--config', str(config)]
 profile = '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))'
 spec = importlib.util.spec_from_file_location('bridge', repo / 'scripts/science-mcp-manage.py'); bridge = importlib.util.module_from_spec(spec); spec.loader.exec_module(bridge)
 gateway = None
+model_upstream = None
 try:
  if options.models:
+  from http.server import ThreadingHTTPServer
+  import threading
+  sys.path.insert(0, str(repo/'scripts/tests'))
+  from model_mapping_upstream import ModelUpstream
+  model_upstream = ThreadingHTTPServer(('127.0.0.1',0), ModelUpstream)
+  model_upstream.hits = []
+  threading.Thread(target=model_upstream.serve_forever,daemon=True).start()
   with socket.socket() as sock:
    sock.bind(('127.0.0.1',0)); gateway_port = sock.getsockname()[1]
   gateway_config = root/'gateway.json'
-  gateway_config.write_text(json.dumps({'provider':'fixture','providers':{'fixture':{'protocol':'responses','base_url':'http://127.0.0.1:9','key':'fixture-key','model':'fixture-default','quality_model':'fixture-quality','fast_model':''}}}))
+  gateway_config.write_text(json.dumps({'provider':'fixture','providers':{'fixture':{'protocol':'anthropic','base_url':'http://127.0.0.1:'+str(model_upstream.server_port),'key':'fixture-key','model':'fixture-claude','quality_model':'fixture-gpt','quality_protocol':'responses','fast_model':''}}}))
   gateway_config.chmod(0o600)
   gateway = subprocess.Popen([sys.executable,str(repo/'proxy/csswitch_proxy.py'),'--config',str(gateway_config),'--port',str(gateway_port)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   env['ANTHROPIC_BASE_URL'] = 'http://127.0.0.1:'+str(gateway_port)
@@ -67,7 +79,7 @@ try:
  nonce = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)['nonce'][0]
  client = bridge.Bridge('http://127.0.0.1:'+str(port),nonce,str(auth),str(auth))
 
- ui_config = root/'ui-config.json'; ui_config.write_text(gateway_config.read_text() if options.models else json.dumps({'science_zh': True, 'science_local_files': options.files}))
+ ui_config = root/'ui-config.json'; ui_config.write_text(gateway_config.read_text() if options.models else json.dumps({'science_zh': True, 'science_local_files': options.files, 'science_zh_online':options.translation, 'science_zh_engine':'edge'}))
  ui_config.chmod(0o600)
  ready=root/'ui-ready.json'
  ui_proc=subprocess.Popen([sys.executable,str(repo/'scripts/science-ui-proxy.py'),'--upstream-port',str(port),'--config',str(ui_config),'--ready',str(ready)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -79,16 +91,32 @@ try:
   fresh=subprocess.run([str(binary),'url',*args],env=env,capture_output=True,text=True,timeout=15,check=True)
   link=next(line for line in fresh.stdout.splitlines() if line.startswith('http://'))
   u=urllib.parse.urlsplit(link)
-  (root/'browser-input.json').write_text(json.dumps({'url':urllib.parse.urlunsplit(('http','127.0.0.1:'+str(ui_port),u.path,u.query,'')),'config':str(ui_config),'root':str(root), 'gateway_config':str(root/'gateway.json')}))
-  script = 'native-science-files.mjs' if options.files else 'native-science-models.mjs' if options.models else 'native-science-settings.mjs' if options.settings else 'native-science-ui.mjs'
+  from science_models import read_catalog
+  (root/'browser-input.json').write_text(json.dumps({'url':urllib.parse.urlunsplit(('http','127.0.0.1:'+str(ui_port),u.path,u.query,'')),'config':str(ui_config),'root':str(root), 'gateway_config':str(root/'gateway.json'), 'expected_models':read_catalog(binary)}))
+  script = 'native-science-translation.mjs' if options.translation else 'native-science-files.mjs' if options.files else 'native-science-models.mjs' if options.models else 'native-science-settings.mjs' if options.settings else 'native-science-ui.mjs'
   browser_args = [shutil.which('node'), str(repo/'desktop/tests'/script), str(root/'browser-input.json')]
   if options.collect: browser_args.append('--collect')
-  result=subprocess.run(browser_args,capture_output=True,text=True,timeout=180 if options.settings else 90)
+  result=subprocess.run(browser_args,capture_output=True,text=True,timeout=180 if options.settings or options.models or options.translation else 90)
+  if options.audit_output and (root/'translation-report.json').is_file():
+   options.audit_output.parent.mkdir(parents=True, exist_ok=True)
+   shutil.copyfile(root/'translation-report.json', options.audit_output)
+  if options.models and not options.collect and result.returncode == 0:
+   hits = {(h['path'], h['model']) for h in model_upstream.hits}
+   assert ('/v1/responses', 'fixture-gpt') in hits, 'GPT conversation did not reach Responses endpoint'
+   assert ('/v1/messages', 'fixture-claude') in hits, 'Claude conversation did not reach Messages endpoint'
+   assert ('/v1/responses', 'updated-quality') in hits, 'Existing conversation did not follow the updated desktop mapping'
   print(result.stdout,flush=True)
   if result.returncode: print(__import__('re').sub(r'nonce=[^\s&]+', 'nonce=[REDACTED]', result.stderr[:1800]));raise RuntimeError('Native browser test failed')
  finally:
   ui_proc.terminate();ui_proc.wait(timeout=10)
 finally:
  if gateway is not None: gateway.terminate(); gateway.wait(timeout=10)
- subprocess.run([str(binary),'stop',*args],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)
- print('FIXTURE',root,flush=True)
+ if model_upstream is not None:
+  (root/'model-upstream-hits.json').write_text(json.dumps(model_upstream.hits))
+  model_upstream.shutdown(); model_upstream.server_close()
+ stopped = subprocess.run([str(binary),'stop',*args],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=15)
+ if stopped.returncode == 0 and not options.keep_fixture:
+  shutil.rmtree(root)
+  print('FIXTURE cleaned',flush=True)
+ else:
+  print('FIXTURE retained',root,flush=True)

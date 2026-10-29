@@ -3,13 +3,13 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const icon = (name) => `<i data-lucide="${name}"></i>`;
 const protocolNames = { anthropic: 'Anthropic Messages', openai: 'OpenAI Chat', responses: 'OpenAI Responses' };
 const templates = {
-  custom: { name: '', protocol: 'anthropic', base_url: '', model: '', fast_model: '' },
-  deepseek: { name: 'DeepSeek', protocol: 'anthropic', base_url: 'https://api.deepseek.com/anthropic', model: 'deepseek-v4-pro', fast_model: 'deepseek-v4-flash' },
-  qwen: { name: '通义千问', protocol: 'openai', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus', fast_model: 'qwen-turbo' },
-  openrouter: { name: 'OpenRouter', protocol: 'openai', base_url: 'https://openrouter.ai/api/v1', model: '', fast_model: '' },
-  openai: { name: 'OpenAI', protocol: 'responses', base_url: 'https://api.openai.com/v1', model: '', fast_model: '' },
-  anthropic: { name: 'Anthropic', protocol: 'anthropic', base_url: 'https://api.anthropic.com', model: '', fast_model: '' },
-  ollama: { name: 'Ollama', protocol: 'openai', base_url: 'http://127.0.0.1:11434/v1', model: '', fast_model: '' },
+  custom: { name: '', protocol: 'anthropic', base_url: '', model: '' },
+  deepseek: { name: 'DeepSeek', protocol: 'anthropic', base_url: 'https://api.deepseek.com/anthropic', model: 'deepseek-v4-pro' },
+  qwen: { name: '通义千问', protocol: 'openai', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
+  openrouter: { name: 'OpenRouter', protocol: 'openai', base_url: 'https://openrouter.ai/api/v1', model: '' },
+  openai: { name: 'OpenAI', protocol: 'responses', base_url: 'https://api.openai.com/v1', model: '' },
+  anthropic: { name: 'Anthropic', protocol: 'anthropic', base_url: 'https://api.anthropic.com', model: '' },
+  ollama: { name: 'Ollama', protocol: 'openai', base_url: 'http://127.0.0.1:11434/v1', model: '' },
 };
 const templateIcons = { custom: 'sliders-horizontal', deepseek: 'sparkles', qwen: 'shapes', openrouter: 'route', openai: 'aperture', anthropic: 'asterisk', ollama: 'hard-drive' };
 const state = { config: null, runtime: { proxy: 'amber', sandbox: 'amber' }, view: 'workbench', selected: null,
@@ -101,7 +101,7 @@ function mark(p) {
   return `<span class="provider-mark ${esc(p.protocol)}">${icon(templateIcons[match?.[0] || 'custom'])}</span>`;
 }
 function testSignature(input) {
-  return JSON.stringify([input.protocol, input.base_url.trim().replace(/\/+$/, ''), input.model, input.quality_model || '', input.fast_model || '', input.quality_protocol || '', input.fast_protocol || '', input.test_role || 'default', Number(input.max_tokens)]);
+  return JSON.stringify([input.protocol, input.base_url.trim().replace(/\/+$/, ''), input.model, input.quality_model || '', input.quality_protocol || '', input.test_role || 'default', Number(input.max_tokens)]);
 }
 
 function renderRuntime() {

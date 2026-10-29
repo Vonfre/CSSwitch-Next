@@ -31,6 +31,7 @@ fn default_mode() -> String {
 }
 
 fn default_local_mcp() -> bool { true }
+fn default_translation_engine() -> String { "edge".to_string() }
 
 /// 单个 provider 的配置。目前只有 key（明文存盘）。
 #[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
@@ -47,11 +48,12 @@ pub struct ProviderCfg {
     pub model: String,
     #[serde(default)]
     pub quality_model: String,
-    #[serde(default)]
+    // Read legacy settings, but retire them on the next save.
+    #[serde(default, skip_serializing)]
     pub fast_model: String,
     #[serde(default)]
     pub quality_protocol: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub fast_protocol: String,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
@@ -63,20 +65,18 @@ fn default_max_tokens() -> u32 {
 
 impl ProviderCfg {
     pub fn preset(id: &str) -> Option<Self> {
-        let (name, protocol, base_url, model, fast) = match id {
+        let (name, protocol, base_url, model) = match id {
             "deepseek" => (
                 "DeepSeek",
                 "anthropic",
                 "https://api.deepseek.com/anthropic",
                 "deepseek-v4-pro",
-                "deepseek-v4-flash",
             ),
             "qwen" => (
                 "通义千问",
                 "openai",
                 "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "qwen-plus",
-                "qwen-turbo",
             ),
             _ => return None,
         };
@@ -85,7 +85,6 @@ impl ProviderCfg {
             protocol: protocol.into(),
             base_url: base_url.into(),
             model: model.into(),
-            fast_model: fast.into(),
             max_tokens: 8192,
             ..Default::default()
         })
@@ -98,7 +97,7 @@ impl ProviderCfg {
         if !["anthropic", "openai", "responses"].contains(&self.protocol.as_str()) {
             return Err("协议必须是 Anthropic Messages、OpenAI Chat 或 OpenAI Responses。".into());
         }
-        for protocol in [&self.quality_protocol, &self.fast_protocol] {
+        for protocol in [&self.quality_protocol] {
             if !["", "anthropic", "openai", "responses"].contains(&protocol.as_str()) {
                 return Err("模型协议必须跟随连接，或选择 Anthropic Messages、OpenAI Chat、OpenAI Responses。".into());
             }
@@ -156,6 +155,10 @@ pub struct Config {
     #[serde(default)]
     pub science_zh: bool,
     #[serde(default)]
+    pub science_zh_online: bool,
+    #[serde(default = "default_translation_engine")]
+    pub science_zh_engine: String,
+    #[serde(default)]
     pub science_local_files: bool,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderCfg>,
@@ -171,6 +174,8 @@ impl Default for Config {
             mode: default_mode(),
             science_local_mcp: true,
             science_zh: false,
+            science_zh_online: false,
+            science_zh_engine: default_translation_engine(),
             science_local_files: false,
             providers: BTreeMap::new(),
         }
@@ -439,6 +444,7 @@ mod tests {
             provider: "qwen".into(),
             proxy_port: 12345,
             science_local_files: true,
+            science_zh_online: true,
             ..Default::default()
         };
         cfg.providers.insert(

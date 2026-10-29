@@ -20,7 +20,7 @@ class Native(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     def log_message(self, *args): pass
     def do_GET(self):
-        if self.path.startswith('/api/artifacts/'):
+        if self.path.startswith('/api/artifacts/') or self.path == '/api/me':
             self.server.artifact_requests = getattr(self.server, 'artifact_requests', []) + [(self.path, self.headers.get('Cookie'), self.headers.get('Authorization'))]
             authorized = self.headers.get('Cookie') == 'operon_auth=fixture' or self.headers.get('Authorization') == 'Bearer fixture'
             body = json.dumps(getattr(self.server, 'artifact', {})).encode()
@@ -40,7 +40,7 @@ class Native(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         if self.path == '/api/models':
-            body = json.dumps({'models': {'anthropic': [{'id': 'claude-opus-5', 'name': 'stale-name'}]}, 'default_model_id': 'claude-opus-5'}).encode()
+            body = json.dumps({'models': {'anthropic': [{'id': 'claude-opus-5', 'name': 'Claude Opus 5 → old · 质量', 'description':'CSSwitch 质量模型'}]}, 'default_model_id': 'claude-opus-5'}).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
         elif self.path == '/redirect':
@@ -55,6 +55,10 @@ class Native(BaseHTTPRequestHandler):
             body = b'// native asset'
             self.send_response(200)
             self.send_header('Content-Type', 'text/javascript')
+        elif self.path == '/assets/native.js':
+            body = b'const item={children:"Show archived sessions",title:"Translation fixture"};'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/javascript')
         else:
             body = b'<html><body><button>Settings</button><script>window.native=true</script></body></html>'
             self.send_response(200)
@@ -128,9 +132,14 @@ class ProxyTests(unittest.TestCase):
         self.assertIn(ui.SCRIPT_HASH, restrictive)
         self.assertIn("connect-src 'self'", restrictive)
     def test_config_is_live_and_never_exposes_credentials(self):
-        with self.request('/__csswitch/config') as r: self.assertEqual(json.load(r), {'enabled': True})
+        with self.request('/__csswitch/config') as r:
+            data = json.load(r)
+            self.assertTrue(data['enabled'])
+            self.assertFalse(data['online'])
+            self.assertIsNone(data['translationToken'])
+            self.assertNotIn('NEVER-RETURN', json.dumps(data))
         self.proxy.config.write_text('{"science_zh":false}')
-        with self.request('/__csswitch/config') as r: self.assertEqual(json.load(r), {'enabled': False})
+        with self.request('/__csswitch/config') as r: self.assertFalse(json.load(r)['enabled'])
     def test_model_menu_reads_current_config_and_official_mode_is_untouched(self):
         cfg = {'mode': 'proxy', 'provider': 'test', 'providers': {'test': {'base_url':'https://example.invalid',
             'protocol':'responses', 'key':'NEVER-RETURN', 'model':'model-default', 'quality_model':'model-quality'}}}
@@ -139,13 +148,39 @@ class ProxyTests(unittest.TestCase):
             self.assertEqual(r.headers['Cache-Control'], 'no-store')
             body = r.read().decode(); data = json.loads(body)
         self.assertIn('model-quality', body)
+        self.assertIn('Claude Opus', body)
         self.assertNotIn('NEVER-RETURN', body)
         self.assertEqual(data['default_model_id'], 'claude-opus-5')
         cfg['providers']['test']['quality_model'] = 'changed-quality'
         self.proxy.config.write_text(json.dumps(cfg))
         with self.request('/api/models') as r: self.assertIn('changed-quality', r.read().decode())
         cfg['mode'] = 'official'; self.proxy.config.write_text(json.dumps(cfg))
-        with self.request('/api/models') as r: self.assertIn('stale-name', r.read().decode())
+        with self.request('/api/models') as r: self.assertIn('old · 质量', json.load(r)['models']['anthropic'][0]['name'])
+
+    def test_online_translation_requires_page_auth_and_only_uses_native_asset_literals(self):
+        self.proxy.config.write_text('{"science_zh":true,"science_zh_online":true}')
+        with self.request('/__csswitch/config') as r:
+            token = json.load(r)['translationToken']
+        with self.request('/assets/native.js') as r:
+            self.assertIn('no-store', r.headers['Cache-Control']); self.assertIn(b'Show archived sessions', r.read())
+        headers = {'Origin':self.base, 'Content-Type':'application/json', 'X-CSSwitch-Translation':token, 'Cookie':'operon_auth=fixture'}
+        payload = json.dumps({'texts':['Show archived sessions', 'Private research title']}).encode()
+        with patch.object(ui.Translator, 'request', return_value={'Show archived sessions':'显示已归档的会话'}) as request:
+            for key, value in [('Origin','https://foreign.test'),('X-CSSwitch-Translation','bad'),('Cookie','bad')]:
+                with self.subTest(key=key), self.assertRaises(urllib.error.HTTPError) as error:
+                    self.request('/__csswitch/zh/translate', data=payload, headers={**headers, key:value})
+                self.assertIn(error.exception.code, (401,403))
+            request.assert_not_called()
+            with self.request('/__csswitch/zh/translate', data=payload, headers=headers) as r:
+                result = json.load(r)
+            request.assert_called_once_with(['Show archived sessions'])
+            self.assertEqual(result['skipped'], ['Private research title'])
+            with self.request('/__csswitch/zh/cache') as r:
+                self.assertEqual(json.load(r)['translations'], result['translations'])
+            self.proxy.config.write_text('{"science_zh":true,"science_zh_online":false}')
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request('/__csswitch/zh/translate', data=payload, headers=headers)
+            self.assertEqual(error.exception.code, 403)
 
     def test_origin_cookie_forwarding_and_foreign_origin_rejection(self):
         with self.request('/api/csrf-fixture', data=b'{"test":true}', headers={'Origin': self.base, 'Cookie': 'operon_auth=fixture'}) as r:
@@ -185,9 +220,9 @@ class ProxyTests(unittest.TestCase):
     def test_local_files_plugin_config_is_independent_and_script_is_injected(self):
         with self.request('/__csswitch/files/config') as r: self.assertEqual(json.load(r), {'enabled': False, 'token': None})
         self.enable_files()
-        with self.request('/__csswitch/config') as r: self.assertEqual(json.load(r), {'enabled': False})
+        with self.request('/__csswitch/config') as r: self.assertFalse(json.load(r)['enabled'])
         with self.request('/__csswitch/files.js') as r: self.assertIn(b'/__csswitch/files/action', r.read())
-        with self.request('/') as r: self.assertIn(b"['zh','files']", r.read())
+        with self.request('/') as r: self.assertIn(b"['zh','files','status']", r.read())
 
     def test_local_file_action_requires_origin_token_json_enabled_and_native_auth(self):
         self.enable_files()
@@ -231,6 +266,51 @@ class ProxyTests(unittest.TestCase):
                 self.request('/__csswitch/files/action', data=self.file_payload, headers=self.file_headers)
             self.assertEqual(error.exception.code, 409)
         finally: self.proxy.file_lock.release()
+
+
+
+    def test_retired_model_picker_cannot_read_or_write_overrides(self):
+        before = self.proxy.config.read_bytes()
+        for path in ['/__csswitch/models.js', '/__csswitch/models/config',
+                     '/__csswitch/models/catalog', '/__csswitch/models/bind', '/__csswitch/models/remember']:
+            for body in (None, b'{}'):
+                with self.subTest(path=path, body=body), self.assertRaises(urllib.error.HTTPError) as error:
+                    self.request(path, data=body, headers={'Origin': self.base, 'Content-Type': 'application/json'})
+                self.assertEqual(error.exception.code, 410)
+        self.assertEqual(self.proxy.config.read_bytes(), before)
+        self.assertFalse((self.proxy.config.parent / 'conversation-models').exists())
+        with self.request('/') as response:
+            html = response.read()
+        self.assertIn(b"['zh','files','status']", html)
+        self.assertNotIn(b"'models'", html)
+
+    def test_legacy_choices_have_native_labels_and_no_saved_provider_override(self):
+        cfg = {'provider': 'fixture', 'providers': {'fixture': {'protocol': 'responses',
+            'base_url': 'https://example.invalid', 'key': 'NEVER-RETURN', 'model': 'current-default'}}}
+        self.proxy.config.write_text(json.dumps(cfg)); self.proxy.config.chmod(0o600)
+        directory = self.proxy.config.parent / 'conversation-models'; directory.mkdir()
+        alias = 'claude-opus-99-01-20123456'
+        (directory / (alias + '.json')).write_text('{"model":"retired-target","provider":"retired-provider"}')
+        with self.request('/api/models') as response:
+            data = json.load(response)
+        self.assertNotIn(alias, [m['id'] for m in data['models']['anthropic']])
+        self.assertEqual(len(data['models']['anthropic']), len(ui.load_profile(str(self.proxy.config), ui.PROVIDERS)['prov']['native_models']))
+        self.assertTrue(all(' → current-default' in m['name'] for m in data['models']['anthropic']))
+        self.assertTrue(all('csswitch_binding' not in m for m in data['models']['anthropic']))
+        with self.request('/__csswitch/model-compat.js') as response:
+            script = response.read().decode()
+        self.assertNotIn('__CSSWITCH_NATIVE_IDS__', script)
+        self.assertNotIn('NEVER-RETURN', script)
+        self.assertNotIn('retired-target', json.dumps(data))
+        self.assertNotIn('NEVER-RETURN', json.dumps(data))
+
+    def test_retry_status_is_only_enabled_in_third_party_mode(self):
+        self.proxy.config.write_text('{"mode":"proxy"}')
+        with self.request('/__csswitch/status/config') as response:
+            self.assertEqual(json.load(response), {'enabled': True})
+        self.proxy.config.write_text('{"mode":"official"}')
+        with self.request('/__csswitch/status/config') as response:
+            self.assertEqual(json.load(response), {'enabled': False})
 
 
 if __name__ == '__main__': unittest.main()

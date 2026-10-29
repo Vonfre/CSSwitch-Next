@@ -1,4 +1,4 @@
-// CSSwitch Science UI translation. Local dictionary only; no network translation.
+// CSSwitch Science UI translation: reviewed terms, local cache, optional online fill.
 (() => {
   if (window.__csswitchZh) return;
   const dictionary = {
@@ -85,7 +85,11 @@
     'Session menu':'会话菜单', 'Edit message':'编辑消息', 'Copy to clipboard':'复制到剪贴板',
     'Scroll to bottom':'滚动到底部', 'Scroll to the bottom of the conversation':'滚动到对话底部',
     'Add to message':'添加到消息', 'Session options':'会话选项', 'Start dictation':'开始语音输入',
-    'Today':'今天', 'Yesterday':'昨天', 'Beta':'测试版', 'On':'开启', 'Off':'关闭',
+    'Today':'今天', 'Yesterday':'昨天', 'This week':'本周', 'This Week':'本周',
+    'Last week':'上周', 'Last Week':'上周', 'This month':'本月', 'Older':'更早',
+    'More models':'更多模型', 'Beta':'测试版', 'On':'开启', 'Off':'关闭',
+    'Your last message':'上次发送的消息', 'Where you left off':'上次阅读位置',
+    'Jump to your last message':'跳转到上次发送的消息', 'Jump to where you left off':'跳转到上次阅读位置',
     'Turn on':'开启', 'Turn off':'关闭', 'Configure':'配置', 'Clear all':'全部清除',
     'Show fewer':'收起', 'More actions':'更多操作', 'Duplicate':'创建副本', 'Discard':'放弃',
     'Provenance':'来源追溯', 'View provenance':'查看来源追溯', 'View Provenance':'查看来源追溯',
@@ -784,15 +788,70 @@
     'connector tools':'连接器工具', 'registry writes':'注册表修改', 'local compute':'本地计算',
     'compute':'计算资源', 'remote files':'远程文件', 'credentials':'凭据', 'cloud compute':'云计算', 'model endpoint':'模型服务地址',
   };
-  // Unknown UI copy stays English. Never translate arbitrary prose or substrings.
+  // Unknown static UI copy may be translated online. Research prose stays original.
   const protectedSelector = 'script,style,pre,code,textarea,input,[contenteditable="true"],[contenteditable=""],[data-csswitch-no-translate],.prose,.markdown,.markdown-body,.markdown-content,[data-message-content],[data-user-content],[data-testid*="session-title"],[data-testid*="project-name"]';
   const controls = 'button,label,nav,aside,header,footer,legend,option,a[href^="#"],[class*="sidebar"],.cds-tooltip,[role="button"],[role="menu"],[role="menuitem"],[role="tab"],[role="tooltip"],[role="dialog"],[role="alertdialog"],[data-cds="ConfirmationDialog"],[role="status"],[role="alert"],h1,h2,h3,h4';
   const attributes = ['title','aria-label','placeholder','data-placeholder'];
   const texts = new Map(), attrs = new Map();
   let enabled = false, queued = false;
+  const cached = Object.create(null), pending = new Set(), rejected = new Set();
+  const registeredAssets = new Set();
+  const keepNames = new Set(['Claude','Claude Science','Anthropic','Codex','OpenAI','GitHub','AWS','Google Cloud','Microsoft Azure','Modal','NVIDIA API','OpenAlex','BioMart','Cancer Models','CellGuide','Chemistry','Clinical Genomics','Drug Regulatory','Expression','Genes & Ontologies','Genomes','Human Genetics','Ketcher Chemistry','Literature Graph','Omics Archives','Protein Annotation','Regulation','Research Resources','RNA','Structures & Interactions','Variants','ZINC','bioRxiv','ChEMBL','Clinical Trials','PubMed']);
+  let online = false, token = null, revision = null, timer = null, request = null, retryAt = 0, lastError = null;
+  const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  const candidate = value => typeof value === 'string' && value.length >= 2 && value.length <= 300 && /[A-Za-z]{2}/.test(value)
+    && !/[\x00-\x1f\u3400-\u9fff/@\\]|https?:|www\.|sk-|bearer\s|claude-(opus|sonnet|haiku)|gpt-\d|[a-f0-9]{20,}|→/i.test(value) && !keepNames.has(value);
+  function schedule() {
+    if (enabled && online && token && pending.size && !timer && !request) timer = setTimeout(flush, Math.max(500, retryAt - Date.now()));
+  }
+  function collect(value) {
+    const text = value.trim();
+    if (online && candidate(text) && !own(cached, text) && !rejected.has(text)) { pending.add(text); schedule(); }
+  }
+  async function flush() {
+    timer = null;
+    if (!enabled || !online || !token || request) return;
+    const batch = []; let size = 0;
+    for (const text of pending) {
+      if (batch.length === 24 || size + text.length > 4000) break;
+      batch.push(text); size += text.length;
+    }
+    if (!batch.length) return;
+    request = new AbortController();
+    try {
+      // An existing browser tab may have native modules in its HTTP cache while
+      // the restarted local proxy has an empty static-label allowlist. Re-read
+      // loaded same-origin assets once; fetching never executes their code.
+      const resources = [...document.querySelectorAll('script[src]')].map(s=>s.src);
+      resources.push(...performance.getEntriesByType('resource').map(r=>r.name));
+      const assets = [...new Set(resources)].filter(value=>{
+        try { const u=new URL(value,location.href); return u.origin===location.origin && /^\/assets\/[A-Za-z0-9_.-]+\.js$/.test(u.pathname) && !registeredAssets.has(u.href); }
+        catch { return false; }
+      }).slice(0,64);
+      for (let i=0;i<assets.length;i+=8) await Promise.all(assets.slice(i,i+8).map(async url=>{
+        const response = await fetch(url,{cache:'reload',credentials:'same-origin',signal:request.signal});
+        if (response.ok) { await response.arrayBuffer(); registeredAssets.add(new URL(url,location.href).href); }
+      }));
+      const response = await fetch('/__csswitch/zh/translate', {method:'POST', credentials:'same-origin', signal:request.signal,
+        headers:{'Content-Type':'application/json', 'X-CSSwitch-Translation':token}, body:JSON.stringify({texts:batch})});
+      const data = await response.json();
+      if (!response.ok) { retryAt = Date.now() + Math.max(10, data.retryAfter || 60) * 1000; lastError = data.error || '翻译暂时不可用'; return; }
+      for (const text of batch) {
+        pending.delete(text);
+        if (typeof data.translations?.[text] === 'string') cached[text] = data.translations[text];
+        else rejected.add(text);
+      }
+      revision = data.revision ?? revision;
+      lastError = null; retryAt = 0;
+      if (enabled) scan();
+    } catch (error) {
+      if (error.name !== 'AbortError') { retryAt = Date.now() + 60000; lastError = '翻译连接暂时不可用'; }
+    } finally { request = null; schedule(); }
+  }
   const translate = value => {
     const stripped = value.trim();
-    if (dictionary[stripped]) return value.replace(stripped, dictionary[stripped]);
+    if (own(dictionary, stripped)) return value.replace(stripped, () => dictionary[stripped]);
+    if (own(cached, stripped)) return value.replace(stripped, () => cached[stripped]);
     const patterns = [
       [/^Account menu — (.+)$/, m => `账号菜单 — ${m[1]}`],
       [/^(\d+) environments? failed$/, m => `${m[1]} 个环境配置失败`],
@@ -844,7 +903,7 @@
       const fragment = parent.closest('[data-testid="settings-modal"],[data-testid="grant-undo-toast"]') && settingsFragments[original.trim()];
       const translated = fragment ? original.replace(original.trim(), fragment) : translate(original);
       if (translated !== original) { texts.set(node, {original, translated}); node.nodeValue = translated; }
-      else if (previous) texts.delete(node);
+      else { if (previous) texts.delete(node); if (parent.checkVisibility?.() !== false) collect(original); }
     }
     document.querySelectorAll('[title],[aria-label],[placeholder],[data-placeholder]').forEach(element => {
       if (!safe(element) && !element.matches('input,textarea')) return;
@@ -856,7 +915,7 @@
         if (translated !== value) {
           if (!saved) { saved = {}; attrs.set(element, saved); }
           saved[key] = {original:value, translated}; element.setAttribute(key, translated);
-        } else if (saved) delete saved[key];
+        } else { if (saved) delete saved[key]; if (safe(element) || key === 'placeholder') collect(value); }
       }
     });
     // Release detached React nodes after each pass.
@@ -867,6 +926,7 @@
     enabled = value === true;
     if (enabled) scan();
     else {
+      clearTimeout(timer); timer = null; pending.clear(); request?.abort();
       for (const [node, saved] of texts) if (node.nodeValue === saved.translated) node.nodeValue = saved.original;
       for (const [element, saved] of attrs) for (const [key, value] of Object.entries(saved))
         if (element.getAttribute(key) === value.translated) element.setAttribute(key, value.original);
@@ -879,10 +939,24 @@
   const poll = async () => {
     try {
       const response = await fetch('/__csswitch/config', {cache:'no-store', credentials:'omit'});
-      if (response.ok) { const config = await response.json(); if (config.enabled !== enabled) setEnabled(config.enabled); else if (enabled) scan(); }
+      if (response.ok) {
+        const config = await response.json();
+        online = config.online === true; token = config.translationToken || null;
+        if (!online) { clearTimeout(timer); timer = null; pending.clear(); request?.abort(); }
+        if (config.translationRevision !== undefined && config.translationRevision !== revision) {
+          const response = await fetch('/__csswitch/zh/cache', {cache:'no-store', credentials:'omit'});
+          if (response.ok) {
+            const data = await response.json();
+            for (const [key, value] of Object.entries(data.translations || {})) if (typeof value === 'string') cached[key] = value;
+            revision = data.revision;
+          }
+        }
+        if (config.enabled !== enabled) setEnabled(config.enabled); else if (enabled) scan();
+        schedule();
+      }
     } catch { /* Keep current UI language through a temporary service outage. */ }
   };
-  window.__csswitchZh = {setEnabled, dictionary};
+  window.__csswitchZh = {setEnabled, dictionary, audit:() => ({online, cached:Object.keys(cached).length, pending:pending.size, skipped:rejected.size, lastError})};
   function start() {
     observer.observe(document.body, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:attributes});
     poll(); setInterval(poll, 3000);

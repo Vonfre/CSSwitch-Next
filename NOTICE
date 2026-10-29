@@ -15,6 +15,11 @@ Lucide icons retain their ISC license in desktop/src/assets/lucide-LICENSE.txt.
 Marked retains its MIT license in desktop/src/assets/marked-LICENSE.txt.
 DOMPurify is used under Apache-2.0; see desktop/src/assets/dompurify-LICENSE.txt.
 Claude Science and Anthropic names belong to their respective owners.
+The Edge translation service adapter is a small Python adaptation of
+translate.js's client.edge batch service (MIT, Copyright 2025 xnx3):
+https://github.com/xnx3/translate/tree/df9d77c85399470d10e2cb610f17e294ac107740
+See scripts/licenses/translate.js-MIT.txt. CSSwitch's DOM and cache layers are independent;
+the full translate.js engine and browser extensions are not bundled.
 This project is not affiliated with or endorsed by Anthropic.
 
 Legacy OpenScience database adapters are retained as source under Apache-2.0

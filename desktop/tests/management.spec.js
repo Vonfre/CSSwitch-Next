@@ -26,11 +26,11 @@ async function setup(page, offline = false, unified = false) {
     const withLocations = item => { item.locations ||= [{source:item.source,key:item.key,path:item.path || '/fixture/'+item.source+'/'+item.name}]; return item; };
     const countedSources = () => agentSources.map(source => ({...source, count:discovered().filter(item => withLocations(item).locations.some(l => l.source === source.id && !l.disabled)).length, pausedCount:discovered().filter(item => withLocations(item).locations.some(l => l.source === source.id && l.disabled)).length}));
     const repos = []; const pricing = { 'gpt-research': { input: 2, output: 8, cache_read: 0.2, cache_write: 2.5 } };
-    let features = {science_local_mcp:true, science_zh:false, science_local_files:false};
+    let features = {science_local_mcp:true, science_zh:false, science_zh_online:false, science_zh_engine:'edge', science_local_files:false};
     window.testCalls = []; window.__TAURI__ = { core: { invoke: async (cmd, args = {}) => {
       window.testCalls.push({ cmd, args });
       if (cmd === 'get_config') return { ...features, provider: 'test', mode: 'proxy', proxy_port: 18992, sandbox_port: 8991, connections: [{ id: 'test', name: '研究 API', protocol: 'responses', model: 'gpt-research', base_url: 'https://example.com', has_key: true }] };
-      if (cmd === 'set_science_features') { features={...features, science_local_mcp:args.localMcp, science_zh:args.zh, ...(args.localFiles === undefined ? {} : {science_local_files:args.localFiles})};return {message:'插件设置已保存。'}; }
+      if (cmd === 'set_science_features') { features={...features, science_local_mcp:args.localMcp, science_zh:args.zh, ...(args.localFiles === undefined ? {} : {science_local_files:args.localFiles}), ...(args.onlineZh === undefined ? {} : {science_zh_online:args.onlineZh}), ...(args.translationEngine === undefined ? {} : {science_zh_engine:args.translationEngine})};return {message:'插件设置已保存。'}; }
       if (cmd === 'status') return { proxy: 'amber', sandbox: 'amber' };
       if (cmd === 'read_usage') return { entries: Array.from({ length: 31 }, (_, i) => ({ time: now - i * 3600, provider: i === 30 ? 'other' : 'test', model: i === 30 ? 'unpriced' : 'gpt-research', protocol: 'responses', input_tokens: 1000, output_tokens: 250, cache_read_input_tokens: 400, latency_ms: 850, ok: i !== 1 })) };
       if (cmd === 'mcp_manage') {
@@ -386,12 +386,18 @@ test('Science plugin switches persist independently and stay reversible', async 
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','false');
   await page.getByRole('switch',{name:'Science 页面汉化'}).click();
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','true');
+  await page.getByLabel('翻译方式',{exact:true}).selectOption('edge');
+  await expect(page.getByLabel('翻译方式',{exact:true})).toHaveValue('edge');
+  await page.getByLabel('翻译方式',{exact:true}).selectOption('api');
+  await expect(page.getByLabel('翻译方式',{exact:true})).toHaveValue('api');
   await page.getByRole('button',{name:'MCP 管理',exact:true}).click();
   await expect(page.getByRole('switch',{name:'使用本机 MCP'})).toHaveAttribute('aria-checked','true');
   await page.getByRole('switch',{name:'使用本机 MCP'}).click();
   await expect(page.getByRole('switch',{name:'使用本机 MCP'})).toHaveAttribute('aria-checked','false');
   await page.getByRole('button',{name:'设置',exact:true}).click();
   await expect(page.getByRole('switch',{name:'Science 页面汉化'})).toHaveAttribute('aria-checked','true');
+  await expect(page.getByLabel('翻译方式',{exact:true})).toHaveValue('api');
+  await page.getByLabel('翻译方式',{exact:true}).selectOption('local');
   await page.getByRole('switch',{name:'Science 页面汉化'}).click();
   await expect(page.getByRole('switch',{name:'本地文件打开'})).toHaveAttribute('aria-checked','true');
   await page.getByRole('switch',{name:'本地文件打开'}).click();

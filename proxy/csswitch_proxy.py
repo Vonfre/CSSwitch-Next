@@ -34,6 +34,7 @@ from science_models import family, configure
 from responses_adapter import from_chat, to_anthropic as responses_to_anthropic
 from stream_bridge import Bridge, events
 from usage import AnthropicMeter, record
+from tool_ids import normalize as normalize_tool_ids
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -79,7 +80,7 @@ PROVIDERS = {
             "claude-opus-4-8": "qwen-max",
             "claude-sonnet-5": "qwen-plus",
             "claude-sonnet-4-6": "qwen-plus",
-            "claude-haiku-4-5": "qwen-turbo",
+            "claude-haiku-4-5": "qwen-plus",
         },
         # provisional：待核对 DashScope 各模型真实上限。
         "model_caps": {
@@ -89,7 +90,7 @@ PROVIDERS = {
         },
         "default_cap": 8192,
         "default_model": "qwen-plus",
-        "family_map": {"opus": "qwen-max", "sonnet": "qwen-plus", "haiku": "qwen-turbo"},
+        "family_map": {"opus": "qwen-max", "sonnet": "qwen-plus", "haiku": "qwen-plus"},
     },
 }
 
@@ -118,6 +119,33 @@ def safe_error(value):
         if secret:
             value = value.replace(secret, "[REDACTED]")
     return value[:500]
+
+
+def upstream_error_message(status, detail):
+    """Explain a provider's quota database lock without mislabeling authentication."""
+    detail = safe_error(detail)
+    try:
+        error = json.loads(detail).get("error")
+    except (ValueError, AttributeError):
+        error = None
+    hint = ""
+    if isinstance(error, dict) and error.get("code") == "pre_consume_token_quota_failed":
+        message = str(error.get("message", "")).lower()
+        if "database is locked" in message or "sqlite_busy" in message:
+            hint = "上游 API 服务商的额度预扣数据库暂时被锁定，请稍后重试；若持续出现，请联系服务商。\n"
+    elif isinstance(error, dict) and error.get('code') == 'system_memory_overloaded':
+        hint = "当前 API 服务商内存过载，请稍后重试或切换提供商。\n"
+    return hint + f"upstream {status}: {detail}"
+
+
+def upstream_error(status, detail):
+    code = status if 400 <= status < 600 else 502
+    kind = {400: 'invalid_request_error', 401: 'authentication_error', 403: 'permission_error',
+            404: 'not_found_error', 413: 'request_too_large', 422: 'invalid_request_error',
+            429: 'rate_limit_error', 503: 'overloaded_error'}.get(code, 'api_error')
+    return code, {'type': 'error', 'error': {'type': kind, 'message': upstream_error_message(status, detail)}}
+
+
 _DATE_SUFFIX = re.compile(r"-\d{8}$")
 
 # ---------- #3: targeted fast-fail（沙箱「Switching organization」卡死修复） ----------
@@ -477,6 +505,13 @@ class H(BaseHTTPRequestHandler):
             self._send_json(400, {"type": "error", "error": {
                 "type": "invalid_request_error", "message": "model must be a string"}})
             return
+        try:
+            areq['messages'] = normalize_tool_ids(areq.get('messages', []))
+        except ValueError as error:
+            self._send_json(400, {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': str(error)}})
+            return
+        # Native tiers and old conversation aliases now share CSSwitch's current
+        # mapping. A historical per-conversation choice must not override it.
         CURRENT_ROUTE.set(select_model_route(route(), areq.get('model'), resolve_model(areq.get('model'))))
         _dd = os.environ.get("PROXY_DUMP_REQ")
         if _dd:
@@ -660,11 +695,8 @@ class H(BaseHTTPRequestHandler):
             detail = safe_error(e.read().decode("utf-8", "replace"))
             log(f"  !! 上游 HTTP {e.code}: {detail}")
             if not headers_sent:
-                # 修 P3（GPT 复审）：上游鉴权/额度类状态码原样透传，让上层（verify_key）能区分
-                # key 无效(401/403)与限流(429)；其余上游错误仍归一化为 502。
-                code = e.code if e.code in (401, 403, 429) else 502
-                self._send_json(code, {"type": "error", "error": {
-                    "type": "api_error", "message": f"upstream {e.code}: {detail}"}})
+                # Client errors must not become a transient 502 and retry forever.
+                self._send_json(*upstream_error(e.code, detail))
         except Exception as e:
             log(f"  !! 代理异常: {e}")
             if headers_sent:
@@ -722,11 +754,8 @@ class H(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             detail = safe_error(e.read().decode("utf-8", "replace"))
             log(f"  !! 上游 HTTP {e.code}: {detail}")
-            # 修 P2（GPT 复审）：OpenAI 翻译路径（qwen 等）同样保留上游 401/403/429，
-            # 别一律归一化 502——否则 verify_key 无法准确提示「key 无效」。其余仍归 502。
-            code = e.code if e.code in (401, 403, 429) else 502
-            self._send_json(code, {"type": "error", "error": {"type": "api_error",
-                                   "message": f"upstream {e.code}: {detail}"}})
+            if not headers_sent:
+                self._send_json(*upstream_error(e.code, detail))
         except Exception as e:
             log(f"  !! 代理异常: {e}")
             if headers_sent:

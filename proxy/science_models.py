@@ -11,7 +11,7 @@ import re
 
 FAMILIES = ('opus', 'sonnet', 'haiku')
 ROLES = {'opus': '质量', 'sonnet': '默认', 'haiku': '快速'}
-FALLBACK = {'opus': 'claude-opus-5', 'sonnet': 'claude-sonnet-5', 'haiku': 'claude-haiku-4-5'}
+FALLBACK = {'opus': 'claude-opus-5', 'sonnet': 'claude-sonnet-5'}
 PUBLIC_RECORD = re.compile(rb'\{id:"(claude-(?:opus|sonnet|haiku)-\d{1,2}(?:-\d{1,2})*)",name:"(Claude (?:Opus|Sonnet|Haiku) [0-9.]+)"([^}]{0,80})\}')
 PUBLIC_LITERAL = re.compile(rb'=\s*["\'](claude-(?:opus|sonnet|haiku)-\d{1,2}(?:-\d{1,2})*(?:-20\d{6})?)["\']')
 FAMILY_ID = re.compile(r'^claude-(?:(opus|sonnet|haiku)-\d{1,2}(?:-\d{1,2})*|\d{1,2}(?:-\d{1,2})*-(opus|sonnet|haiku))(?:-20\d{6}|-latest)?$', re.I)
@@ -42,18 +42,19 @@ def read_catalog(binary):
                 records.append((match[1].decode(), match[2].decode(), b'overflow:!0' in match[3] or b'overflow:true' in match[3]))
             literals.update(canonical(m[1].decode()) for m in PUBLIC_LITERAL.finditer(data)
                             if m.start() == 0 or data[m.start() - 1] not in b'=!<>')
+    if records:
+        # The public selector catalog is authoritative, including older entries
+        # under More models. Internal default literals are not extra menu items.
+        unique = {}
+        for mid, name, overflow in records:
+            unique.setdefault(mid, {'id': mid, 'name': name, 'family': family(mid), 'overflow': overflow})
+        return list(unique.values())
     models = []
-    for kind in FAMILIES:
-        candidates = [r for r in records if family(r[0]) == kind]
-        primary = [r for r in candidates if not r[2]] or candidates
-        if primary:
-            mid, name, _ = max(primary, key=lambda r: rank(r[0]))
-        else:
-            ids = [mid for mid in literals if family(mid) == kind]
-            if not ids:
-                continue
-            mid = max(ids, key=rank); name = display_name(mid)
-        models.append({'id': mid, 'name': name, 'family': kind})
+    for kind in FALLBACK:
+        ids = [mid for mid in literals if family(mid) == kind]
+        if ids:
+            mid = max(ids, key=rank)
+            models.append({'id': mid, 'name': display_name(mid), 'family': kind, 'overflow': False})
     return models
 
 
@@ -63,12 +64,11 @@ def _discover(path, inode, size, modified):
         models = read_catalog(path)
     except (OSError, ValueError):
         models = []
-    found = {m['family'] for m in models}
-    for kind in FAMILIES:
-        if kind not in found:
-            mid = FALLBACK[kind]
-            models.append({'id': mid, 'name': display_name(mid), 'family': kind})
-    return {'models': models, 'source': 'installed' if len(found) == 3 else 'partial' if found else 'fallback'}
+    if models:
+        return {'models': models, 'source': 'installed'}
+    return {'models': [{'id': mid, 'name': display_name(mid), 'family': kind, 'overflow': False}
+                       for kind, mid in FALLBACK.items()], 'source': 'fallback'}
+
 
 
 def discover(binary=None):
@@ -84,16 +84,21 @@ def discover(binary=None):
     return {'source': result['source'], 'models': [dict(m) for m in result['models']]}
 
 
+def mapped_name(name, model, prov):
+    target = prov['family_map'].get(family(model))
+    return name.split(' → ', 1)[0] + (' → ' + target if target else '')
+
+
 def configure(prov):
-    targets = prov['family_map']
     models = discover()['models']
-    prov['models'] = [(m['id'], f"{m['name']} → {targets[m['family']]} · {ROLES[m['family']]}") for m in models]
-    prov['model_map'].update({m['id']: targets[m['family']] for m in models})
+    prov['native_models'] = models
+    prov['models'] = [(m['id'], mapped_name(m['name'], m['id'], prov)) for m in models]
+    prov['model_map'].update({m['id']: prov['family_map'][m['family']] for m in models})
     return prov
 
 
 def adapt_model_response(payload, prov):
-    """Refresh only the local legacy catalog; leave native policy/error feeds intact."""
+    """Show exactly the native catalog, with each model's current mapped target."""
     if not isinstance(payload, dict) or payload.get('first_party_catalog') or payload.get('model_list_source') == 'selector':
         return payload
     if payload.get('auth_error') or payload.get('fetch_error'):
@@ -101,18 +106,25 @@ def adapt_model_response(payload, prov):
     groups = payload.get('models')
     if not isinstance(groups, dict) or not isinstance(groups.get('anthropic'), list):
         return payload
-    original = {m.get('id'): m for m in groups['anthropic'] if isinstance(m, dict)}
+    from conversation_models import is_binding, native_id
+    original = [m for m in groups['anthropic'] if isinstance(m, dict)]
+    generated = not original or any(is_binding(m.get('id')) or m.get('csswitch_binding') or
+        ' → ' in str(m.get('name', '')) or str(m.get('description', '')).startswith(('CSSwitch ', '由 CSSwitch'))
+        for m in original)
+    originals = {m.get('id'): m for m in original if not is_binding(m.get('id'))}
+    native = prov['native_models'] if generated else original
     models = []
-    for mid, name in prov['models']:
-        old = original.get(mid, {})
-        # Preserve availability and other metadata already supplied by Science.
-        models.append({**old, 'id': mid, 'name': name, 'overflow': False,
-                       'description': 'CSSwitch ' + ROLES[family(mid)] + '模型'})
-    # Old sessions / explicit native selections keep their IDs and stay routable.
-    known = {m['id'] for m in models}
-    selected = payload.get('default_model_id')
-    if selected not in known and family(selected):
-        kind = family(selected)
-        models.append({**original.get(selected, {}), 'id': selected,
-                       'name': f"{selected} → {prov['family_map'][kind]} · {ROLES[kind]}", 'overflow': True})
-    return {**payload, 'models': {**groups, 'anthropic': models}}
+    for model in native:
+        if is_binding(model.get('id')):
+            continue
+        item = {**originals.get(model['id'], {}), **model}
+        item.pop('csswitch_binding', None)
+        item.pop('family', None)
+        if str(item.get('description', '')).startswith(('CSSwitch ', '由 CSSwitch')):
+            item['description'] = ''
+        item['name'] = mapped_name(model['name'], model['id'], prov)
+        models.append(item)
+    result = {**payload, 'models': {**groups, 'anthropic': models}}
+    if 'default_model_id' in result:
+        result['default_model_id'] = native_id(result['default_model_id'], native)
+    return result

@@ -34,10 +34,12 @@ class RouteContracts(unittest.TestCase):
             'model': 'gpt-model', 'fast_protocol': 'anthropic'}}}
         plan = profile_from_config(cfg, {})
         self.assertEqual(plan['prov']['model_routes']['haiku']['mode'], 'responses')
-        cfg['providers']['p']['fast_model'] = 'claude-sonnet-5-5'
+        cfg['providers']['p'].update(fast_model='obsolete-model', fast_protocol='obsolete-protocol',
+                                     quality_model='claude-sonnet-5-5', quality_protocol='anthropic')
         plan = profile_from_config(cfg, {})
-        self.assertEqual(plan['prov']['model_routes']['haiku']['url'], 'https://example.test/api/v1/messages')
-        selected = select_model_route(plan, 'claude-haiku-6', 'claude-sonnet-5-5')
+        self.assertEqual(plan['prov']['model_routes']['haiku'], plan['prov']['model_routes']['sonnet'])
+        self.assertEqual(plan['prov']['family_map']['haiku'], 'gpt-model')
+        selected = select_model_route(plan, 'claude-opus-6', 'claude-sonnet-5-5')
         self.assertEqual(selected['prov']['mode'], 'anthropic')
         self.assertEqual(plan['prov']['mode'], 'responses')
         cfg['providers']['p']['quality_protocol'] = 'invalid'
@@ -88,6 +90,28 @@ class GatewayIntegration(unittest.TestCase):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 cls.hits.append((self.path, body, dict(self.headers)))
+                if body.get('model', '').startswith('error-'):
+                    status = int(body['model'].split('-')[1])
+                    payload = json.dumps({'error': {'message': 'fixture rejection', 'code': 'system_memory_overloaded' if status == 503 else 'fixture_error'}}).encode()
+                    self.send_response(status)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.end_headers(); self.wfile.write(payload)
+                    return
+                if body.get('model') in ('quota-lock', 'auth-rejected'):
+                    locked = body['model'] == 'quota-lock'
+                    supplied = self.headers.get('x-api-key') or self.headers.get('Authorization', '').removeprefix('Bearer ')
+                    error = {'message': ('database is locked (5) (SQLITE_BUSY)' if locked else 'invalid API key')
+                             + ' (request id: fixture-request-id) ' + supplied,
+                             'type': 'new_api_error',
+                             'code': 'pre_consume_token_quota_failed' if locked else 'invalid_api_key'}
+                    payload = json.dumps({'error': error}).encode()
+                    self.send_response(403)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 if self.path.startswith("/hold/") and body.get("model") == "quality-hold":
                     cls.entered.set()
                     cls.release.wait(5)
@@ -176,9 +200,9 @@ class GatewayIntegration(unittest.TestCase):
         cls.upstream.server_close()
         cls.temp.cleanup()
 
-    def request(self, stream=False, model="claude-opus-4-8"):
+    def request(self, stream=False, model="claude-opus-4-8", messages=None):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/test-path-secret/v1/messages",
-            data=json.dumps({"model": model, "messages": [{"role": "user", "content": "hello"}], "max_tokens": 32, "stream": stream}).encode(),
+            data=json.dumps({"model": model, "messages": messages if messages is not None else [{"role": "user", "content": "hello"}], "max_tokens": 32, "stream": stream}).encode(),
             headers={"Content-Type": "application/json", "Authorization": "Bearer inbound-oauth-must-not-leak", "x-api-key": "inbound-key"})
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.read().decode()
@@ -211,8 +235,8 @@ class GatewayIntegration(unittest.TestCase):
             for alias, suffix, model, protocol in [
                 ('claude-sonnet-5', '/chat/completions', 'model-chat', 'openai'),
                 ('claude-opus-6', '/responses', 'quality-chat', 'responses'),
-                ('claude-haiku-5', '/messages', 'claude-sonnet-5-5', 'anthropic'),
-                ('claude-sonnet-5-5', '/messages', 'claude-sonnet-5-5', 'anthropic'),
+                ('claude-haiku-5', '/chat/completions', 'model-chat', 'openai'),
+                ('quality-chat', '/responses', 'quality-chat', 'responses'),
             ]:
                 result = self.request(stream=stream, model=alias)
                 self.assertIn('message_stop' if stream else 'OK', result)
@@ -227,10 +251,10 @@ class GatewayIntegration(unittest.TestCase):
                     self.assertIn('input_json_delta', result)
         for _ in range(30):
             entries = [json.loads(line) for line in self.usage.read_text().splitlines()]
-            if entries[-1].get('model') == 'claude-sonnet-5-5':
+            if entries[-1].get('model') == 'quality-chat':
                 break
             time.sleep(.01)
-        self.assertEqual(entries[-1]['protocol'], 'anthropic')
+        self.assertEqual(entries[-1]['protocol'], 'responses')
 
     def test_concurrent_mixed_requests_and_hot_edits_keep_inflight_protocol(self):
         self.write_config('hold', {'quality_protocol': 'responses', 'fast_protocol': 'anthropic'})
@@ -241,7 +265,7 @@ class GatewayIntegration(unittest.TestCase):
                 pending = pool.submit(self.request, True, 'claude-opus-5')
                 self.assertTrue(self.entered.wait(3))
                 self.assertIn('message_stop', self.request(stream=True, model='claude-haiku-4-5'))
-                self.assertEqual(self.hits[-1][0], '/hold/v1/messages')
+                self.assertEqual(self.hits[-1][0], '/hold/v1/chat/completions')
                 self.assertFalse(pending.done())
                 self.write_config('hold', {'quality_protocol': 'anthropic', 'fast_protocol': 'openai'})
                 self.assertIn('OK', self.request(model='claude-haiku-4-5'))
@@ -263,7 +287,7 @@ class GatewayIntegration(unittest.TestCase):
             'fast_protocol': 'anthropic', 'key': 'probe-private-key'}}}
         script = str(pathlib.Path(__file__).resolve().parents[1] / 'proxy/csswitch_proxy.py')
         for role, model, suffix in [('default', 'gpt-default', '/responses'),
-                                    ('quality', 'gpt-quality', '/responses'), ('fast', 'claude-fast', '/messages')]:
+                                    ('quality', 'gpt-quality', '/responses'), ('fast', 'gpt-default', '/responses')]:
             out = subprocess.run([sys.executable, script, '--probe-stdin', '--probe-role', role],
                                  input=json.dumps(cfg).encode(), capture_output=True, timeout=30)
             self.assertTrue(json.loads(out.stdout)['ok'], out.stdout)
@@ -275,13 +299,89 @@ class GatewayIntegration(unittest.TestCase):
     def test_science_family_routes_change_without_restarting_gateway(self):
         for active in ('chat', 'responses', 'native'):
             self.write_config(active)
-            for alias, expected in [('claude-opus-5', 'quality-'), ('claude-opus-6', 'quality-'), ('claude-sonnet-6', 'model-'), ('claude-haiku-5', 'fast-')]:
+            for alias, expected in [('claude-opus-5', 'quality-'), ('claude-opus-6', 'quality-'), ('claude-sonnet-6', 'model-'), ('claude-haiku-5', 'model-')]:
                 self.request(model=alias)
                 self.assertEqual(self.hits[-1][1]['model'], expected + active)
             with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/test-path-secret/v1/models") as response:
                 catalog = json.load(response)['data']
-            self.assertTrue(any('quality-' + active in row['display_name'] for row in catalog))
+            self.assertTrue(any('Claude Opus' in row['display_name'] for row in catalog))
         self.assertIsNone(self.process.poll())
+
+    def test_quota_database_lock_explains_provider_failure_and_preserves_status(self):
+        for active in ('chat', 'responses', 'native'):
+            for stream in (False, True):
+                for model in ('quota-lock', 'auth-rejected'):
+                    with self.subTest(protocol=active, stream=stream, model=model):
+                        self.write_config(active, {'quality_model': model})
+                        count = len(self.hits)
+                        with self.assertRaises(urllib.error.HTTPError) as result:
+                            self.request(stream=stream)
+                        self.assertEqual(result.exception.code, 403)
+                        message = json.load(result.exception)['error']['message']
+                        self.assertIn('fixture-request-id', message)
+                        self.assertIn('upstream 403:', message)
+                        self.assertNotIn('test-key-', message)
+                        self.assertEqual('额度预扣数据库暂时被锁定' in message, model == 'quota-lock')
+                        self.assertIn('pre_consume_token_quota_failed' if model == 'quota-lock' else 'invalid_api_key', message)
+                        self.assertEqual(len(self.hits), count + 1)
+
+    def test_switching_protocol_normalizes_long_tool_history_ids_and_pairs(self):
+        long_id = 'toolu_' + 'x' * 60
+        messages = [{'role': 'assistant', 'content': [{'type':'tool_use','id':long_id,'name':'search','input':{}}]},
+                    {'role':'user','content':[{'type':'tool_result','tool_use_id':long_id,'content':'OK'}]}]
+        for active in ('chat', 'responses', 'native'):
+            self.write_config(active)
+            for stream in (False, True):
+                self.request(stream=stream, messages=messages)
+                body = self.hits[-1][1]
+                if active == 'responses':
+                    call, result = body['input']
+                    ids = call['call_id'], result['call_id']
+                elif active == 'chat':
+                    call, result = body['messages']
+                    ids = call['tool_calls'][0]['id'], result['tool_call_id']
+                else:
+                    call, result = body['messages']
+                    ids = call['content'][0]['id'], result['content'][0]['tool_use_id']
+                self.assertEqual(ids[0], ids[1])
+                self.assertLessEqual(len(ids[0]), 64)
+        self.assertEqual(messages[0]['content'][0]['id'], long_id)
+
+    def test_upstream_parameter_body_size_and_overload_statuses_are_not_converted_to_502(self):
+        for active in ('chat', 'responses', 'native'):
+            for status, kind in ((400,'invalid_request_error'),(413,'request_too_large'),(503,'overloaded_error')):
+                self.write_config(active, {'quality_model': 'error-' + str(status)})
+                for stream in (False, True):
+                    with self.assertRaises(urllib.error.HTTPError) as result:
+                        self.request(stream=stream)
+                    self.assertEqual(result.exception.code, status)
+                    error = json.load(result.exception)['error']
+                    self.assertEqual(error['type'], kind)
+                    if status == 503:self.assertIn('API 服务商内存过载', error['message'])
+
+    def test_legacy_conversation_aliases_follow_active_csswitch_mapping(self):
+        self.write_config('chat', {'quality_protocol': 'responses', 'fast_protocol': 'anthropic'})
+        before = self.config.read_bytes()
+        aliases = ['claude-opus-99-01-20123456', 'claude-haiku-99-02-20654321']
+        directory = self.config.parent / 'conversation-models'; directory.mkdir(exist_ok=True)
+        record = directory / (aliases[0] + '.json')
+        record.write_text(json.dumps({'provider': 'removed-provider', 'model': 'stale-override', 'protocol': 'anthropic'}))
+        original = record.read_bytes()
+        start = len(self.hits)
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            results = list(pool.map(lambda alias: self.request(model=alias), aliases * 3))
+        self.assertTrue(all('OK' in result for result in results))
+        self.assertEqual({(path, body['model']) for path, body, _ in self.hits[start:]},
+            {('/chat/v1/responses', 'quality-chat'), ('/chat/v1/chat/completions', 'model-chat')})
+        self.assertEqual(before, self.config.read_bytes())
+        self.assertEqual(original, record.read_bytes())
+        self.write_config('native', {'quality_model': 'new-quality'})
+        self.request(model=aliases[0])
+        self.assertEqual(self.hits[-1][0], '/native/v1/messages')
+        self.assertEqual(self.hits[-1][1]['model'], 'new-quality')
+        record.unlink()
+        self.request(model=aliases[0])
+        self.assertEqual(self.hits[-1][1]['model'], 'new-quality')
 
     def test_hot_switch_keeps_inflight_route_and_same_process(self):
         self.write_config("hold")

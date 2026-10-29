@@ -87,7 +87,7 @@ test('settings hide secondary information, contextual help supports keyboard and
   await expect(page.getByRole('switch', { name: '使用本机 MCP' })).toHaveCount(0);
   const button = page.getByRole('button', { name: '页面汉化说明', exact: true });
   await button.focus(); await page.keyboard.press('Enter');
-  await expect(page.getByRole('tooltip')).toContainText('对话、代码和输入内容保持原文');
+  await expect(page.getByRole('tooltip')).toContainText('聊天、文件和输入内容不会发送');
   await expect(button).toHaveAttribute('aria-describedby', 'helpPopover');
   await page.keyboard.press('Escape'); await expect(page.getByRole('tooltip')).not.toBeVisible();
   await button.evaluate(el => { el.dataset.help = '<img src=x onerror="window.helpXss=true">'; });

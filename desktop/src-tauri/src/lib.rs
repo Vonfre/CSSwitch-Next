@@ -359,8 +359,8 @@ fn public_config(cfg: &config::Config) -> serde_json::Value {
     let ids: Vec<String> = cfg.providers.keys().cloned().collect();
     let connections: Vec<_> = ids.iter().filter_map(|id| cfg.connection_for(id).map(|p| json!({
         "id": id, "name": p.name, "protocol": p.protocol, "base_url": p.base_url,
-        "model": p.model, "quality_model": p.quality_model, "fast_model": p.fast_model,
-        "quality_protocol": p.quality_protocol, "fast_protocol": p.fast_protocol,
+        "model": p.model, "quality_model": p.quality_model,
+        "quality_protocol": p.quality_protocol,
         "max_tokens": p.max_tokens, "key_masked": config::mask(&p.key), "has_key": !p.key.is_empty()
     }))).collect();
     json!({
@@ -370,6 +370,8 @@ fn public_config(cfg: &config::Config) -> serde_json::Value {
         "mode": cfg.mode,
         "science_local_mcp": cfg.science_local_mcp,
         "science_zh": cfg.science_zh,
+        "science_zh_online": cfg.science_zh_online,
+        "science_zh_engine": cfg.science_zh_engine,
         "science_local_files": cfg.science_local_files,
         "connections": connections,
     })
@@ -489,11 +491,8 @@ struct ConnectionInput {
     base_url: String,
     model: String,
     quality_model: String,
-    fast_model: String,
     #[serde(default)]
     quality_protocol: String,
-    #[serde(default)]
-    fast_protocol: String,
     #[serde(default)]
     test_role: String,
     max_tokens: u32,
@@ -517,9 +516,7 @@ fn save_connection(input: ConnectionInput) -> Result<(), String> {
         base_url: input.base_url.trim().trim_end_matches('/').into(),
         model: input.model.trim().into(),
         quality_model: input.quality_model.trim().into(),
-        fast_model: input.fast_model.trim().into(),
         quality_protocol: input.quality_protocol,
-        fast_protocol: input.fast_protocol,
         max_tokens: input.max_tokens,
         ..Default::default()
     };
@@ -611,9 +608,9 @@ fn probe_profile(input: ConnectionInput, cfg: &config::Config) -> Result<config:
     profile.name = input.name.trim().into();
     profile.model = input.model.trim().into();
     profile.quality_model = input.quality_model.trim().into();
-    profile.fast_model = input.fast_model.trim().into();
+    profile.fast_model.clear();
     profile.quality_protocol = input.quality_protocol;
-    profile.fast_protocol = input.fast_protocol;
+    profile.fast_protocol.clear();
     profile.max_tokens = input.max_tokens;
     profile.validate()?;
     Ok(profile)
@@ -1227,15 +1224,15 @@ mod tests {
         let profile = super::config::ProviderCfg {
             name: "Mixed".into(), protocol: "responses".into(),
             base_url: "https://example.com/v1/responses".into(), model: "gpt-default".into(),
-            fast_model: "claude-fast".into(), fast_protocol: "anthropic".into(),
+            quality_model: "claude-quality".into(), quality_protocol: "anthropic".into(),
             max_tokens: 8192, key: "private-test-key".into(), ..Default::default()
         };
         profile.validate().unwrap();
         cfg.providers.insert("mixed".into(), profile);
         let restored: super::config::Config = serde_json::from_slice(&serde_json::to_vec(&cfg).unwrap()).unwrap();
-        assert_eq!(restored.providers["mixed"].fast_protocol, "anthropic");
+        assert_eq!(restored.providers["mixed"].quality_protocol, "anthropic");
         let public = super::public_config(&restored);
-        assert_eq!(public["connections"][0]["fast_protocol"], "anthropic");
+        assert_eq!(public["connections"][0]["quality_protocol"], "anthropic");
         assert!(!public.to_string().contains("private-test-key"));
         let query = |url: &str, protocol: &str| super::ModelQuery {
             id: "mixed".into(), protocol: "responses".into(), base_url: url.into(),
@@ -1248,8 +1245,33 @@ mod tests {
         assert!(super::catalog_profile(query("https://other.example.com/v1/responses", "anthropic"), &restored).is_err());
         assert!(super::catalog_profile(query("https://example.com/v1/responses", "invalid"), &restored).is_err());
         let mut invalid = restored.providers["mixed"].clone();
-        invalid.fast_protocol = "invalid".into();
+        invalid.quality_protocol = "invalid".into();
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn retired_fast_settings_are_readable_but_not_exposed_or_saved() {
+        let profile: super::config::ProviderCfg = serde_json::from_value(serde_json::json!({
+            "name": "Legacy", "protocol": "responses", "base_url": "https://example.com/v1",
+            "model": "default-model", "key": "private-test-key",
+            "fast_model": "obsolete", "fast_protocol": "obsolete"
+        })).unwrap();
+        profile.validate().unwrap();
+        assert_eq!(profile.fast_model, "obsolete");
+        let saved = serde_json::to_value(&profile).unwrap();
+        assert!(saved.get("fast_model").is_none());
+        assert!(saved.get("fast_protocol").is_none());
+        let mut cfg = super::config::Config::default();
+        cfg.providers.insert("legacy".into(), profile);
+        let public = super::public_config(&cfg);
+        assert!(public["connections"][0].get("fast_model").is_none());
+        assert!(public["connections"][0].get("fast_protocol").is_none());
+        let input: super::ConnectionInput = serde_json::from_value(serde_json::json!({
+            "id": "legacy", "name": "Legacy", "protocol": "responses",
+            "base_url": "https://example.com/v1", "model": "default-model",
+            "quality_model": "", "max_tokens": 8192
+        })).unwrap();
+        assert_eq!(super::probe_profile(input, &cfg).unwrap().fast_model, "");
     }
 
     #[test]
@@ -1263,7 +1285,7 @@ mod tests {
         let input = |url: &str, key: Option<&str>| super::ConnectionInput {
             id: "test".into(), name: "Draft".into(), protocol: "responses".into(),
             base_url: url.into(), model: "draft-model".into(), quality_model: "".into(),
-            fast_model: "".into(), quality_protocol: "".into(), fast_protocol: "".into(),
+            quality_protocol: "".into(),
             test_role: "".into(), max_tokens: 8192, key: key.map(str::to_owned)
         };
         let p = super::probe_profile(input("https://example.com/v1", None), &cfg).unwrap();

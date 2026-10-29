@@ -2,6 +2,63 @@ import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 const plugin = readFileSync(new URL('../../scripts/science-zh.js', import.meta.url), 'utf8');
 
+test('online UI translations batch, protect research content, and use cached translations offline', async ({page}) => {
+  let online = true, calls = 0;
+  await page.route('**/__csswitch/config', route=>route.fulfill({json:{enabled:true,online,translationToken:'fixture-token',translationRevision:'1'}}));
+  await page.route('**/__csswitch/zh/cache', route=>route.fulfill({json:{translations:{'Cached interface label':'已缓存的界面标签'},revision:'1'}}));
+  await page.route('**/__csswitch/zh/translate', async route=>{
+    calls++;
+    expect(route.request().headers()['x-csswitch-translation']).toBe('fixture-token');
+    expect(route.request().postDataJSON()).toEqual({texts:['Future interface label']});
+    await route.fulfill({json:{translations:{'Future interface label':'新的界面标签'},skipped:[],revision:'1'}});
+  });
+  await page.goto('/');
+  await page.setContent('<nav><button>Future interface label</button><button>Cached interface label</button><button>More models</button><span>This week</span><button>Where you left off</button><button data-testid="session-title">Private project title</button></nav><section class="markdown-content"><h2>Private research heading</h2></section><input value="Secret research input"><div contenteditable="true">Private editor</div>');
+  await page.addScriptTag({content:plugin});
+  await expect(page.locator('nav button').nth(0)).toHaveText('新的界面标签');
+  await expect(page.locator('nav button').nth(1)).toHaveText('已缓存的界面标签');
+  await expect(page.locator('nav button').nth(2)).toHaveText('更多模型');
+  await expect(page.locator('nav span')).toHaveText('本周');
+  await expect(page.locator('nav button').nth(3)).toHaveText('上次阅读位置');
+  await expect(page.getByTestId('session-title')).toHaveText('Private project title');
+  await expect(page.locator('.markdown-content')).toHaveText('Private research heading');
+  await expect(page.locator('input')).toHaveValue('Secret research input');
+  online = false;
+  await expect.poll(()=>page.evaluate(()=>window.__csswitchZh.audit().online)).toBe(false);
+  await page.evaluate(()=>{const b=document.createElement('button');b.textContent='Cached interface label';document.querySelector('nav').append(b);});
+  await expect(page.locator('nav button').last()).toHaveText('已缓存的界面标签');
+  expect(calls).toBe(1);
+  await page.evaluate(()=>window.__csswitchZh.setEnabled(false));
+  await expect(page.locator('nav button').first()).toHaveText('Future interface label');
+});
+
+test('disabling translation during a network request never applies a late result', async ({page}) => {
+  await page.route('**/__csswitch/config',route=>route.fulfill({json:{enabled:true,online:true,translationToken:'token'}}));
+  let received;
+  const started = new Promise(resolve=>{ received=resolve; });
+  let release;
+  const response = new Promise(resolve=>{ release=resolve; });
+  await page.route('**/__csswitch/zh/translate',async route=>{received();await response;await route.fulfill({json:{translations:{'Future interface label':'新的界面标签'}}}).catch(()=>{});});
+  await page.goto('/');await page.setContent('<button>Future interface label</button>');await page.addScriptTag({content:plugin});
+  await started;await page.evaluate(()=>window.__csswitchZh.setEnabled(false));release();
+  await expect(page.locator('button')).toHaveText('Future interface label');
+});
+
+test('online translation registers native assets even when the browser had already loaded them', async ({page}) => {
+  let assetReads=0, translated=false;
+  await page.route('**/assets/native-fixture.js',route=>{assetReads++;return route.fulfill({contentType:'application/javascript',body:'window.fixtureNativeLoaded=true'});});
+  await page.route('**/__csswitch/config',route=>route.fulfill({json:{enabled:true,online:true,translationToken:'token'}}));
+  await page.route('**/__csswitch/zh/translate',route=>{
+    expect(assetReads).toBe(2);translated=true;
+    return route.fulfill({json:{translations:{'Future interface label':'新的界面标签'}}});
+  });
+  await page.goto('/');await page.setContent('<button>Future interface label</button>');
+  await page.addScriptTag({url:'/assets/native-fixture.js'});
+  await page.addScriptTag({content:plugin});
+  await expect(page.locator('button')).toHaveText('新的界面标签');
+  expect(translated).toBe(true);
+});
+
 test('artifact provenance menus translate fully and restore without changing document text', async ({page}) => {
   await page.route('**/__csswitch/config',route=>route.fulfill({json:{enabled:true}}));
   await page.goto('/');

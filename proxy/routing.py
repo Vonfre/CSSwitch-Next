@@ -76,24 +76,25 @@ def profile_from_config(cfg, presets, selected=None):
         if not model:
             raise ValueError("Default model is required")
         quality = p.get("quality_model", "").strip() or model
-        fast = p.get("fast_model", "").strip() or model
         cap = p.get("max_tokens", 8192)
         if not isinstance(cap, int) or not 1 <= cap <= 1_000_000:
             raise ValueError("Invalid output token limit")
         prov = {"mode": protocol, "url": endpoint_for(p["base_url"], protocol),
                 "default_model": model, "default_cap": cap, "model_caps": {},
-                "family_map": {"opus": quality, "sonnet": model, "haiku": fast},
+                "family_map": {"opus": quality, "sonnet": model, "haiku": model},
                 "models": [],
                 "model_map": {"claude-opus-5": quality, "claude-opus-4-8": quality, "claude-sonnet-5": model,
-                              "claude-sonnet-4-6": model, "claude-haiku-4-5": fast}}
+                              "claude-sonnet-4-6": model, "claude-haiku-4-5": model}}
         routes = {}
-        for kind, field, target in [('sonnet', 'model', model), ('opus', 'quality_model', quality), ('haiku', 'fast_model', fast)]:
+        for kind, field, target in [('sonnet', 'model', model), ('opus', 'quality_model', quality)]:
             override = p.get(field.replace('_model', '') + '_protocol', '') if field != 'model' else ''
             if override and override not in SUFFIXES:
                 raise ValueError('Unsupported model API protocol')
             # A blank model inherits both the default model and its protocol.
             mode = (override if p.get(field, '').strip() else '') or protocol
             routes[kind] = {'model': target, 'mode': mode, 'url': model_endpoint(p['base_url'], protocol, mode)}
+        # Retired Haiku settings never override the default model or protocol.
+        routes['haiku'] = dict(routes['sonnet'])
         prov['model_routes'] = routes
     configure(prov)
     key = p.get("key", "").strip()

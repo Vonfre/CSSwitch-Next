@@ -6,6 +6,7 @@ No skill code is executed. Imports are packaged for the Science management API.
 import base64
 from contextlib import contextmanager
 import hashlib
+import http.client
 import io
 import importlib.util
 import json
@@ -17,11 +18,14 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
 
 MAX_BUNDLE = 4 * 1024 * 1024
+REPO_DOWNLOAD_CHUNK = 1024 * 1024
+REPO_DOWNLOAD_SECONDS = 600
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
 _spec = importlib.util.spec_from_file_location('local_skill_files', Path(__file__).with_name('science-local-skills.py'))
 local_skill_files = importlib.util.module_from_spec(_spec)
@@ -83,9 +87,11 @@ def metadata(text, directory):
     return {'name': field('name') or directory, 'description': field('description')[:2000]}
 
 
-def safe_zip(z):
+def safe_zip(z, *, repository=False):
     files = z.infolist()
-    if len(files) > 12000 or sum(f.file_size for f in files) > 64 * 1024 * 1024:
+    # Repositories stay compressed on disk. Only bounded SKILL.md files and the
+    # selected skill are read; unrelated large files are never decompressed.
+    if not repository and (len(files) > 12000 or sum(f.file_size for f in files) > 64 * 1024 * 1024):
         raise WorkspaceError('仓库解压内容超过限制。')
     for f in files:
         p = PurePosixPath(f.filename)
@@ -268,26 +274,32 @@ class Workspace:
             raise WorkspaceError('请填写 GitHub owner/repo 和有效分支名。')
         key = repo + '@' + branch
         url = 'https://codeload.github.com/' + repo + '/zip/refs/heads/' + branch
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'CSSwitch-Next'}), timeout=25) as response:
-                content = response.read(16 * 1024 * 1024 + 1)
-        except (urllib.error.URLError, TimeoutError):
-            raise WorkspaceError('无法下载 GitHub 仓库，请检查网络、仓库和分支名。') from None
-        if len(content) > 16 * 1024 * 1024:
-            raise WorkspaceError('仓库压缩包超过 16 MB。')
-        with zipfile.ZipFile(io.BytesIO(content)) as z:
-            safe_zip(z)
         path = self.repo_path(key)
         if path.parent.is_symlink() or path.is_symlink():
             raise WorkspaceError('仓库缓存不能是符号链接。')
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd, temp = tempfile.mkstemp(dir=path.parent)
         try:
-            with os.fdopen(fd, 'wb') as f:
-                f.write(content)
-            os.replace(temp, path)
-        finally:
-            if os.path.exists(temp): os.unlink(temp)
+            with tempfile.TemporaryDirectory(prefix='.repo-sync-', dir=path.parent) as temp:
+                archive = Path(temp) / 'repository.zip'
+                expires = time.monotonic() + REPO_DOWNLOAD_SECONDS
+                with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'CSSwitch-Next'}), timeout=25) as response, archive.open('wb') as out:
+                    while True:
+                        if time.monotonic() >= expires:
+                            raise WorkspaceError('仓库下载超时，请检查网络后重新同步。')
+                        chunk = response.read(REPO_DOWNLOAD_CHUNK)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                with zipfile.ZipFile(archive) as z:
+                    safe_zip(z, repository=True)
+                # Close all handles before replacing the cache (required on Windows).
+                os.replace(archive, path)
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException):
+            raise WorkspaceError('无法下载 GitHub 仓库，请检查网络、仓库和分支名。') from None
+        except zipfile.BadZipFile:
+            raise WorkspaceError('仓库压缩包不完整或格式无效，请重新同步。') from None
+        except OSError:
+            raise WorkspaceError('仓库缓存写入失败，请检查磁盘空间和目录权限后重试。') from None
         prefs = self.preferences()
         prefs['repos'] = [r for r in prefs.get('repos', []) if r['key'] != key] + [{'key': key, 'repo': repo, 'branch': branch}]
         write_json(self.pref, prefs)
@@ -303,7 +315,7 @@ class Workspace:
                 continue
             try:
                 with zipfile.ZipFile(path) as z:
-                    for f in safe_zip(z):
+                    for f in safe_zip(z, repository=True):
                         if not f.filename.endswith('/SKILL.md') or f.file_size > 256 * 1024:
                             continue
                         directory = str(PurePosixPath(f.filename).parent)
@@ -331,7 +343,7 @@ class Workspace:
         if item['source'] == 'github':
             with zipfile.ZipFile(self.repo_path(item['repo'])) as z:
                 prefix = item['directory'] + '/'
-                for f in safe_zip(z):
+                for f in safe_zip(z, repository=True):
                     if f.filename.startswith(prefix) and not f.is_dir():
                         total += f.file_size
                         if total > MAX_BUNDLE: raise WorkspaceError('Skill 超过 4 MB。')
@@ -427,15 +439,22 @@ class Workspace:
 
 
 def main():
-    agent_skills._platform.deadline(55)
+    timer = agent_skills._platform.deadline(55)
     try:
         data = json.loads(sys.stdin.read(6 * 1024 * 1024))
+        if data.get('operation') == 'repo_add':
+            timer.cancel()
+            # Let the download report its timeout and clean up the partial file
+            # before the final cross-platform process deadline takes effect.
+            timer = agent_skills._platform.deadline(REPO_DOWNLOAD_SECONDS + 60)
         value = Workspace(data['home'], data['data'], data['config']).run(data['operation'], data.get('params', {}))
         print(json.dumps({'ok': True, 'value': value}, ensure_ascii=False))
     except (WorkspaceError, local_skill_files.LocalSkillError) as e:
         print(json.dumps({'ok': False, 'message': str(e)}, ensure_ascii=False))
     except Exception:
         print(json.dumps({'ok': False, 'message': '本地数据暂不可读或格式不兼容，请刷新并检查 Science 版本。'}, ensure_ascii=False))
+    finally:
+        timer.cancel()
 
 
 if __name__ == '__main__': main()

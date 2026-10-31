@@ -468,8 +468,7 @@ class Bridge:
 def main():
     def timeout(_signum, _frame):
         raise BridgeError('Science 管理操作超时，请刷新后重试。')
-    signal.signal(signal.SIGALRM, timeout)
-    signal.alarm(85)
+    local_skills._platform.deadline(85)
     try:
         data = json.loads(sys.stdin.read(6 * 1024 * 1024))
         value = Bridge(data['base'], data['nonce'], data.get('data_dir'), data.get('auth_dir'), data.get('home')).run(data['operation'], data.get('params', {}))

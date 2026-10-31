@@ -4,6 +4,7 @@
 No skill code is executed. Imports are packaged for the Science management API.
 """
 import base64
+from contextlib import contextmanager
 import hashlib
 import io
 import importlib.util
@@ -89,7 +90,7 @@ def safe_zip(z):
     for f in files:
         p = PurePosixPath(f.filename)
         mode = f.external_attr >> 16
-        if p.is_absolute() or '..' in p.parts or '\\' in f.filename or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)) or f.flag_bits & 1:
+        if not agent_skills._platform.safe_archive_path(f.filename) or p.is_absolute() or '..' in p.parts or '\\' in f.filename or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)) or f.flag_bits & 1:
             raise WorkspaceError('压缩包包含不安全的路径或符号链接。')
     return files
 
@@ -152,14 +153,18 @@ class Workspace:
         return value
 
     def databases(self):
-        return [p for p in sorted(self.data.glob('orgs/*/operon-cli.db'))
+        return [p for p in [self.data / 'operon-cli.db', *sorted(self.data.glob('orgs/*/operon-cli.db'))]
                 if regular(p) and not p.parent.is_symlink()]
 
+    @contextmanager
     def db(self, path):
         db = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True, timeout=2)
-        db.row_factory = sqlite3.Row
-        db.execute('PRAGMA query_only = ON')
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute('PRAGMA query_only = ON')
+            yield db
+        finally:
+            db.close()
 
     def sessions(self):
         prefs = self.preferences().get('sessions', {})
@@ -184,8 +189,9 @@ class Workspace:
                         except (ValueError, AttributeError): item['last_preview'] = ''
                         if item.pop('is_hidden', False):
                             continue
-                        key = path.parent.name + ':' + item['id']
-                        item.update(key=key, org=path.parent.name)
+                        org = 'local' if path.parent == self.data else path.parent.name
+                        key = org + ':' + item['id']
+                        item.update(key=key, org=org)
                         item.update(prefs.get(key, {}))
                         item['title'] = item.get('title') or item.get('name') or '未命名会话'
                         rows.append(item)
@@ -201,7 +207,7 @@ class Workspace:
         org, fid = key.split(':', 1)
         if not NAME.fullmatch(org) or not NAME.fullmatch(fid):
             raise WorkspaceError('会话标识无效。')
-        path = self.data / 'orgs' / org / 'operon-cli.db'
+        path = self.data / 'operon-cli.db' if org == 'local' else self.data / 'orgs' / org / 'operon-cli.db'
         if path not in self.databases():
             raise WorkspaceError('会话所在数据库不存在。')
         return path, fid
@@ -421,7 +427,7 @@ class Workspace:
 
 
 def main():
-    signal.alarm(55)
+    agent_skills._platform.deadline(55)
     try:
         data = json.loads(sys.stdin.read(6 * 1024 * 1024))
         value = Workspace(data['home'], data['data'], data['config']).run(data['operation'], data.get('params', {}))

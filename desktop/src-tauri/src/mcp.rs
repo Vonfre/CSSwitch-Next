@@ -80,7 +80,7 @@ pub fn manage(root: &Path, operation: &str, mut params: Value) -> Result<Value, 
         .map(|(_, v)| v.into_owned())
         .ok_or("Science 地址缺少本地会话凭据。")?;
     let python = super::proc::find_exe("python3").ok_or("MCP 管理需要 Python 3。")?;
-    let mut child = Command::new(python)
+    let mut child = crate::platform::command(python)
         .arg(root.join("scripts/science-mcp-manage.py"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

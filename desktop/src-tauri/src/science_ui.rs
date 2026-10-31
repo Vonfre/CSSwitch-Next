@@ -52,7 +52,7 @@ fn start_proxy(
     upstream: u16,
 ) -> Result<(Child, u16), String> {
     let py = super::proc::find_exe("python3").ok_or("Science 页面插件需要 Python 3。")?;
-    let mut child = Command::new(py)
+    let mut child = crate::platform::command(py)
         .arg("-B")
         .arg(root.join("scripts/science-ui-proxy.py"))
         .arg("--upstream-port")

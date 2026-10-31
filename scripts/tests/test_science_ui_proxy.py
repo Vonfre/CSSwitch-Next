@@ -1,6 +1,7 @@
 import base64
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import tempfile
@@ -144,6 +145,9 @@ class ProxyTests(unittest.TestCase):
         cfg = {'mode': 'proxy', 'provider': 'test', 'providers': {'test': {'base_url':'https://example.invalid',
             'protocol':'responses', 'key':'NEVER-RETURN', 'model':'model-default', 'quality_model':'model-quality'}}}
         self.proxy.config.write_text(json.dumps(cfg)); self.proxy.config.chmod(0o600)
+        if os.name == 'nt':
+            from private_files import protect_windows
+            protect_windows(self.proxy.config)
         with self.request('/api/models') as r:
             self.assertEqual(r.headers['Cache-Control'], 'no-store')
             body = r.read().decode(); data = json.loads(body)
@@ -288,6 +292,9 @@ class ProxyTests(unittest.TestCase):
         cfg = {'provider': 'fixture', 'providers': {'fixture': {'protocol': 'responses',
             'base_url': 'https://example.invalid', 'key': 'NEVER-RETURN', 'model': 'current-default'}}}
         self.proxy.config.write_text(json.dumps(cfg)); self.proxy.config.chmod(0o600)
+        if os.name == 'nt':
+            from private_files import protect_windows
+            protect_windows(self.proxy.config)
         directory = self.proxy.config.parent / 'conversation-models'; directory.mkdir()
         alias = 'claude-opus-99-01-20123456'
         (directory / (alias + '.json')).write_text('{"model":"retired-target","provider":"retired-provider"}')

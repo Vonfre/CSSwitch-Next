@@ -12,7 +12,7 @@ pub fn manage(root: &Path, operation: &str, params: Value) -> Result<Value, Stri
     let home = super::science_shared::home()?;
     let (data, _) = super::science_shared::local_settings(&home)?;
     let python = super::proc::find_exe("python3").ok_or("本地管理需要 Python 3。")?;
-    let mut child = Command::new(python)
+    let mut child = crate::platform::command(python)
         .arg("-I")
         .arg(root.join("scripts/science-workspace.py"))
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())

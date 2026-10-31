@@ -2,6 +2,7 @@
 //! Science uses the native HOME/data directory with CSSwitch-owned local authentication.
 //! Provider credentials remain in the private config; the gateway snapshots routes per request.
 
+mod platform;
 mod config;
 mod oauth_forge;
 mod proc;
@@ -42,7 +43,7 @@ async fn mcp_manage(app: tauri::AppHandle, operation: String, params: Option<ser
 }
 
 fn science_bin() -> PathBuf {
-    science_shared::preferred_binary(science_shared::home().ok().as_deref(), Path::new(SCIENCE_BIN))
+    platform::science_binary()
 }
 
 #[derive(Default)]
@@ -144,12 +145,12 @@ const fn libc_o_nofollow() -> i32 {
 
 /// 打开（truncate）一个子进程日志文件，父目录 0700、文件 0600（防同机其它用户读到 secret 尾巴）。
 fn open_log(name: &str) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use crate::platform::PrivateOpenOptions;
     let p = log_path(name);
     if let Some(parent) = p.parent() {
         config::assert_not_symlink(parent)?;
         std::fs::create_dir_all(parent)?;
-        let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        let _ = crate::platform::permissions(parent, 0o700);
     }
     // 日志路径不许是符号链接：否则 truncate+写会覆盖链接目标文件（修 P2-1）。
     config::assert_not_symlink(&p)?;
@@ -159,10 +160,10 @@ fn open_log(name: &str) -> std::io::Result<std::fs::File> {
         .truncate(true)
         .mode(0o600)
         // O_NOFOLLOW：即便在 lstat 与 open 之间被换成软链，也拒绝跟随。
-        .custom_flags(libc_o_nofollow())
+        .nofollow()
         .open(&p)?;
     // 文件已存在时 mode() 不复位，显式再夹一次。
-    let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+    let _ = crate::platform::permissions(&p, 0o600);
     Ok(f)
 }
 
@@ -199,14 +200,7 @@ fn lock(m: &Mutex<AppState>) -> std::sync::MutexGuard<'_, AppState> {
 
 /// 用系统浏览器打开 URL（macOS `open`）。校验退出码：非零视为失败（P2c）。
 fn open_in_browser(url: &str) -> Result<(), String> {
-    let st = Command::new("open")
-        .arg(url)
-        .status()
-        .map_err(|e| format!("打开浏览器失败：{e}"))?;
-    if !st.success() {
-        return Err(format!("open 非零退出（{:?}）", st.code()));
-    }
-    Ok(())
+    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 // ---------- 代理生命周期核心 ----------
@@ -251,7 +245,7 @@ fn ensure_proxy(
     let root = asset_root(app)
         .ok_or("找不到代理脚本 proxy/csswitch_proxy.py（打包资源或仓库根均未命中）。开发态可设 CSSWITCH_REPO。")?;
     let py = proc::find_exe("python3")
-        .ok_or("缺少依赖 python3（起翻译代理需要）。已查 PATH、常见目录与登录 shell 仍未找到；macOS 一般自带 /usr/bin/python3（装 Xcode 命令行工具：xcode-select --install）。")?;
+        .ok_or("未找到 Python 3。请安装 Python 3 或修复 Science 的 Python 运行环境。")?;
 
     // path-secret：**持久化复用**。已在跑的沙箱把该 secret 嵌进了 ANTHROPIC_BASE_URL，
     // 若每次起代理都换 secret，代理一重启（换 key/换 provider/重开 app）沙箱就会拿旧 secret
@@ -285,11 +279,14 @@ fn ensure_proxy(
         // 收紧（P2 GPT 复审）：匹配【本安装的绝对脚本路径】+ 端口，而非仅「脚本名+端口」，
         // 避免误杀另一个 checkout / 用户手启的同名代理。路径里的正则元字符转义按字面匹配。
         let pat = format!("{}.*--port {port}", ere_escape(&script.to_string_lossy()));
-        let _ = Command::new("pkill").arg("-f").arg(&pat).status();
+        #[cfg(unix)]
+        let _ = crate::platform::command("pkill").arg("-f").arg(&pat).status();
+        #[cfg(windows)]
+        platform::cleanup_proxy(&script, &dir.join("config.json"), port)?;
 
         let logf = open_log("proxy.log").map_err(|e| format!("建日志失败：{e}"))?;
         let logf2 = logf.try_clone().map_err(|e| e.to_string())?;
-        let child = Command::new(&py)
+        let child = crate::platform::command(&py)
             .arg("-B")
             .arg(&script)
             .arg("--provider")
@@ -423,8 +420,13 @@ fn set_mode_inner(
 /// 官方端点，不经本代理）。CSSwitch 只把用户交回官方客户端，不托管其登录。
 #[tauri::command]
 fn open_official() -> Result<(), String> {
+    #[cfg(windows)] {
+        platform::command(science_bin()).env_remove("ANTHROPIC_BASE_URL").env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN").spawn().map_err(|e| format!("打开官方 Science 失败：{e}"))?;
+        return Ok(());
+    }
+    #[cfg(not(windows))] {
     let app_path = "/Applications/Claude Science.app";
-    let mut cmd = Command::new("open");
+    let mut cmd = crate::platform::command("open");
     if Path::new(app_path).is_dir() {
         cmd.arg(app_path);
     } else {
@@ -439,6 +441,7 @@ fn open_official() -> Result<(), String> {
         Ok(s) if s.success() => Ok(()),
         Ok(_) => Err("未能打开 Claude Science。请确认已安装官方 Claude Science。".into()),
         Err(e) => Err(format!("打开官方 Claude Science 失败：{e}")),
+    }
     }
 }
 
@@ -581,7 +584,7 @@ async fn verify_connection(app: tauri::AppHandle, id: String) -> Result<serde_js
         }
         let root = asset_root(&app).ok_or("找不到代理资源。")?;
         let py = proc::find_exe("python3").ok_or("未找到 python3。")?;
-        let out = Command::new(py)
+        let out = crate::platform::command(py)
             .arg("-B")
             .arg(root.join("proxy/csswitch_proxy.py"))
             .arg("--probe")
@@ -628,7 +631,7 @@ async fn test_connection(app: tauri::AppHandle, input: ConnectionInput) -> Resul
         let root = asset_root(&app).ok_or("找不到代理资源。")?;
         let py = proc::find_exe("python3").ok_or("未找到 python3。")?;
         // Unsaved credentials stay in stdin, never in a temporary config or argv.
-        let mut child = Command::new(py).arg("-B")
+        let mut child = crate::platform::command(py).arg("-B")
             .arg(root.join("proxy/csswitch_proxy.py")).arg("--probe-stdin")
             .arg("--probe-role").arg(role)
             .env_remove("CSSWITCH_UPSTREAM_URL")
@@ -701,7 +704,7 @@ async fn list_models(app: tauri::AppHandle, query: ModelQuery) -> Result<serde_j
         let profile = catalog_profile(query, &cfg)?;
         let root = asset_root(&app).ok_or("找不到模型列表资源。")?;
         let py = proc::find_exe("python3").ok_or("未找到 python3。")?;
-        let mut child = Command::new(py).arg("-B").arg(root.join("proxy/model_catalog.py"))
+        let mut child = crate::platform::command(py).arg("-B").arg(root.join("proxy/model_catalog.py"))
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
             .spawn().map_err(|_| "无法启动模型列表查询。")?;
         let payload = serde_json::to_vec(&json!({"base_url": profile.base_url, "protocol": profile.protocol, "key": profile.key})).map_err(|_| "无法生成模型查询。")?;
@@ -1048,10 +1051,10 @@ async fn open_url(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn run_doctor(app: tauri::AppHandle) -> Result<String, String> {
-    let root = asset_root(&app).ok_or("找不到 scripts/doctor.sh（打包资源或仓库根均未命中）。")?;
+    let root = asset_root(&app).ok_or("找不到 scripts/doctor.py（打包资源或仓库根均未命中）。")?;
     let cfg = config::load_from(&config::default_dir()).unwrap_or_default();
-    let doctor = root.join("scripts/doctor.sh");
-    let mut cmd = Command::new("bash");
+    let doctor = root.join("scripts/doctor.py");
+    let mut cmd = crate::platform::command(proc::find_exe("python3").ok_or("诊断需要 Python 3。")?);
     cmd.arg(&doctor)
         .env("CSSWITCH_PROVIDER", &cfg.provider)
         .env("CSSWITCH_PROXY_PORT", cfg.proxy_port.to_string())
@@ -1093,11 +1096,7 @@ fn report_bug() -> Result<(), String> {
 fn open_logs() -> Result<(), String> {
     let dir = config::default_dir().join("logs");
     let _ = std::fs::create_dir_all(&dir);
-    Command::new("open")
-        .arg(&dir)
-        .status()
-        .map_err(|e| format!("打开日志目录失败：{e}"))?;
-    Ok(())
+    platform::open(dir.as_os_str())
 }
 
 #[tauri::command]

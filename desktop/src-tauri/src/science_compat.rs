@@ -8,7 +8,7 @@ pub fn inspect(root: &Path) -> Result<Value, String> {
     let python = super::proc::find_exe("python3").ok_or("未找到 Python 3，请安装后重新检查。")?;
     let input = json!({"home": super::science_shared::home()?,
         "binary": super::science_bin(), "node": super::proc::find_exe("node")});
-    let mut child = Command::new(python)
+    let mut child = crate::platform::command(python)
         .arg("-I").arg("-B").arg(root.join("scripts/science-compatibility.py"))
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
         .spawn().map_err(|_| "无法启动兼容性检查，请检查 Python 环境。")?;

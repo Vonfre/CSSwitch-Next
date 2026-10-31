@@ -156,6 +156,7 @@ pub async fn install_update(app: tauri::AppHandle, state: State<'_, UpdateState>
         }
         // Do not attempt to overwrite a development binary or an app on a mounted DMG.
         let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
         if !executable.ancestors().any(|p| p.extension().is_some_and(|e| e == "app"))
             || executable.starts_with("/Volumes") {
             return Err("请先将应用安装到本机应用目录，再使用应用内更新。".to_string());
@@ -261,7 +262,7 @@ mod tests {
             update.install(downloaded).unwrap();
             assert!(!app_path.join("old-build-marker").exists());
             assert!(app_path.join("Contents/Resources/scripts/science-connector-run.py").is_file());
-            assert!(std::process::Command::new("codesign").args(["--verify", "--deep", "--strict"])
+            assert!(crate::platform::command("codesign").args(["--verify", "--deep", "--strict"])
                 .arg(&app_path).status().unwrap().success());
         });
         server.join().unwrap();

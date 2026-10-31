@@ -1,5 +1,6 @@
 """Open authenticated Science artifact records in macOS, without downloading copies."""
 import http.client
+import os
 import json
 from pathlib import Path
 import re
@@ -68,7 +69,10 @@ def resolve_artifact(payload, request):
             raise FileActionError('找不到所选版本的本地文件，未打开其他版本。', 404)
         selected = matches[0]
     path = selected.get('file_path') or (metadata.get('ref_host_path') if selected is metadata else None)
-    if not isinstance(path, str) or not path.startswith('/') or path.startswith('//') or '\x00' in path:
+    local = isinstance(path, str) and '\x00' not in path
+    if local:
+        local = bool(re.match(r'^[A-Za-z]:[\\/]', path)) and ':' not in path[2:] if os.name == 'nt' else path.startswith('/') and not path.startswith('//')
+    if not local:
         raise FileActionError('此文件没有可用的本地路径；远程文件请使用 Science 的下载功能。', 404)
     try:
         resolved = Path(path).resolve(strict=True)
@@ -82,18 +86,26 @@ def resolve_artifact(payload, request):
 
 def open_artifact(payload, request, enabled=lambda: True):
     path, before = resolve_artifact(payload, request)
-    if sys.platform != 'darwin':
-        raise FileActionError('本地文件插件目前支持 macOS。', 422)
+    if sys.platform not in ('darwin', 'win32'):
+        raise FileActionError('本地文件插件支持 macOS 和 Windows。', 422)
     action = payload['action']
-    if action == 'open' and (before.st_mode & 0o111 or path.suffix.lower().lstrip('.') not in DOCUMENTS):
+    if action == 'open' and ((sys.platform != 'win32' and before.st_mode & 0o111) or path.suffix.lower().lstrip('.') not in DOCUMENTS):
         raise FileActionError('此文件类型请使用“用文本编辑器打开”或“在文件夹中显示”。', 422)
     try:
         if path.stat() != before:
             raise FileActionError('文件已变化，请重新打开文件菜单后重试。', 409)
         if not enabled():
             raise FileActionError('本地文件插件已关闭。', 403)
-        args = ['/usr/bin/open', *({'reveal': ['-R'], 'edit': ['-t'], 'open': []}[action]), str(path)]
-        subprocess.run(args, check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if sys.platform == 'win32':
+            if action == 'open':
+                os.startfile(str(path))
+            elif action == 'reveal':
+                subprocess.Popen(['explorer.exe', '/select,', str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(['notepad.exe', str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            args = ['/usr/bin/open', *({'reveal': ['-R'], 'edit': ['-t'], 'open': []}[action]), str(path)]
+            subprocess.run(args, check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as error:
         raise FileActionError('本机应用未能打开文件，请检查默认应用关联，或在文件夹中显示。', 422) from error
-    return {'message': {'reveal': '已在 Finder 中显示。', 'open': '已交给默认应用打开。', 'edit': '已交给默认文本编辑器打开。'}[action]}
+    return {'message': {'reveal': '已在 Finder 中显示。' if sys.platform == 'darwin' else '已在文件资源管理器中显示。', 'open': '已交给默认应用打开。', 'edit': '已交给默认文本编辑器打开。'}[action]}

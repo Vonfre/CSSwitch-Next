@@ -5,6 +5,7 @@ import os
 import stat
 from science_models import configure, family
 from urllib.parse import urlsplit, urlunsplit
+from private_files import windows_private
 
 
 SUFFIXES = {"anthropic": "/messages", "openai": "/chat/completions", "responses": "/responses"}
@@ -52,12 +53,14 @@ def select_model_route(plan, name, target):
 
 
 def load_profile(path, presets, selected=None):
-    if os.path.islink(os.path.dirname(path)):
+    if any(os.path.islink(p) or getattr(os.path, 'isjunction', lambda _: False)(p)
+           for p in (path, os.path.dirname(path))):
         raise ValueError("Refusing a symlinked configuration directory")
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(fd, "r", encoding="utf-8") as f:
         st = os.fstat(f.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        private = windows_private(f.fileno()) if os.name == 'nt' else st.st_uid == os.getuid() and not st.st_mode & 0o077
+        if not stat.S_ISREG(st.st_mode) or not private:
             raise ValueError("Configuration must be owned by this user and have permission 0600")
         cfg = json.load(f)
     return profile_from_config(cfg, presets, selected)

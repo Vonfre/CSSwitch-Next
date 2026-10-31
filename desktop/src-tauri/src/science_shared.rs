@@ -1,7 +1,7 @@
 //! Shared Science history, with a separate local-only authentication store.
 use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use crate::platform::PrivateOpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -24,9 +24,10 @@ fn uuid(s: &str) -> bool {
 }
 
 fn read_private(path: &Path) -> Result<Option<String>, String> {
+    super::config::assert_not_symlink(path).map_err(|e| e.to_string())?;
     let mut f = match fs::OpenOptions::new()
         .read(true)
-        .custom_flags(super::libc_o_nofollow())
+        .nofollow()
         .open(path)
     {
         Ok(f) => f,
@@ -71,7 +72,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 pub fn home() -> Result<PathBuf, String> {
-    std::env::var_os("HOME")
+    crate::platform::home().map(|p| p.into_os_string())
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .ok_or("找不到本机主目录。".into())
@@ -80,7 +81,7 @@ pub fn home() -> Result<PathBuf, String> {
 pub fn preferred_binary(home: Option<&Path>, fallback: &Path) -> PathBuf {
     if let Some(home) = home {
         let updated = home.join(".claude-science/bin/claude-science");
-        if fs::symlink_metadata(&updated).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0) {
+        if crate::platform::executable(&updated) {
             return updated;
         }
     }
@@ -211,7 +212,9 @@ fn history_identity(
     };
     // Sign-out can remove auth metadata while leaving all local projects. Read owner IDs only.
     if account.is_none() {
-        if let Some(org) = &org {
+        if data.join("operon-cli.db").is_file() {
+            account = history_owner(&data.join("operon-cli.db"))?;
+        } else if let Some(org) = &org {
             account = history_owner(&data.join("orgs").join(org).join("operon-cli.db"))?;
         }
     }
@@ -223,7 +226,7 @@ fn history_owner(db: &Path) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let python = super::proc::find_exe("python3").ok_or("查找历史所属账号需要 Python 3。")?;
-    let out = Command::new(python).args(["-I", "-c", "import json, sqlite3, sys\nfrom pathlib import Path\nwith sqlite3.connect(Path(sys.argv[1]).as_uri() + '?mode=ro', uri=True, timeout=2) as db:\n rows = db.execute(\"SELECT DISTINCT user_id FROM projects WHERE user_id IS NOT NULL AND user_id != '' LIMIT 2\").fetchall()\n print(json.dumps([row[0] for row in rows]))\n"])
+    let out = crate::platform::command(python).args(["-I", "-c", "import json, sqlite3, sys\nfrom pathlib import Path\nwith sqlite3.connect(Path(sys.argv[1]).as_uri() + '?mode=ro', uri=True, timeout=2) as db:\n rows = db.execute(\"SELECT DISTINCT user_id FROM projects WHERE user_id IS NOT NULL AND user_id != '' LIMIT 2\").fetchall()\n print(json.dumps([row[0] for row in rows]))\n"])
         .arg(db).output().map_err(|_| "无法检查历史账号标识。")?;
     if !out.status.success() {
         return Err("无法只读检查历史账号标识，已中止以保留数据。".into());
@@ -256,7 +259,7 @@ pub fn prepare(home: &Path, root: &Path, port: u16) -> Result<Session, String> {
     let (org, account) = history_identity(&native, &data_dir)?;
     super::config::assert_not_symlink(root).map_err(|e| e.to_string())?;
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    fs::set_permissions(root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    crate::platform::permissions(root, 0o700).map_err(|e| e.to_string())?;
     let auth = root.join("auth");
     // Resolve the guarded auth root before copying any encryption material.
     let org = match org {
@@ -313,11 +316,11 @@ pub fn prepare(home: &Path, root: &Path, port: u16) -> Result<Session, String> {
     let tools = root.join("tools");
     super::config::assert_not_symlink(&tools).map_err(|e| e.to_string())?;
     fs::create_dir_all(&tools).map_err(|e| e.to_string())?;
-    fs::set_permissions(&tools, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    crate::platform::permissions(&tools, 0o700).map_err(|e| e.to_string())?;
     // Scope the file-only auth store to this process, never change default/search Keychains.
     let shim = tools.join("security");
     write_private(&shim, b"#!/bin/sh\ncase \"$1\" in\n  find-generic-password) exit 44 ;;\n  add-generic-password|delete-generic-password|list-keychains|default-keychain|create-keychain|unlock-keychain|set-keychain-settings) exit 1 ;;\n  *) exec /usr/bin/security \"$@\" ;;\nesac\n")?;
-    fs::set_permissions(&shim, fs::Permissions::from_mode(0o500)).map_err(|e| e.to_string())?;
+    crate::platform::permissions(&shim, 0o500).map_err(|e| e.to_string())?;
     Ok(Session {
         home: home.into(),
         data_dir,
@@ -352,7 +355,7 @@ pub fn marker(root: &Path) -> PathBuf {
 
 pub fn history_summary(data: &Path) -> Result<serde_json::Value, String> {
     let python = super::proc::find_exe("python3").ok_or("统计历史记录需要 Python 3。")?;
-    let output = Command::new(python).args(["-I", "-c", "import json, sqlite3, sys\nfrom pathlib import Path\nroot = Path(sys.argv[1])\ncounts = dict(projects=0, conversations=0, messages=0)\nfor path in sorted(root.glob('orgs/*/operon-cli.db')):\n with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2) as db:\n  counts['projects'] += db.execute('SELECT COUNT(*) FROM projects').fetchone()[0]\n  counts['conversations'] += db.execute('SELECT COUNT(*) FROM frames WHERE parent_frame_id IS NULL').fetchone()[0]\n  counts['messages'] += db.execute('SELECT COUNT(*) FROM frame_messages').fetchone()[0]\nprint(json.dumps(counts))\n"])
+    let output = crate::platform::command(python).args(["-I", "-c", "import json, sqlite3, sys\nfrom pathlib import Path\nroot = Path(sys.argv[1])\ncounts = dict(projects=0, conversations=0, messages=0)\nfor path in [p for p in [root / 'operon-cli.db', *sorted(root.glob('orgs/*/operon-cli.db'))] if p.is_file()]:\n with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2) as db:\n  counts['projects'] += db.execute('SELECT COUNT(*) FROM projects').fetchone()[0]\n  counts['conversations'] += db.execute('SELECT COUNT(*) FROM frames WHERE parent_frame_id IS NULL').fetchone()[0]\n  counts['messages'] += db.execute('SELECT COUNT(*) FROM frame_messages').fetchone()[0]\nprint(json.dumps(counts))\n"])
         .arg(data).stderr(Stdio::null()).output().map_err(|_| "无法统计本地历史。")?;
     if !output.status.success() {
         return Err("无法只读统计本地历史。".into());
@@ -374,7 +377,7 @@ pub fn save(root: &Path, session: &Session) -> Result<(), String> {
 }
 
 pub fn command(bin: &Path, session: &Session, action: &str) -> Command {
-    let mut cmd = Command::new(bin);
+    let mut cmd = crate::platform::command(bin);
     cmd.arg(action)
         .arg("--data-dir")
         .arg(&session.data_dir)
@@ -387,7 +390,9 @@ pub fn command(bin: &Path, session: &Session, action: &str) -> Command {
         .env_remove("BUN_OPTIONS");
     if let Some(root) = session.config.parent() {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into());
-        cmd.env("PATH", format!("{}:{path}", root.join("tools").display()));
+        let mut paths = vec![root.join("tools")];
+        paths.extend(std::env::split_paths(&path));
+        if let Ok(path) = std::env::join_paths(paths) { cmd.env("PATH", path); }
     }
     cmd
 }
@@ -412,12 +417,17 @@ pub fn owns_status(value: &serde_json::Value, session: &Session) -> bool {
     let Some(pid) = value.get("pid").and_then(|v| v.as_u64()) else {
         return false;
     };
-    let Ok(out) = Command::new("/bin/ps")
+    #[cfg(unix)]
+    let Ok(out) = crate::platform::command("/bin/ps")
         .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
         .output()
     else {
         return false;
     };
+    #[cfg(windows)]
+    let Ok(out) = crate::platform::command("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &format!("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine")])
+        .output() else { return false; };
     let cmd = String::from_utf8_lossy(&out.stdout);
     cmd.contains("claude-science")
         && cmd.contains(session.config.to_string_lossy().as_ref())
@@ -466,9 +476,10 @@ pub fn stop_owned(bin: &Path, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     const ORG: &str = "12345678-1234-4123-8123-123456789abc";
     const ACCOUNT: &str = "abcdefab-1234-4123-8123-123456789abc";
@@ -599,7 +610,7 @@ mod tests {
         let updated = f.native().join("bin/claude-science");
         fs::create_dir_all(updated.parent().unwrap()).unwrap();
         fs::write(&updated, "#!/bin/sh\nexit 0\n").unwrap();
-        fs::set_permissions(&updated, fs::Permissions::from_mode(0o700)).unwrap();
+        crate::platform::permissions(&updated, 0o700).unwrap();
         assert_eq!(preferred_binary(Some(&f.home), fallback), updated);
     }
 
@@ -737,7 +748,7 @@ mod tests {
             "#!/bin/sh\nif [ \"$1\" != status ]; then exit 42; fi\nprintf '{\"running\":false}'\n",
         )
         .unwrap();
-        fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+        crate::platform::permissions(&fake, 0o700).unwrap();
         assert!(ensure_port_available(&fake, &session)
             .unwrap_err()
             .contains("未被停止"));
@@ -812,7 +823,7 @@ mod tests {
         .unwrap();
         let launch = |session: &Session| {
             let log = fs::File::create(f.base.join("science-test.log")).unwrap();
-            let mut cmd = Command::new("/usr/bin/sandbox-exec");
+            let mut cmd = crate::platform::command("/usr/bin/sandbox-exec");
             cmd.args(["-p", "(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip \"localhost:*\"))"])
                 .arg(bin).arg("serve").arg("--data-dir").arg(&session.data_dir).arg("--config").arg(&session.config)
                 .args(["--port", &port.to_string(), "--sandbox-port", "0", "--detached", "--no-browser", "--no-auto-update"])
@@ -857,7 +868,7 @@ mod tests {
                 .unwrap()
                 .1
                 .into_owned();
-            assert!(Command::new("curl")
+            assert!(crate::platform::command("curl")
                 .args(["--noproxy", "*", "--max-time", "10", "-sS", "-f", "-c"])
                 .arg(&cookies)
                 .args(["-H", "Content-Type: application/json", "--data"])
@@ -867,7 +878,7 @@ mod tests {
                 .status()
                 .unwrap()
                 .success());
-            assert!(Command::new("curl")
+            assert!(crate::platform::command("curl")
                 .args(["--noproxy", "*", "--max-time", "10", "-sS", "-f", "-c"])
                 .arg(&cookies)
                 .arg("-b")
@@ -895,7 +906,7 @@ mod tests {
                 })
                 .next()
                 .unwrap_or("");
-            let mut cmd = Command::new("curl");
+            let mut cmd = crate::platform::command("curl");
             cmd.args(["--noproxy", "*", "--max-time", "10", "-sS", "-f", "-b"])
                 .arg(&cookies)
                 .arg("-H")

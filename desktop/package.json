@@ -7,11 +7,13 @@
     "tauri": "tauri",
     "prepare:assets": "node scripts/prepare-assets.mjs",
     "dev": "tauri dev",
-    "build": "tauri build --bundles app,dmg",
-    "preview": "python3 -m http.server 4178 --bind 127.0.0.1 --directory src",
+    "build": "tauri build",
+    "preview": "node scripts/preview.mjs",
     "test:ui": "playwright test",
     "check": "node --check src/main.js && node --check src/providers.js && node --check src/mcp.js && node --check src/skills.js && node --check src/agent-skills.js && node --check src/sessions.js && node --check src/reader.js && node --check src/usage.js && node --check src/updater.js && node --check ../scripts/science-zh.js && node --check ../scripts/science-files.js && node --check ../scripts/science-status.js && node --check ../scripts/science-model-compat.js && node --check src/compatibility.js && node --check src/ui.js && node --check src/settings.js",
-    "build:mcp": "node scripts/build-mcp.mjs"
+    "build:mcp": "node scripts/build-mcp.mjs",
+    "build:mac": "tauri build --bundles app,dmg",
+    "build:windows": "tauri build --bundles nsis --config src-tauri/tauri.windows.conf.json"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",

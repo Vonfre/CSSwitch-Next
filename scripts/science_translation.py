@@ -1,6 +1,6 @@
 """Translate shipped UI literals only; persist reviewed-shape results, never page content."""
 import ast
-import fcntl
+from csswitch_platform import lock_file
 import json
 import os
 from pathlib import Path
@@ -117,7 +117,7 @@ class Translator:
         fd = os.open(self.path.with_suffix('.lock'), os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         try:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_file(fd, blocking=False)
             except BlockingIOError:
                 raise TranslationError('正在翻译其他界面文案。', 429, 10)
             if self.state() != (True, True):

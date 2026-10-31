@@ -1,0 +1,18 @@
+{
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "createUpdaterArtifacts": false,
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": true
+      }
+    }
+  }
+}

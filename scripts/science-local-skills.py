@@ -4,8 +4,12 @@
 The authenticated bridge checks Science policy and verifies/attaches each draft
 through Science's API. This module handles inert files only, without DB writes.
 """
+from pathlib import Path
 import base64
-import fcntl
+import importlib.util as _platform_import
+_platform_spec = _platform_import.spec_from_file_location('csswitch_platform', Path(__file__).with_name('csswitch_platform.py'))
+_platform = _platform_import.module_from_spec(_platform_spec)
+_platform_spec.loader.exec_module(_platform)
 import hashlib
 import io
 import json
@@ -16,7 +20,7 @@ import shutil
 import sqlite3
 import stat
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 import zipfile
 
 MAX_BYTES = 4 * 1024 * 1024
@@ -52,13 +56,13 @@ def guarded(path):
     if not path.is_absolute():
         raise LocalSkillError('Science 本地技能目录必须是绝对路径。')
     for component in reversed([path, *path.parents]):
-        if component.is_symlink():
+        if component.is_symlink() or getattr(component, 'is_junction', lambda: False)():
             raise LocalSkillError('Science 本地技能路径不能包含符号链接。')
     return path
 
 
 def regular(path):
-    return not path.is_symlink() and path.is_file()
+    return not path.is_symlink() and not getattr(path, 'is_junction', lambda: False)() and path.is_file()
 
 
 def metadata(content):
@@ -116,7 +120,7 @@ def unpack(filename, encoded):
             for entry in entries:
                 path = PurePosixPath(entry.filename)
                 mode = entry.external_attr >> 16
-                if (not entry.filename or path.is_absolute() or '..' in path.parts
+                if (not _platform.safe_archive_path(entry.filename) or path.is_absolute() or '..' in path.parts
                         or '\\' in entry.filename or re.search(r'[\x00-\x1f]', entry.filename)
                         or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR))
                         or entry.flag_bits & 1):
@@ -163,7 +167,7 @@ class LocalSkills:
             raise LocalSkillError('Science 当前组织设置不可读。') from None
         if not isinstance(org, str) or not UUID.fullmatch(org):
             raise LocalSkillError('Science 当前组织标识无效。')
-        self.org_dir = guarded(data / 'orgs' / org)
+        self.org_dir = guarded(data if regular(data / 'operon-cli.db') else data / 'orgs' / org)
         self.root = guarded(self.org_dir / 'skills')
         self.dbpath = guarded(self.org_dir / 'operon-cli.db')
         if not self.org_dir.is_dir() or not regular(self.dbpath):
@@ -172,9 +176,9 @@ class LocalSkills:
     @contextmanager
     def locked(self):
         guarded(self.root).mkdir(mode=0o700, exist_ok=True)
-        fd = os.open(self.root / '.csswitch-import.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        fd = os.open(self.root / '.csswitch-import.lock', os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            _platform.lock_file(fd)
             yield
         finally:
             os.close(fd)
@@ -207,7 +211,8 @@ class LocalSkills:
         files, total = {}, 0
         for base, dirs, names in os.walk(path, followlinks=False):
             for part in dirs + names:
-                if (Path(base) / part).is_symlink():
+                child = Path(base) / part
+                if child.is_symlink() or getattr(child, 'is_junction', lambda: False)():
                     raise LocalSkillError('技能目录含符号链接，请先检查目录内容。')
             for part in names:
                 file = Path(base) / part
@@ -232,7 +237,7 @@ class LocalSkills:
 
     def disabled(self, user_id):
         try:
-            with sqlite3.connect(self.dbpath.as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+            with closing(sqlite3.connect(self.dbpath.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
                 db.execute('PRAGMA query_only=ON')
                 return {r[0] for r in db.execute("SELECT key FROM capability_settings WHERE user_id=? AND kind='skill' AND enabled=0", (user_id,))}
         except sqlite3.Error:

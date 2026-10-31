@@ -193,7 +193,7 @@ def log(msg):
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     print(line, flush=True)
     if LOG:
-        with open(LOG, "a") as f:
+        with open(LOG, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
 

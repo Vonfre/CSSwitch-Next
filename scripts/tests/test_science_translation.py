@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -25,6 +26,9 @@ class TranslationTests(unittest.TestCase):
 
     def save(self):
         self.config.write_text(json.dumps(self.cfg)); self.config.chmod(0o600)
+        if os.name == 'nt':
+            from private_files import protect_windows
+            protect_windows(self.config)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -43,7 +47,7 @@ class TranslationTests(unittest.TestCase):
         request.assert_not_called()
         raw = second.path.read_text()
         self.assertNotIn(texts[1], raw); self.assertNotIn('PRIVATE-KEY', raw)
-        self.assertEqual(second.path.stat().st_mode & 0o777, 0o600)
+        if os.name != 'nt': self.assertEqual(second.path.stat().st_mode & 0o777, 0o600)
 
     def test_disabled_feature_and_invalid_inputs_never_call_network(self):
         self.cfg['science_zh_online'] = False; self.save()

@@ -147,6 +147,11 @@ pub fn which(name: &str) -> Option<PathBuf> {
 /// 在给定目录序列里找可执行文件（第一个命中即返回）。
 fn find_in_dirs(name: &str, dirs: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
     for dir in dirs {
+        #[cfg(windows)]
+        for suffix in [".exe", ".com"] {
+            let candidate = dir.join(format!("{name}{suffix}"));
+            if !candidate.to_string_lossy().contains("Microsoft\\WindowsApps") && is_exec(&candidate) { return Some(candidate); }
+        }
         let cand = dir.join(name);
         if is_exec(&cand) {
             return Some(cand);
@@ -164,7 +169,7 @@ fn common_bin_dirs() -> Vec<PathBuf> {
         PathBuf::from("/usr/local/bin"),    // Homebrew（Intel）/ 手动安装
         PathBuf::from("/opt/local/bin"),    // MacPorts
     ];
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = crate::platform::home().map(|p| p.into_os_string()) {
         let home = PathBuf::from(home);
         dirs.push(home.join(".volta/bin"));
         dirs.push(home.join(".asdf/shims"));
@@ -196,7 +201,7 @@ pub fn which_via_login_shell(name: &str) -> Option<PathBuf> {
     }
     let arg = format!("command -v {name} 2>/dev/null");
     // spawn + 轮询 + 超时 kill：病态 rc 卡死时**终止** zsh，绝不泄漏线程/进程（修 P3）。
-    let mut child = Command::new("zsh")
+    let mut child = crate::platform::command("zsh")
         .args(["-lic", &arg])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -239,24 +244,35 @@ pub fn which_via_login_shell(name: &str) -> Option<PathBuf> {
 /// 再用 [`which_via_login_shell`] 解析用户真实 PATH。node / python3 都走这个，覆盖
 /// 「GUI 最小 PATH + 版本管理器」这类多位客户反馈的「已装 node 却报缺依赖」（修 #2）。
 pub fn find_exe(name: &str) -> Option<PathBuf> {
+    #[cfg(windows)] {
+        if name == "python3" || name == "node" {
+            if let Ok(exe) = std::env::current_exe() {
+                let bundled = exe.parent()?.join("runtime").join(if name == "python3" { "python/python.exe" } else { "node/node.exe" });
+                if bundled.is_file() { return Some(bundled); }
+            }
+        }
+        if name == "python3" {
+            if let Some(p) = which("python") { return Some(p); }
+            if let Some(home) = crate::platform::home() {
+                let candidate = home.join(".claude-science/conda/envs/claude-science-mcp/python.exe");
+                if candidate.is_file() { return Some(candidate); }
+            }
+        }
+        return which(name);
+    }
+    #[cfg(not(windows))]
     which(name).or_else(|| which_via_login_shell(name))
 }
 
 fn is_exec(p: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    match std::fs::metadata(p) {
-        Ok(md) => md.is_file() && (md.permissions().mode() & 0o111 != 0),
-        Err(_) => false,
-    }
+    crate::platform::executable(p)
 }
 
 /// 生成一次性 path-secret：从 /dev/urandom 取 16 字节，hex 编码为 32 字符。
 /// 失败关闭：urandom 不可用时返回 Err，绝不退回可猜的弱 secret（宁可起代理失败）。
 pub fn gen_secret() -> std::io::Result<String> {
-    use std::fs::File;
     let mut b = [0u8; 16];
-    let mut f = File::open("/dev/urandom")?;
-    f.read_exact(&mut b)?;
+    crate::platform::random(&mut b)?;
     Ok(hex(&b))
 }
 
@@ -304,10 +320,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn which_finds_sh() {
         let sh = which("sh");
         assert!(sh.is_some(), "PATH 里应能找到 sh");
         assert!(sh.unwrap().is_absolute());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_executables_and_python_are_resolved() {
+        assert!(which("cmd").is_some());
+        assert!(find_exe("python3").is_some());
     }
 
     #[test]
@@ -316,6 +340,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn find_in_dirs_locates_exec() {
         // /bin/sh 几乎肯定存在且可执行。
         let hit = find_in_dirs("sh", vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]);
@@ -349,6 +374,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn find_exe_finds_sh() {
         assert!(find_exe("sh").is_some());
     }
@@ -363,7 +389,7 @@ mod tests {
         assert!(dirs.iter().any(|d| d == &PathBuf::from("/usr/local/bin")));
         assert!(dirs.iter().any(|d| d == &PathBuf::from("/opt/local/bin")));
         // HOME 存在时应含版本管理器目录（volta）。
-        if std::env::var_os("HOME").is_some() {
+        if crate::platform::home().map(|p| p.into_os_string()).is_some() {
             assert!(
                 dirs.iter()
                     .any(|d| d.to_string_lossy().contains(".volta/bin")),

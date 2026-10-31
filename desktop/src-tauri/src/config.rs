@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use crate::platform::PrivateOpenOptions;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -220,7 +220,7 @@ pub fn default_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("CSSWITCH_DATA_DIR") {
         return PathBuf::from(dir);
     }
-    let home = std::env::var_os("HOME")
+    let home = crate::platform::home().map(|p| p.into_os_string())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     home.join(".csswitch-next")
@@ -233,7 +233,7 @@ fn config_path(dir: &Path) -> PathBuf {
 /// 若 path 存在且是符号链接则报错（不跟随）。path 不存在返回 Ok。
 pub(crate) fn assert_not_symlink(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(md) if md.file_type().is_symlink() => Err(io::Error::new(
+        Ok(md) if crate::platform::is_link(&md) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("拒绝符号链接（防跟随写/读到别处）：{}", path.display()),
         )),
@@ -256,7 +256,7 @@ fn ensure_dir(dir: &Path) -> io::Result<()> {
             format!("配置目录不是目录：{}", dir.display()),
         ));
     }
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    crate::platform::permissions(dir, 0o700)?;
     Ok(())
 }
 
@@ -274,7 +274,7 @@ pub fn load_from(dir: &Path) -> io::Result<Config> {
         Err(e) => return Err(e),
     };
     // 存在即复位权限，抵御外部把它改宽。
-    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    let _ = crate::platform::permissions(&path, 0o600);
     let cfg: Config = serde_json::from_slice(&data).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -323,7 +323,7 @@ pub fn save_to(dir: &Path, cfg: &Config) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    crate::platform::permissions(&path, 0o600)?;
     Ok(())
 }
 
@@ -359,7 +359,8 @@ pub fn mask(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
+    #[cfg(unix)]
+    use std::os::unix::fs::{symlink, PermissionsExt};
 
     fn tmpdir() -> PathBuf {
         // 每个测试用「进程 id + 线程 id」独立子目录，避免并行测试相互踩。
@@ -370,6 +371,7 @@ mod tests {
         d
     }
 
+    #[cfg(unix)]
     fn mode_of(p: &Path) -> u32 {
         fs::metadata(p).unwrap().permissions().mode() & 0o777
     }
@@ -461,6 +463,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn save_sets_dir_0700_and_file_0600() {
         let d = tmpdir().join(".csswitch");
         save_to(&d, &Config::default()).unwrap();
@@ -469,16 +472,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn load_resets_widened_perms_to_0600() {
         let d = tmpdir().join(".csswitch");
         save_to(&d, &Config::default()).unwrap();
         let p = config_path(&d);
-        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+        crate::platform::permissions(&p, 0o644).unwrap();
         load_from(&d).unwrap();
         assert_eq!(mode_of(&p), 0o600, "load must reset perms to 0600");
     }
 
     #[test]
+    #[cfg(unix)]
     fn save_rejects_symlinked_file_and_leaves_target_untouched() {
         let base = tmpdir();
         let d = base.join(".csswitch");
@@ -494,6 +499,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn load_rejects_symlinked_file() {
         let base = tmpdir();
         let d = base.join(".csswitch");
@@ -506,6 +512,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn load_rejects_symlinked_dir() {
         // ~/.csswitch 本身被换成软链时，load 也必须拒绝（不跟随读到别处）——修 P1-3。
         let base = tmpdir();
@@ -519,6 +526,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn ensure_dir_rejects_symlinked_dir() {
         let base = tmpdir();
         let realdir = base.join("realdir");

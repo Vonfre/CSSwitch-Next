@@ -5,7 +5,10 @@ external skills, edited copies, and replaced links are never overwritten.
 """
 from contextlib import contextmanager
 from pathlib import Path
-import fcntl
+import importlib.util as _platform_import
+_platform_spec = _platform_import.spec_from_file_location('csswitch_platform', Path(__file__).with_name('csswitch_platform.py'))
+_platform = _platform_import.module_from_spec(_platform_spec)
+_platform_spec.loader.exec_module(_platform)
 import base64
 import io
 import zipfile
@@ -157,14 +160,14 @@ class Library:
     @staticmethod
     def work_name(name):
         import re
-        return isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', name) is not None
+        return isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', name) is not None and _platform.safe_archive_path(name)
 
     def tree(self, path, source=False):
         files, total = {}, 0
         for base, dirs, names in os.walk(path, followlinks=False):
             for part in list(dirs):
                 child = Path(base) / part
-                if child.is_symlink():
+                if child.is_symlink() or getattr(child, 'is_junction', lambda: False)():
                     if not source: raise self.error('技能目录含外部链接，保留现有文件。')
                     dirs.remove(part)
                 elif source and (part.startswith('.') or part in ('node_modules', '__pycache__')):
@@ -202,7 +205,7 @@ class Library:
         self.local.guarded(self.work.config).mkdir(parents=True, exist_ok=True, mode=0o700)
         fd = os.open(self.work.config / '.skill-library.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            _platform.lock_file(fd)
             yield
         finally:
             os.close(fd)
@@ -269,7 +272,7 @@ class Library:
             prefixes = set()
             for entry in entries:
                 parts = entry.filename.split('/')
-                if len(parts) < 2 or any(not p or p in ('.', '..') or p.startswith('.') for p in parts) or '\\' in entry.filename:
+                if not _platform.safe_archive_path(entry.filename) or len(parts) < 2 or any(not p or p in ('.', '..') or p.startswith('.') for p in parts) or '\\' in entry.filename:
                     raise self.error('技能包包含不安全路径。')
                 prefixes.add(parts[0]); rel = '/'.join(parts[1:])
                 mode = entry.external_attr >> 16

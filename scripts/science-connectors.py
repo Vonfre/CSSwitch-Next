@@ -52,7 +52,8 @@ def command(home, profile, node=None):
             raise ValueError('Ketcher Chemistry 需要 Node.js 和完整的 Science 编辑器资源。')
         args = [str(script)]
     else:
-        executable = str(Path(home) / '.claude-science/conda/envs/claude-science-mcp/bin/python')
+        environment = Path(home) / '.claude-science/conda/envs/claude-science-mcp'
+        executable = str(environment / ('python.exe' if os.name == 'nt' else 'bin/python'))
         script = root / 'mcp-servers/bio-tools/run_server.py'
         package = 'mcp_' + profile.replace('-', '_')
         if not Path(executable).is_file() or not (script.parent / 'lib' / package / 'server.py').is_file():

@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use crate::platform::PrivateOpenOptions;
 use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -58,9 +58,8 @@ pub enum LoginAction {
 
 // ---------- 随机与编码 ----------
 fn rand_bytes(n: usize) -> std::io::Result<Vec<u8>> {
-    let mut f = std::fs::File::open("/dev/urandom")?;
     let mut b = vec![0u8; n];
-    f.read_exact(&mut b)?;
+    crate::platform::random(&mut b)?;
     Ok(b)
 }
 
@@ -169,7 +168,7 @@ fn real_ancestor(p: &Path) -> PathBuf {
 
 fn is_symlink(p: &Path) -> bool {
     std::fs::symlink_metadata(p)
-        .map(|m| m.file_type().is_symlink())
+        .map(|m| crate::platform::is_link(&m))
         .unwrap_or(false)
 }
 
@@ -197,13 +196,13 @@ fn safe_write(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
             .map_err(|e| format!("写临时文件失败：{e}"))?;
     }
     std::fs::rename(&tmp, path).map_err(|e| format!("rename 失败：{e}"))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    crate::platform::permissions(path, mode)
         .map_err(|e| format!("chmod 失败：{e}"))?;
     Ok(())
 }
 
 fn chmod_best_effort(p: &Path, mode: u32) {
-    let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode));
+    let _ = crate::platform::permissions(p, mode);
 }
 
 // ---------- 主流程 ----------
@@ -627,7 +626,7 @@ pub fn ensure_virtual_login(
     email: &str,
     sandbox_root: &Path,
 ) -> Result<(ForgeResult, LoginAction), String> {
-    let home = std::env::var_os("HOME")
+    let home = crate::platform::home().map(|p| p.into_os_string())
         .map(PathBuf::from)
         .ok_or("无 HOME 环境变量")?;
     ensure_virtual_login_guarded(auth_dir, email, sandbox_root, &home.join(".claude-science"))
@@ -678,7 +677,7 @@ fn ensure_virtual_login_guarded(
 /// 失效（旧版遗留 / 凭证损坏 / 已落登录页），重开也只会再落登录页，应改走「停沙箱 → 修复保
 /// org → 重启」。这样 0.2.0 的健康快捷路径不再把「健康但登录失效」当成可用（修 0.2.1 Bug2）。
 pub fn login_intact(auth_dir: &Path, email: &str, sandbox_root: &Path) -> bool {
-    match std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude-science")) {
+    match crate::platform::home().map(|p| p.into_os_string()).map(|h| PathBuf::from(h).join(".claude-science")) {
         Some(real) => login_intact_guarded(auth_dir, email, sandbox_root, &real),
         None => false,
     }
@@ -796,6 +795,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn forge_rejects_symlink_into_real_science_tree() {
         // 铁律回归：把沙箱根的祖先预置成指向【真实 Science 目录】的符号链接——此时沙箱根
         // 自身也解析进真实树，仅靠护栏 1「沙箱根内」会放行（resolved 与 root 同在真实树内）。
@@ -832,6 +832,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn forge_rejects_symlink_escaping_sandbox_root() {
         // P1 回归：把沙箱内的 auth_dir 预置成指向沙箱外目录的符号链接，伪造器必须
         // 在写任何文件之前拒绝，且绝不碰链接目标。
@@ -881,7 +882,7 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
     }
     fn have_node() -> bool {
-        std::process::Command::new("node")
+        crate::platform::command("node")
             .arg("-v")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -903,7 +904,7 @@ mod tests {
 
         // 方向 1：node 伪造 → rust 解密读回。
         let dir_n = tmpdir("node2rust");
-        let st = std::process::Command::new("node")
+        let st = crate::platform::command("node")
             .arg(&mjs)
             .args(["--auth-dir"])
             .arg(&dir_n)
@@ -923,7 +924,7 @@ mod tests {
         let dir_r = tmpdir("rust2node");
         let fake_real = tmpdir("realcred4");
         forge_guarded(&dir_r, email, &dir_r, &fake_real).unwrap();
-        let out = std::process::Command::new("node")
+        let out = crate::platform::command("node")
             .arg(&decrypt_mjs)
             .args(["--auth-dir"])
             .arg(&dir_r)

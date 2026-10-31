@@ -22,7 +22,8 @@ def record(path, provider, model, started, usage=None, ok=True, protocol=None):
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(path, flags, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
-            os.fchmod(f.fileno(), 0o600)
+            if hasattr(os, 'fchmod'):
+                os.fchmod(f.fileno(), 0o600)
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         if os.path.getsize(path) > 4 * 1024 * 1024:
             with open(path, encoding="utf-8") as f:

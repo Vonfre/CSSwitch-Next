@@ -6,6 +6,7 @@ so replacing the executable refreshes discovery at the next request boundary.
 """
 from functools import lru_cache
 import mmap
+import os
 from pathlib import Path
 import re
 
@@ -73,8 +74,9 @@ def _discover(path, inode, size, modified):
 
 def discover(binary=None):
     if binary is None:
-        updated = Path.home() / '.claude-science/bin/claude-science'
-        binary = updated if updated.is_file() else Path('/Applications/Claude Science.app/Contents/Resources/bin/claude-science')
+        updated = Path.home() / '.claude-science/bin' / ('claude-science.exe' if os.name == 'nt' else 'claude-science')
+        fallback = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local'))) / 'Programs/ClaudeScience/claude-science.exe' if os.name == 'nt' else Path('/Applications/Claude Science.app/Contents/Resources/bin/claude-science')
+        binary = os.environ.get('CSSWITCH_SCIENCE_BIN') or (updated if updated.is_file() else fallback)
     try:
         st = Path(binary).stat()
         result = _discover(str(binary), st.st_ino, st.st_size, st.st_mtime_ns)

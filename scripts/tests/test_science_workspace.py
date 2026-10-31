@@ -32,6 +32,7 @@ class WorkspaceTests(unittest.TestCase):
             for i in range(103):
                 db.execute('INSERT INTO frame_messages VALUES (?,?,?)', ('root1', i, json.dumps({'role': 'user' if i % 2 == 0 else 'assistant', 'timestamp': 1000+i, 'content': [{'type': 'text', 'text': '<script>unsafe</script>'}, {'type': 'tool_use', 'name': 'search', 'input': {'query': 'paper'}}]})))
         self.work = w.Workspace(self.home, self.data, self.config)
+        db.close()
         self.digest = hashlib.sha256(self.dbpath.read_bytes()).hexdigest()
 
     def tearDown(self):
@@ -102,7 +103,10 @@ class WorkspaceTests(unittest.TestCase):
     def test_skill_import_packages_supporting_files_and_ignores_symlinks(self):
         p = self.local_skill()
         outside = self.root / 'outside'; outside.write_text('must-not-be-included')
-        (p / 'secret').symlink_to(outside)
+        try: (p / 'secret').symlink_to(outside)
+        except OSError as e:
+            if getattr(e, 'winerror', None) == 1314: self.skipTest('Windows symlink privilege is unavailable')
+            raise
         (p.parent / 'linked-skill').symlink_to(p)
         (self.home / '.codex/skills/.ignored').mkdir()
         found = self.work.discover()['skills']
@@ -186,7 +190,10 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_symlinked_preferences_never_overwrite_target(self):
         self.config.mkdir(); outside = self.root / 'protected'; outside.write_text('{}')
-        self.work.pref.symlink_to(outside)
+        try: self.work.pref.symlink_to(outside)
+        except OSError as e:
+            if getattr(e, 'winerror', None) == 1314: self.skipTest('Windows symlink privilege is unavailable')
+            raise
         with self.assertRaises(w.WorkspaceError): self.work.preferences()
         with self.assertRaises(w.WorkspaceError): w.write_json(self.work.pref, {})
         self.assertEqual(outside.read_text(), '{}')

@@ -17,6 +17,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "proxy"))
 from routing import endpoint_for, load_profile, profile_from_config, model_endpoint, select_model_route
 from stream_bridge import Bridge
 import csswitch_proxy as cs
+from private_files import protect_windows
 
 
 class RouteContracts(unittest.TestCase):
@@ -189,6 +190,7 @@ class GatewayIntegration(unittest.TestCase):
         with os.fdopen(fd, "w") as f:
             json.dump(cfg, f)
         os.replace(tmp, cls.config)
+        if os.name == 'nt': protect_windows(cls.config)
 
     @classmethod
     def tearDownClass(cls):
@@ -225,7 +227,7 @@ class GatewayIntegration(unittest.TestCase):
         entries = [json.loads(s) for s in self.usage.read_text().splitlines()]
         self.assertTrue(all(e["ok"] for e in entries))
         self.assertTrue(all(e["input_tokens"] == 11 and e["output_tokens"] == 5 for e in entries))
-        self.assertEqual(os.stat(self.usage).st_mode & 0o777, 0o600)
+        if os.name != 'nt': self.assertEqual(os.stat(self.usage).st_mode & 0o777, 0o600)
         self.assertNotIn("test-key", self.usage.read_text())
 
     def test_mixed_protocol_roles_stream_nonstream_and_credentials(self):
@@ -409,6 +411,7 @@ class GatewayIntegration(unittest.TestCase):
         self.assertTrue(self.hits[-1][0].endswith("/responses"))
         self.assertNotIn(b"test-key", out.stdout)
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX modes; Windows DACL has dedicated coverage')
     def test_unsafe_config_permissions_fail_closed(self):
         os.chmod(self.config, 0o644)
         try:

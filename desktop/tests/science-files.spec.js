@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 const plugin = readFileSync(new URL('../../scripts/science-files.js', import.meta.url), 'utf8');
 
 async function setup(page, enabled = true) {
@@ -130,9 +131,9 @@ test('translated dynamic menus fit small windows and support keyboard operation'
   await page.keyboard.press('Enter'); await expect.poll(()=>state.calls.length).toBe(1);
   await page.getByRole('button',{name:'关闭文件操作提示'}).click();
   mkdirSync(new URL('../../artifacts/',import.meta.url),{recursive:true});
-  await page.screenshot({path:new URL('../../artifacts/science-files-mobile.png',import.meta.url).pathname});
+  await page.screenshot({path:fileURLToPath(new URL('../../artifacts/science-files-mobile.png',import.meta.url))});
   await page.setViewportSize({width:980,height:720}); await menu(page);
   await expect(page.getByRole('menuitem',{name:'在文件夹中显示'})).toBeVisible();
-  await page.screenshot({path:new URL('../../artifacts/science-files-desktop.png',import.meta.url).pathname});
+  await page.screenshot({path:fileURLToPath(new URL('../../artifacts/science-files-desktop.png',import.meta.url))});
   expect(errors).toEqual([]);
 });

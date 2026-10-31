@@ -364,8 +364,8 @@ class Bridge:
                 content = base64.b64decode(params.get('bundle', ''), validate=True)
             except (ValueError, TypeError):
                 raise BridgeError('Skill 文件编码无效。') from None
-            if not content or len(content) > 4 * 1024 * 1024:
-                raise BridgeError('Skill 文件必须在 4 MB 以内。')
+            if not content or len(content) > local_skills.MAX_BYTES:
+                raise BridgeError('Skill 文件必须在 256 MB 以内。')
             # Random boundary cannot appear in the encoded transport framing.
             import secrets
             boundary = 'csswitch-' + secrets.token_hex(24)
@@ -470,7 +470,7 @@ def main():
         raise BridgeError('Science 管理操作超时，请刷新后重试。')
     local_skills._platform.deadline(85)
     try:
-        data = json.loads(sys.stdin.read(6 * 1024 * 1024))
+        data = json.loads(sys.stdin.read(local_skills.MAX_REQUEST))
         value = Bridge(data['base'], data['nonce'], data.get('data_dir'), data.get('auth_dir'), data.get('home')).run(data['operation'], data.get('params', {}))
         print(json.dumps({'ok': True, 'value': value}, ensure_ascii=False))
     except BridgeError as e:

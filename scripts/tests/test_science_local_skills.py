@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 spec = importlib.util.spec_from_file_location('local_skills', Path(__file__).parents[1]/'science-local-skills.py')
@@ -112,11 +113,13 @@ class LocalSkillsTests(unittest.TestCase):
                 encoded=self.zip([('fixture/SKILL.md',self.text),(item,b'unsafe')])
                 with self.assertRaises(local.LocalSkillError): local.unpack('fixture.zip',encoded)
 
+    @patch.object(local, 'MAX_BYTES', 1024)
     def test_multi_skill_broken_duplicate_and_oversized_archives_rejected(self):
         cases=[self.zip([('a/SKILL.md',self.text),('b/SKILL.md',self.text)]),self.zip([('fixture/README.md',b'no skill')]),base64.b64encode(b'not a zip').decode(),self.zip([('fixture/SKILL.md',self.text),('fixture/huge',b'x'*(local.MAX_BYTES+1))])]
         for encoded in cases:
             with self.assertRaises(local.LocalSkillError): local.unpack('fixture.zip',encoded)
 
+    @patch.object(local, 'MAX_BYTES', 1024)
     def test_invalid_metadata_and_encoded_file_limits_rejected(self):
         texts=[b'plain markdown',self.text.replace(b'name: local-fixture',b'name: ../escape'),self.text.replace(b'name: local-fixture',b'name: bad_name'),self.text.replace(b'description: Local fixture skill',b'description:'),self.text.replace(b'name: local-fixture',b'name: first\nname: second'),b'\xff']
         for text in texts:

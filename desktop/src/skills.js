@@ -135,7 +135,7 @@ function renderSkillBatchBar(visible) {
   })); icons();
 }
 async function skillFileBundle(file) {
-  if (file.size > 4 * 1024 * 1024) throw new Error('Skill 文件不能超过 4 MB。');
+  if (file.size > 256 * 1024 * 1024) throw new Error('Skill 文件不能超过 256 MB。');
   return { filename: file.name, bundle: await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = () => reject(new Error('无法读取 Skill 文件。')); reader.readAsDataURL(file); }) };
 }
 async function runSkillBatch(items, op, options = {}) {

@@ -234,7 +234,7 @@ jobs:
         run: |
           python -m unittest discover -s test -p "test_*.py"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($suite in @('test_science_compatibility.py', 'test_science_workspace.py', 'test_science_ui_proxy.py', 'test_science_translation.py', 'test_update_manifest.py')) {
+          foreach ($suite in @('test_science_compatibility.py', 'test_science_workspace.py', 'test_science_skills_manage.py', 'test_science_ui_proxy.py', 'test_science_translation.py', 'test_update_manifest.py')) {
             python -m unittest discover -s scripts/tests -p $suite
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }

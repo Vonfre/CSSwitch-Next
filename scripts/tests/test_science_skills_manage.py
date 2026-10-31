@@ -1,13 +1,19 @@
 import base64
+from contextlib import closing
 from email.parser import BytesParser
 from email.policy import default
 import importlib.util
+import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import threading
 import sqlite3
 import tempfile
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 spec = importlib.util.spec_from_file_location('skills_bridge', Path(__file__).parents[1] / 'science-mcp-manage.py')
@@ -65,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         self.authenticated()
         self.server.enabled = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         if self.path.startswith('/api/skills/catalog/'):
-            with sqlite3.connect(self.server.dbpath) as db:
+            with closing(sqlite3.connect(self.server.dbpath)) as db, db:
                 db.execute('INSERT OR REPLACE INTO capability_settings VALUES (?,?,?,?)', ('fixture-user','skill',self.path.split('/')[4],int(self.server.enabled['enabled'])))
         self.respond(200, {})
 
@@ -101,7 +107,7 @@ class SkillsBridgeTests(unittest.TestCase):
         self.server.skills_root = self.data/'orgs/12345678-1234-1234-1234-123456789abc/skills'
         self.server.skills_root.mkdir(parents=True)
         self.server.dbpath = self.server.skills_root.parent/'operon-cli.db'
-        with sqlite3.connect(self.server.dbpath) as db:
+        with closing(sqlite3.connect(self.server.dbpath)) as db, db:
             db.execute('CREATE TABLE capability_settings(user_id TEXT,kind TEXT,key TEXT,enabled INTEGER,PRIMARY KEY(user_id,kind,key))')
         self.server.allowed = True
         self.server.degraded = False
@@ -134,6 +140,62 @@ class SkillsBridgeTests(unittest.TestCase):
         client.run('skills_remove', {'name':'local-fixture'})
         self.assertFalse((self.server.skills_root/'local-fixture').exists())
         self.assertEqual(self.server.attached, [])
+
+    def test_large_repository_skill_survives_library_bridge_install_and_toggle(self):
+        # Reproduce ppt-master's >4 MiB, >13,000-file library through the real
+        # subprocess protocols, including the old 6 MiB JSON input boundary.
+        spec = importlib.util.spec_from_file_location('large_skill_workspace', Path(__file__).parents[1] / 'science-workspace.py')
+        workspace = importlib.util.module_from_spec(spec); spec.loader.exec_module(workspace)
+        home = self.root / 'home'; home.mkdir()
+        config = home / '.csswitch-next'
+        work = workspace.Workspace(home, self.data, config)
+        archive = work.repo_path('fixture/ppt@main')
+        archive.parent.mkdir(parents=True)
+        payload = os.urandom(5 * 1024 * 1024)
+        with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
+            z.writestr('repo/skills/ppt-master/SKILL.md', '---\nname: ppt-master\ndescription: Large template library\n---\n')
+            z.writestr('repo/skills/ppt-master/templates/sound.wav', payload)
+            for i in range(13000): z.writestr(f'repo/skills/ppt-master/templates/icons/{i}.svg', '<svg/>')
+            for path in ['.env.example', '.git/config', 'node_modules/unused.js', '__pycache__/unused.pyc']:
+                z.writestr('repo/skills/ppt-master/' + path, 'not imported')
+        workspace.write_json(work.pref, {'repos': [{'key': 'fixture/ppt@main', 'repo': 'fixture/ppt', 'branch': 'main'}]})
+        key = work.discover()['skills'][0]['key']
+        env = {**os.environ, 'PYTHONIOENCODING': 'utf-8'}
+        def workspace_call(operation, params):
+            request = {'home': str(home), 'data': str(self.data), 'config': str(config), 'operation': operation, 'params': params}
+            result = subprocess.run([sys.executable, str(Path(__file__).parents[1] / 'science-workspace.py')],
+                                    input=json.dumps(request), capture_output=True, encoding='utf-8', env=env, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            reply = json.loads(result.stdout)
+            self.assertTrue(reply['ok'], reply.get('message'))
+            return reply['value']
+        workspace_call('skill_library_import', {'key': key})
+        package = workspace_call('skill_bundle', {'key': 'library:ppt-master'})
+        self.assertGreater(len(package['bundle']), 6 * 1024 * 1024)
+        # File import uses the same larger stdin budget and archive rules.
+        plan = workspace_call('skill_import_plan', package)
+        self.assertEqual([s['name'] for s in plan['skills']], ['ppt-master'])
+        self.server.degraded = True
+        request = {'base': self.server.base, 'nonce': 'fixture-nonce', 'data_dir': str(self.data),
+                   'auth_dir': str(self.auth), 'operation': 'skills_import', 'params': package}
+        result = subprocess.run([sys.executable, str(Path(__file__).parents[1] / 'science-mcp-manage.py')],
+                                input=json.dumps(request), capture_output=True, encoding='utf-8', env=env, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        reply = json.loads(result.stdout)
+        self.assertTrue(reply['ok'], reply.get('message'))
+        installed = self.server.skills_root / 'ppt-master'
+        self.assertEqual(hashlib.sha256((installed / 'templates/sound.wav').read_bytes()).digest(), hashlib.sha256(payload).digest())
+        self.assertEqual(len(list((installed / 'templates/icons').glob('*.svg'))), 13000)
+        self.assertFalse((installed / '.env.example').exists())
+        self.assertEqual(self.server.attached, ['ppt-master'])
+        client = self.local_client()
+        for enabled in (False, True):
+            client.run('skills_enabled', {'name': 'ppt-master', 'enabled': enabled})
+            item = next(s for s in client.run('skills_list', {})['skills'] if s['name'] == 'ppt-master')
+            self.assertEqual(item['enabled'], enabled)
+            self.assertEqual(item['source'], 'csswitch-local')
+        client.run('skills_remove', {'name': 'ppt-master'})
+        self.assertFalse(installed.exists())
 
     def test_local_import_respects_policy_and_missing_native_paths(self):
         self.server.degraded = True

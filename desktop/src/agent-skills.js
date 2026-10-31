@@ -139,8 +139,8 @@ async function runLibraryBatch(items, op) {
   }
   agentLibrary.selected.clear();
   await loadSkills(); skillsState.tab = 'library'; renderSkills();
-  const errors = agentLibrary.report.filter(r => r.status === 'error').length;
-  notice(`${items.length - errors} 项完成${errors ? `，${errors} 项未完成，请查看结果` : ''}。`, Boolean(errors));
+  const failed = agentLibrary.report.filter(r => r.status === 'error');
+  notice(`${items.length - failed.length} 项完成${failed.length ? `，${failed.length} 项未完成：${failed[0].name} · ${failed[0].message}` : ''}。`, Boolean(failed.length));
 }
 function renderLibraryReport() {
   $('#libraryReport').innerHTML = agentLibrary.report.length ? `<details class="workspace-warning" ${agentLibrary.report.some(r => r.status === 'error') ? 'open' : ''}><summary>处理结果 · ${agentLibrary.report.length} 项</summary>${agentLibrary.report.map(r => `<p class="${r.status === 'error' ? 'err' : ''}"><strong>${esc(r.name)}</strong> · ${esc(r.message)}</p>`).join('')}</details>` : '';

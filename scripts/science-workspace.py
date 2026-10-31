@@ -23,13 +23,13 @@ import urllib.error
 import urllib.request
 import zipfile
 
-MAX_BUNDLE = 4 * 1024 * 1024
 REPO_DOWNLOAD_CHUNK = 1024 * 1024
 REPO_DOWNLOAD_SECONDS = 600
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
 _spec = importlib.util.spec_from_file_location('local_skill_files', Path(__file__).with_name('science-local-skills.py'))
 local_skill_files = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(local_skill_files)
+MAX_BUNDLE = local_skill_files.MAX_BYTES
 _agent_spec = importlib.util.spec_from_file_location('agent_skills', Path(__file__).with_name('agent-skills.py'))
 agent_skills = importlib.util.module_from_spec(_agent_spec)
 _agent_spec.loader.exec_module(agent_skills)
@@ -91,7 +91,7 @@ def safe_zip(z, *, repository=False):
     files = z.infolist()
     # Repositories stay compressed on disk. Only bounded SKILL.md files and the
     # selected skill are read; unrelated large files are never decompressed.
-    if not repository and (len(files) > 12000 or sum(f.file_size for f in files) > 64 * 1024 * 1024):
+    if not repository and (len(files) > local_skill_files.MAX_FILES or sum(f.file_size for f in files) > MAX_BUNDLE):
         raise WorkspaceError('仓库解压内容超过限制。')
     for f in files:
         p = PurePosixPath(f.filename)
@@ -102,8 +102,8 @@ def safe_zip(z, *, repository=False):
 
 
 def bundle(files, name):
-    if len(files) > 1000 or sum(len(content) for _, content in files) > MAX_BUNDLE:
-        raise WorkspaceError('Skill 超过 4 MB 或 1000 个文件，请缩小包内容。')
+    if len(files) > local_skill_files.MAX_FILES or sum(len(content) for _, content in files) > MAX_BUNDLE:
+        raise WorkspaceError(local_skill_files.LIMIT_MESSAGE)
     out = io.BytesIO()
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         for rel, content in files:
@@ -345,9 +345,14 @@ class Workspace:
                 prefix = item['directory'] + '/'
                 for f in safe_zip(z, repository=True):
                     if f.filename.startswith(prefix) and not f.is_dir():
-                        total += f.file_size
-                        if total > MAX_BUNDLE: raise WorkspaceError('Skill 超过 4 MB。')
                         rel = f.filename[len(prefix):]
+                        # Match local source imports: do not copy repository
+                        # metadata, hidden environment files or dependencies.
+                        if any(p.startswith('.') or p in ('node_modules', '__pycache__', '__MACOSX') for p in PurePosixPath(rel).parts):
+                            continue
+                        total += f.file_size
+                        if total > MAX_BUNDLE or len(files) >= local_skill_files.MAX_FILES:
+                            raise WorkspaceError(local_skill_files.LIMIT_MESSAGE)
                         files.append((rel, z.read(f)))
                         if (f.external_attr >> 16) & 0o111: executable.append(rel)
         else:
@@ -363,14 +368,12 @@ class Workspace:
                 raise WorkspaceError('请选择 Markdown、ZIP 或 .skill。')
             content = base64.b64decode(encoded, validate=True)
             if not content or len(content) > MAX_BUNDLE:
-                raise WorkspaceError('导入文件不能超过 4 MB。')
+                raise WorkspaceError('导入文件不能超过 256 MB。')
             if Path(filename).suffix.lower() == '.md':
                 name, _, _ = local_skill_files.unpack(filename, encoded)
                 return {'skills': [{'name': name, 'filename': filename, 'bundle': encoded}]}
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
                 entries = safe_zip(archive)
-                if sum(f.file_size for f in entries) > 16 * 1024 * 1024:
-                    raise WorkspaceError('批量技能包解压内容不能超过 16 MB。')
                 roots = sorted({PurePosixPath(f.filename).parent for f in entries
                                 if not f.is_dir() and (f.filename.endswith('/SKILL.md') or f.filename == 'SKILL.md')},
                                key=lambda r: (len(r.parts), str(r)))
@@ -441,7 +444,7 @@ class Workspace:
 def main():
     timer = agent_skills._platform.deadline(55)
     try:
-        data = json.loads(sys.stdin.read(6 * 1024 * 1024))
+        data = json.loads(sys.stdin.read(local_skill_files.MAX_REQUEST))
         if data.get('operation') == 'repo_add':
             timer.cancel()
             # Let the download report its timeout and clean up the partial file

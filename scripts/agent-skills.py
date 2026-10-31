@@ -181,7 +181,7 @@ class Library:
                     if not stat.S_ISREG(info.st_mode): raise self.error('技能包含特殊文件。')
                     total += info.st_size
                     if total > self.local.MAX_BYTES or len(files) >= self.local.MAX_FILES:
-                        raise self.error('Skill 超过 4 MB 或 1000 个文件。')
+                        raise self.error(self.local.LIMIT_MESSAGE)
                     data = stream.read(self.local.MAX_BYTES + 1)
                     if len(data) != info.st_size: raise self.error('技能正在修改，请稍后重试。')
                     files[child.relative_to(path).as_posix()] = data
@@ -263,12 +263,12 @@ class Library:
         # Agent libraries allow valid directory names beyond Science's stricter
         # lowercase name schema. Science validates again when installing there.
         raw = base64.b64decode(package['bundle'], validate=True)
-        if len(raw) > self.local.MAX_BYTES: raise self.error('技能包超过 4 MB。')
+        if len(raw) > self.local.MAX_BYTES: raise self.error(self.local.LIMIT_MESSAGE)
         files = {}
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             entries = archive.infolist()
             if len(entries) > self.local.MAX_FILES or sum(e.file_size for e in entries) > self.local.MAX_BYTES:
-                raise self.error('Skill 超过 4 MB 或 1000 个文件。')
+                raise self.error(self.local.LIMIT_MESSAGE)
             prefixes = set()
             for entry in entries:
                 parts = entry.filename.split('/')

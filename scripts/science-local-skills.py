@@ -23,8 +23,12 @@ import tempfile
 from contextlib import contextmanager, closing
 import zipfile
 
-MAX_BYTES = 4 * 1024 * 1024
-MAX_FILES = 1000
+# Shared by repository packaging, the library and the Science bridge. Large
+# template/icon libraries must survive every stage, including installed reads.
+MAX_BYTES = 256 * 1024 * 1024
+MAX_FILES = 50000
+MAX_REQUEST = ((MAX_BYTES + 2) // 3) * 4 + 16 * 1024 * 1024
+LIMIT_MESSAGE = 'Skill 不能超过 256 MB 或 50000 个文件。'
 NAME = re.compile(r'[a-z0-9][a-z0-9-]{0,63}\Z')
 UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z')
 MARKER = '.csswitch-local.json'
@@ -108,7 +112,7 @@ def unpack(filename, encoded):
     except (ValueError, TypeError):
         raise LocalSkillError('Skill 文件编码无效。') from None
     if not content or len(content) > MAX_BYTES:
-        raise LocalSkillError('Skill 文件必须在 4 MB 以内。')
+        raise LocalSkillError('Skill 文件必须在 256 MB 以内。')
     if suffix == '.md':
         name, description = metadata(content)
         return name, description, {'SKILL.md': content}
@@ -116,7 +120,7 @@ def unpack(filename, encoded):
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             entries = archive.infolist()
             if len(entries) > MAX_FILES or sum(f.file_size for f in entries) > MAX_BYTES:
-                raise LocalSkillError('Skill 解压内容不能超过 4 MB 或 1000 个文件。')
+                raise LocalSkillError(LIMIT_MESSAGE)
             for entry in entries:
                 path = PurePosixPath(entry.filename)
                 mode = entry.external_attr >> 16

@@ -1,6 +1,6 @@
 # CSSwitch Next
 
-一个用于 Claude Science 的 macOS 第三方 API 管理与切换工具。
+一个用于 Claude Science 的 macOS / Windows 第三方 API 管理与切换工具。
 
 - 自行添加 API 提供商，管理连接和密钥。
 - 自动获取 API 可选模型，配置 Sonnet（默认）和 Opus（质量）映射，分别选择协议并测试连接。
@@ -19,8 +19,8 @@
 - Science 页面汉化支持本地词库、Edge 自动翻译和 AI 自动翻译；动态发现新界面文案并缓存，保留对话正文。
 - 在应用内检查、下载并安装更新。
 
-[下载 DMG 安装包](https://github.com/Vonfre/CSSwitch-Next/releases/latest)
+[下载 macOS / Windows 安装包](https://github.com/Vonfre/CSSwitch-Next/releases/latest)
 
-[管理工作空间使用说明](docs/MANAGEMENT.md) · [汉化与翻译方式](docs/TRANSLATION.md)
+[Windows 安装与构建](docs/WINDOWS.md) · [管理工作空间使用说明](docs/MANAGEMENT.md) · [汉化与翻译方式](docs/TRANSLATION.md)
 
 [本机优化与后续规划（Science 0.1.67）](docs/ROADMAP-0.9.md)

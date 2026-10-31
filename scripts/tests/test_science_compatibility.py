@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
@@ -19,6 +20,8 @@ class CompatibilityTests(unittest.TestCase):
         self.home = Path(self.tmp.name)
         self.binary = self.home / 'claude-science'
         self.binary.touch(); self.binary.chmod(0o700)
+        self.node = self.home / 'node.exe'
+        self.node.touch(); self.node.chmod(0o700)
         self.bundle = self.home / 'Info.plist'
         self.bundle.write_bytes(plistlib.dumps({'CFBundleShortVersionString': '0.1.25'}))
         self.runtime = self.home / '.claude-science/runtime/0.1.67-release'
@@ -29,7 +32,7 @@ class CompatibilityTests(unittest.TestCase):
         for key in profiles.NAMES:
             p = self.runtime / f'mcp-servers/bio-tools/lib/mcp_{key.replace("-", "_")}/server.py'
             p.parent.mkdir(parents=True, exist_ok=True); p.touch()
-        p = self.home / '.claude-science/conda/envs/claude-science-mcp/bin/python'
+        p = self.home / ('.claude-science/conda/envs/claude-science-mcp/python.exe' if __import__('os').name == 'nt' else '.claude-science/conda/envs/claude-science-mcp/bin/python')
         p.parent.mkdir(parents=True); p.touch()
 
     def runner(self, command):
@@ -37,7 +40,7 @@ class CompatibilityTests(unittest.TestCase):
         return 'claude-science 0.1.67 (release, public)' if command[0] == str(self.binary) else 'v22.12.0'
 
     def inspect(self, runner=None):
-        return compat.inspect(self.home, self.binary, '/usr/bin/true', self.bundle, runner or self.runner)
+        return compat.inspect(self.home, self.binary, str(self.node), self.bundle, runner or self.runner)
 
     def test_actual_version_takes_precedence_and_inspection_does_not_write(self):
         before = {p: p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
@@ -95,6 +98,18 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(result['status'], 'warning')
         self.assertNotIn('private-token-value', json.dumps(result))
         self.assertNotIn('/Users/private', json.dumps(result))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows installed executable')
+    def test_windows_installed_version_is_distinct_from_updated_binary(self):
+        installed = self.home / 'Programs/ClaudeScience/claude-science.exe'
+        installed.parent.mkdir(parents=True)
+        installed.touch()
+        def runner(command):
+            return '0.1.25' if command[0] == str(installed) else self.runner(command)
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.home)}):
+            result = compat.inspect(self.home, self.binary, str(self.node), runner=runner)
+        self.assertEqual(result['science_version'], '0.1.67')
+        self.assertEqual(result['bundle_version'], '0.1.25')
 
     def test_timeout_and_command_failure_return_no_raw_output(self):
         with patch.object(compat.subprocess, 'run', side_effect=subprocess.TimeoutExpired('probe', 5)):

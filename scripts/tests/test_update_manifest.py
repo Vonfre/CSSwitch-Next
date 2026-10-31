@@ -21,10 +21,15 @@ class ManifestTests(unittest.TestCase):
                 (self.assets / f'CSSwitch-Next-0.5.0-{arch}.{suffix}').write_bytes(b'fixture')
             (self.assets / f'CSSwitch-Next-0.5.0-{arch}.app.tar.gz.sig').write_text(base64.b64encode(b'untrusted comment: fixture\ntrusted comment: timestamp:0\tversion:0.5.0\n').decode())
 
+        for suffix in ('-setup.exe', '.zip'):
+            (self.assets / f'CSSwitch-Next-0.5.0-windows-x64{suffix}').write_bytes(b'fixture')
+        (self.assets / 'CSSwitch-Next-0.5.0-windows-x64-setup.exe.sig').write_text(base64.b64encode(b'untrusted comment: fixture\ntrusted comment: timestamp:0\tversion:0.5.0\n').decode())
+
     def test_architecture_mapping_and_release_urls(self):
         data = manifest.generate(ROOT, self.assets, '0.5.0', 'Vonfre/CSSwitch-Next', verify=False)
-        self.assertEqual(set(data['platforms']), {'darwin-aarch64', 'darwin-x86_64'})
+        self.assertEqual(set(data['platforms']), {'darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'})
         self.assertTrue(data['platforms']['darwin-aarch64']['url'].endswith('/v0.5.0/CSSwitch-Next-0.5.0-arm64.app.tar.gz'))
+        self.assertTrue(data['platforms']['windows-x86_64']['url'].endswith('/v0.5.0/CSSwitch-Next-0.5.0-windows-x64-setup.exe'))
         self.assertIn('应用内更新', data['notes'])
         json.loads(json.dumps(data))
 
@@ -39,3 +44,13 @@ class ManifestTests(unittest.TestCase):
             manifest.generate(ROOT, self.assets, '0.5.0', 'Vonfre/CSSwitch-Next', verify=False)
         with self.assertRaises(ValueError):
             manifest.generate(ROOT, self.assets, '../unsafe', 'Vonfre/CSSwitch-Next', verify=False)
+
+    def test_windows_portable_and_version_bound_signature_are_required(self):
+        portable = self.assets / 'CSSwitch-Next-0.5.0-windows-x64.zip'
+        portable.unlink()
+        with self.assertRaisesRegex(ValueError, 'Missing installer'):
+            manifest.generate(ROOT, self.assets, '0.5.0', 'Vonfre/CSSwitch-Next', verify=False)
+        portable.write_bytes(b'fixture')
+        (self.assets / 'CSSwitch-Next-0.5.0-windows-x64-setup.exe.sig').write_text(base64.b64encode(b'untrusted comment: fixture\ntrusted comment: timestamp:0\tversion:0.4.0\n').decode())
+        with self.assertRaisesRegex(ValueError, 'not bound to release version'):
+            manifest.generate(ROOT, self.assets, '0.5.0', 'Vonfre/CSSwitch-Next', verify=False)

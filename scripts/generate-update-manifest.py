@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify both architecture signatures and generate the Tauri static updater manifest."""
+"""Verify all platform signatures and generate the Tauri static updater manifest."""
 import argparse
 import base64
 from datetime import datetime, timezone
@@ -29,12 +29,12 @@ def generate(root, assets, version, repo, verify=True):
     with tempfile.TemporaryDirectory() as temp:
         public = Path(temp) / "public.key"
         public.write_bytes(pubkey)
-        for arch, target in (("arm64", "darwin-aarch64"), ("x64", "darwin-x86_64")):
-            name = f"CSSwitch-Next-{version}-{arch}.app.tar.gz"
+        for arch, target in (("arm64", "darwin-aarch64"), ("x64", "darwin-x86_64"), ("windows-x64", "windows-x86_64")):
+            name = f"CSSwitch-Next-{version}-{arch}" + ("-setup.exe" if target.startswith("windows") else ".app.tar.gz")
             archive = assets / name
             if not archive.is_file() or not archive.stat().st_size:
                 raise ValueError(f"Missing updater archive: {name}")
-            for suffix in ("dmg", "app.zip"):
+            for suffix in (("zip",) if target.startswith("windows") else ("dmg", "app.zip")):
                 file = assets / f"CSSwitch-Next-{version}-{arch}.{suffix}"
                 if not file.is_file() or not file.stat().st_size:
                     raise ValueError(f"Missing installer: {file.name}")

@@ -2,6 +2,8 @@
 
 Tauri 2 + 原生 HTML/CSS/JavaScript。运行方式、依赖、协议范围与验证说明见 [项目 README](../README.md)。
 
+支持 macOS 与 Windows x64。Windows 开发前先在仓库根目录运行 `python scripts/prepare-windows-runtime.py`，随后使用 `npm run build:windows`。运行库、NSIS 安装包、便携包与测试说明见 [Windows 构建指南](../docs/WINDOWS.md)。
+
 ```bash
 npm ci
 npm run prepare:assets

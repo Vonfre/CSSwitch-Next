@@ -1,3 +1,6 @@
+#ifndef AppVersion
+  #error AppVersion must match desktop/package.json.
+#endif
 #ifndef AppSource
   #error AppSource must point to the prepared portable directory.
 #endif
@@ -5,7 +8,7 @@
 [Setup]
 AppId=com.csswitch.next.windows
 AppName=CSSwitch Next
-AppVersion=0.8.7
+AppVersion={#AppVersion}
 AppPublisher=Vonfre
 AppPublisherURL=https://github.com/Vonfre/CSSwitch-Next
 DefaultDirName={localappdata}\Programs\CSSwitch Next
@@ -13,7 +16,7 @@ DefaultGroupName=CSSwitch Next
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-OutputBaseFilename=CSSwitch-Next-0.8.7-windows-x64-setup
+OutputBaseFilename=CSSwitch-Next-{#AppVersion}-windows-x64-setup
 Compression=lzma2/fast
 SolidCompression=yes
 WizardStyle=modern

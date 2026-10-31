@@ -3,7 +3,7 @@
     "targets": [
       "nsis"
     ],
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "windows": {
       "nsis": {
         "installMode": "currentUser",
@@ -13,6 +13,10 @@
         ],
         "displayLanguageSelector": true
       }
+    },
+    "resources": {
+      "../../.runtime/python": "runtime/python",
+      "../../.runtime/node": "runtime/node"
     }
   }
 }

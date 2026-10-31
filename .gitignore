@@ -38,3 +38,7 @@ findings/auto-maint/*
 
 # Generated standalone MCP bundle (built before Tauri dev/build)
 scripts/openscience-mcp/server.mjs
+
+# Downloaded Windows runtimes and release packages
+.runtime/
+release-assets/

@@ -18,7 +18,8 @@ def output(command):
     # Discard arbitrary stderr; return only parsed versions/capabilities to the UI.
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                                text=True, timeout=5, check=False)
+                                text=True, encoding="utf-8", errors="replace", timeout=5, check=False,
+                                creationflags=0x08000000 if os.name == "nt" else 0)
         return result.stdout[:65536] if result.returncode == 0 else ''
     except (OSError, subprocess.TimeoutExpired, UnicodeError):
         return ''
@@ -40,6 +41,9 @@ def inspect(home, binary, node=None, bundle=None, runner=output):
     actual = version(runner([str(binary), '--version'])) if executable else None
     bundled = None
     try:
+        if os.name == 'nt' and bundle is None:
+            installed = Path(os.environ.get('LOCALAPPDATA', home / 'AppData/Local')) / 'Programs/ClaudeScience/claude-science.exe'
+            bundled = version(runner([str(installed), '--version'])) if installed.is_file() else None
         with Path(bundle or '/Applications/Claude Science.app/Contents/Info.plist').open('rb') as f:
             bundled = version(str(plistlib.load(f).get('CFBundleShortVersionString', '')))
     except (OSError, ValueError, plistlib.InvalidFileException):

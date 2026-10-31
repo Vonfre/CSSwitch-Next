@@ -5,7 +5,7 @@ async function fixture(page, running = false) {
   await page.addInitScript(({ running }) => {
     window.testCalls = []; window.removedListeners = 0;
     window.compatReport = {
-      checked_at: '2026-10-20T02:00:00Z', baseline: '0.1.67', science_version: '0.1.67', bundle_version: '0.1.25',
+      checked_at: '2026-10-20T02:00:00Z', science_version: '0.1.67', bundle_version: '0.1.25',
       runtime_version: '0.1.67', binary: '/Users/private/.claude-science/bin/claude-science', runtime_path: '/Users/private/runtime',
       available_profiles: 24, total_profiles: 24, status: 'pass',
       checks: [
@@ -60,6 +60,29 @@ test('shows actual and bundle versions, exports only safe fields, refreshes chec
   await expect(page.locator('.compat-issues')).toBeVisible();
   await expect(page.locator('.compat-details')).not.toHaveAttribute('open');
   expect(await page.evaluate(() => window.testCalls.some(c => ['one_click_login', 'stop_all', 'mcp_manage'].includes(c)))).toBe(false);
+});
+
+test('local versions refresh after an update on re-entry and window return', async ({ page }) => {
+  await fixture(page); await page.goto('/');
+  await page.locator('[data-view="settings"]').click();
+  await expect(page.locator('.compat-versions')).toContainText('0.1.67');
+  await page.evaluate(() => {
+    window.compatReport.science_version = '0.1.99';
+    window.compatReport.runtime_version = '0.1.99';
+    window.compatReport.checks = [{ id: 'binary', label: '实际启动版本', status: 'pass', detail: 'Claude Science 0.1.99', action: '' }];
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect(page.locator('.compat-versions')).toContainText('0.1.99');
+  await expect(page.locator('.compat-versions')).not.toContainText('0.1.67');
+  await expect(page.locator('.compat-versions')).toContainText('0.1.25');
+  await page.locator('[data-view="workbench"]').click();
+  await page.evaluate(() => { window.compatReport.bundle_version = '0.1.99'; });
+  await page.locator('[data-view="settings"]').click();
+  await expect(page.locator('.compat-versions')).not.toContainText('0.1.25');
+  const pending = page.waitForEvent('download'); await page.locator('#exportCompatibility').click();
+  const report = JSON.parse(readFileSync(await (await pending).path(), 'utf8'));
+  expect(report.science_version).toBe('0.1.99');
+  expect(report).not.toHaveProperty('baseline');
 });
 
 test('check failure has retry and successful recovery; narrow dark layout stays within viewport', async ({ page }) => {

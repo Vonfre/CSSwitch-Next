@@ -51,7 +51,6 @@ async function fixture(page) {
 async function edit(page, name = 'DeepSeek') {
   await page.getByRole('button', { name: `编辑 ${name}`, exact: true }).click();
 }
-async function tab(page, name) { await page.getByRole('tab', { name, exact: true }).click(); }
 async function chooseModel(page, role, query, id) {
   await page.getByRole('button', { name: `选择${role}`, exact: true }).click();
   await page.locator('#modelSearch').fill(query);
@@ -65,15 +64,17 @@ test('add from preset, pick models, test an unsaved draft, save and activate', a
   await page.locator('#presetSearch').fill('openai');
   await page.locator('[data-preset="openai"]').click();
   await expect(page.locator('#base_url')).toHaveValue('https://api.openai.com/v1');
+  await expect(page.locator('#providerDialog [role=tab]')).toHaveCount(0);
+  for (const id of ['pane-connection', 'pane-models', 'pane-test']) await expect(page.locator('#' + id)).toBeVisible();
   await page.locator('#name').fill('我的 Responses API');
   await page.locator('#key').fill('test-only-key-1234');
-  await tab(page, '模型');
+
   await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
   await expect(page.locator('#catalogStatus')).toContainText('3 个可选模型');
   await chooseModel(page, '默认模型', 'GPT', 'gpt-6.1-sol');
   await chooseModel(page, '质量模型', 'Sonnet', 'claude-sonnet');
   await page.locator('#quality_model').fill('custom-quality');
-  await tab(page, '测试');
+
   await page.getByRole('button', { name: '测试连接', exact: true }).click();
   await expect(page.locator('#verification')).toContainText('测试通过');
   const before = await page.evaluate(() => window.testCalls);
@@ -87,24 +88,29 @@ test('add from preset, pick models, test an unsaved draft, save and activate', a
   await expect(page.locator('#confirmBody')).toContainText('原有对话记录');
   await page.getByRole('button', { name: '确认', exact: true }).click();
   await expect(page.locator('#runtimeSection')).toContainText('运行中');
+  await expect(page.getByRole('button', { name: '停止服务', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: '停止服务', exact: true }).click();
+  await expect(page.locator('#confirmTitle')).toHaveText('停止 Science？');
+  await page.getByRole('button', { name: '确认', exact: true }).click();
+  await expect(page.locator('#runtimeSection')).toContainText('未启动');
   await expect(page.locator('body')).not.toContainText('test-only-key-1234');
   expect(errors).toEqual([]);
 });
 
-test('modal tabs retain drafts, Escape guards edits and saved test state is invalidated', async ({ page }) => {
+test('single-page sections retain drafts, Escape guards edits and saved test state is invalidated', async ({ page }) => {
   await fixture(page); await page.goto('/'); await edit(page);
   await page.locator('#name').fill('未保存修改');
   await page.locator('#key').fill('temporary-test-key');
-  await tab(page, '模型'); await page.locator('#model').fill('draft-model');
-  await tab(page, '连接'); await expect(page.locator('#name')).toHaveValue('未保存修改');
+  await page.locator('#model').fill('draft-model');
+  await expect(page.locator('#name')).toHaveValue('未保存修改');
   await page.keyboard.press('Escape');
   await expect(page.locator('#confirmDialog')).toBeVisible();
   await page.getByRole('button', { name: '取消', exact: true }).last().click();
   await expect(page.locator('#name')).toHaveValue('未保存修改');
-  await tab(page, '测试'); await page.getByRole('button', { name: '测试连接', exact: true }).click();
+  await page.getByRole('button', { name: '测试连接', exact: true }).click();
   await expect(page.locator('#verification')).toContainText('测试通过');
-  await tab(page, '模型'); await page.locator('#model').fill('changed-model');
-  await tab(page, '测试'); await expect(page.locator('#verification')).toContainText('尚未测试');
+  await page.locator('#model').fill('changed-model');
+  await expect(page.locator('#verification')).toContainText('尚未测试');
   await page.getByRole('button', { name: '关闭配置', exact: true }).click();
   await page.getByRole('button', { name: '确认', exact: true }).click();
   await edit(page); await expect(page.locator('#name')).toHaveValue('DeepSeek');
@@ -157,13 +163,13 @@ test('copy config excludes credentials; delete protection and key clearing', asy
 test('catalog failures, stale queries, endpoint changes and custom models keep the draft', async ({ page }) => {
   await fixture(page); await page.goto('/'); await edit(page);
   await page.locator('#name').fill('保留的修改'); await page.locator('#key').fill('invalid-test-key');
-  await tab(page, '模型'); await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
+  await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
   await expect(page.locator('#catalogStatus')).toContainText('未授权'); await expect(page.locator('#model')).toHaveValue('deepseek-v4-pro');
-  await tab(page, '连接'); await page.locator('#key').fill('valid-test-key');
+  await page.locator('#key').fill('valid-test-key');
   await page.evaluate(() => { window.catalogDelay = 450; });
-  await tab(page, '模型'); await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
-  await tab(page, '连接'); await page.locator('#base_url').fill('https://other.example.com/v1');
-  await tab(page, '模型'); await page.waitForTimeout(550);
+  await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
+  await page.locator('#base_url').fill('https://other.example.com/v1');
+  await page.waitForTimeout(550);
   await expect(page.locator('#catalogStatus')).not.toContainText('已获取');
   await expect(page.locator('#model')).toHaveValue('deepseek-v4-pro');
   await page.getByRole('button', { name: '获取模型列表', exact: true }).click(); await expect(page.locator('#catalogStatus')).toContainText('已获取');
@@ -183,7 +189,7 @@ test('catalog failures, stale queries, endpoint changes and custom models keep t
 
 test('saved credentials auto-fetch once and model picker handles empty search safely', async ({ page }) => {
   await fixture(page); await page.goto('/'); await edit(page, 'GPT');
-  await tab(page, '模型'); await expect(page.locator('#catalogStatus')).toContainText('3 个可选模型');
+  await expect(page.locator('#catalogStatus')).toContainText('3 个可选模型');
   await page.getByRole('button', { name: '选择默认模型', exact: true }).click();
   await page.locator('#modelSearch').fill('no-match'); await expect(page.locator('#modelOptions')).toContainText('没有匹配');
   await page.keyboard.press('Escape'); await expect(page.locator('#modelDialog')).not.toBeVisible();
@@ -192,13 +198,13 @@ test('saved credentials auto-fetch once and model picker handles empty search sa
   expect(await page.evaluate(() => window.testCalls.filter((c) => c.cmd === 'list_models').length)).toBe(1);
 });
 
-test('validation moves to the invalid tab and tests neither save nor activate', async ({ page }) => {
+test('validation focuses the invalid field and tests neither save nor activate', async ({ page }) => {
   await fixture(page); await page.goto('/');
   await page.getByRole('button', { name: '添加提供商', exact: true }).click(); await page.locator('[data-preset="openai"]').click();
   await page.locator('#key').fill('test-key');
   await page.getByRole('button', { name: '保存连接', exact: true }).click();
-  await expect(page.getByRole('tab', { name: '模型', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await page.locator('#model').fill('unsaved-model'); await tab(page, '测试');
+  await expect(page.locator('#model')).toBeFocused();
+  await page.locator('#model').fill('unsaved-model');
   await page.evaluate(() => { window.testFail = true; window.testDelay = 350; });
   await page.getByRole('button', { name: '测试连接', exact: true }).click();
   await expect(page.locator('#verification')).toContainText('正在测试');
@@ -238,8 +244,10 @@ test('overview, forms and picker fit desktop and mobile, with dark mode and visi
     expect(await page.locator('.brand img').evaluate((img) => img.naturalWidth)).toBeGreaterThan(0);
     expect(await page.locator('svg.lucide').count()).toBeGreaterThan(15);
     await page.screenshot({ path: `../artifacts/screenshots/providers-${width}.png`, fullPage: true });
-    await edit(page, 'GPT'); await tab(page, '模型'); await expect(page.locator('#catalogStatus')).toContainText('已获取');
+    await edit(page, 'GPT'); await expect(page.locator('#catalogStatus')).toContainText('已获取');
     await page.screenshot({ path: `../artifacts/screenshots/provider-editor-${width}.png`, animations: 'disabled' });
+    expect(await page.locator('.provider-sections').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    await expect(page.getByRole('button', { name: '保存连接', exact: true })).toBeInViewport();
     await page.getByRole('button', { name: '选择默认模型', exact: true }).click();
     await page.locator('#modelSearch').fill('vendor');
     const boxes = await page.locator('#modelDialog, #modelOptions button').evaluateAll((es) => es.map((e) => ({ left: e.getBoundingClientRect().left, right: e.getBoundingClientRect().right, top: e.getBoundingClientRect().top, bottom: e.getBoundingClientRect().bottom })));
@@ -288,7 +296,7 @@ test('active connection deletion is protected only while the gateway runs', asyn
   await expect(page.locator('#runtimeSection')).toContainText('运行中');
   await page.locator('[aria-label="更多操作 GPT"]').click();
   await expect(page.getByRole('button', { name: '删除连接', exact: true }).filter({ visible: true })).toBeDisabled();
-  await page.getByRole('button', { name: '停止网关与 Science', exact: true }).click();
+  await page.getByRole('button', { name: '停止服务', exact: true }).click();
   await page.getByRole('button', { name: '确认', exact: true }).click();
   await expect(page.locator('#runtimeSection')).toContainText('未启动');
   await page.locator('[aria-label="更多操作 GPT"]').click();
@@ -298,7 +306,7 @@ test('active connection deletion is protected only while the gateway runs', asyn
 
 test('two mappings support mixed protocols and inherit the default when empty', async ({ page }) => {
   await fixture(page); await page.goto('/'); await edit(page, 'GPT');
-  await tab(page, '模型');
+
   await expect(page.locator('#fast_model, #fast_protocol')).toHaveCount(0);
   await expect(page.locator('.route-field')).toHaveCount(2);
   await expect(page.locator('#quality_protocol')).toBeDisabled();
@@ -307,7 +315,7 @@ test('two mappings support mixed protocols and inherit the default when empty', 
   await page.getByRole('button', { name: '选择质量模型', exact: true }).click();
   await expect.poll(async () => (await page.evaluate(() => window.testCalls.filter(c => c.cmd === 'list_models').at(-1)))?.args.query.model_protocol).toBe('anthropic');
   await page.locator('#closeModels').click();
-  await tab(page, '测试');
+
   await expect(page.locator('#test_role option')).toHaveCount(2);
   await page.locator('#test_role').selectOption('quality');
   await expect(page.locator('#testModel')).toHaveText('claude-sonnet-5-5');
@@ -322,14 +330,14 @@ test('two mappings support mixed protocols and inherit the default when empty', 
   await expect(page.locator('#testProtocol')).toHaveText('OpenAI Responses');
   await expect(page.locator('#verification')).not.toContainText('测试通过');
   await page.getByRole('button', { name: '保存连接', exact: true }).click();
-  await edit(page, 'GPT'); await tab(page, '模型');
+  await edit(page, 'GPT');
   await expect(page.locator('#quality_protocol')).toHaveValue('anthropic');
   await page.locator('#quality_model').fill('');
   await expect(page.locator('#quality_protocol')).toBeDisabled();
-  await tab(page, '测试'); await page.locator('#test_role').selectOption('quality');
+  await page.locator('#test_role').selectOption('quality');
   await expect(page.locator('#testModel')).toHaveText('gpt-6.1-sol');
   await expect(page.locator('#testProtocol')).toHaveText('OpenAI Responses');
-  await tab(page, '模型'); await page.locator('#quality_model').fill('claude-sonnet-5-5');
+  await page.locator('#quality_model').fill('claude-sonnet-5-5');
   mkdirSync('../artifacts', { recursive: true });
   await page.screenshot({ path: '../artifacts/two-model-mappings.png' });
 });

@@ -62,14 +62,14 @@ async function testSaved(id) {
 
 function openEditor(id) {
   if (state.busy) return;
-  state.selected = id; state.draft = null; state.dirty = false; state.draftTest = null; state.editorTab = 'connection';
+  state.selected = id; state.draft = null; state.dirty = false; state.draftTest = null;
   renderEditor(); $('#providerDialog').showModal();
 }
 
 function newDraft(profile) {
   state.selected = `api-${crypto.randomUUID()}`;
   state.draft = { ...profile, id: state.selected, quality_model: profile.quality_model || '', max_tokens: profile.max_tokens || 8192, has_key: false };
-  state.preset = 'custom'; state.dirty = false; state.draftTest = null; state.editorTab = 'connection';
+  state.preset = 'custom'; state.dirty = false; state.draftTest = null;
   renderEditor(); if (!$('#providerDialog').open) $('#providerDialog').showModal();
 }
 
@@ -93,15 +93,7 @@ async function closeEditor() {
   $('#editor').innerHTML = '';
 }
 
-function setEditorTab(tab) {
-  state.editorTab = tab;
-  document.querySelectorAll('[data-editor-tab]').forEach((b) => { b.classList.toggle('active', b.dataset.editorTab === tab); b.setAttribute('aria-selected', b.dataset.editorTab === tab); b.tabIndex = b.dataset.editorTab === tab ? 0 : -1; });
-  document.querySelectorAll('[data-pane]').forEach((pane) => pane.hidden = pane.dataset.pane !== tab);
-}
-
 function validEditor() {
-  const invalid = $('#connectionForm').querySelector(':invalid');
-  if (invalid) setEditorTab(invalid.closest('[data-pane]')?.dataset.pane || 'connection');
   return $('#connectionForm').reportValidity();
 }
 
@@ -111,11 +103,10 @@ function renderEditor() {
   $('#editor').innerHTML = `<div class="dialog-heading"><div><span class="eyebrow">${isNew ? 'NEW PROVIDER' : 'PROVIDER SETTINGS'}</span><h2 id="providerTitle">${isNew ? '配置提供商' : esc(p.name)}</h2></div><div class="actions"><span class="badge" id="draftBadge" hidden>未保存</span><button class="icon-btn" id="closeEditor" title="关闭配置" aria-label="关闭配置">${icon('x')}</button></div></div>
     <div id="editorNotice" class="notice error" role="status" hidden></div>
     ${isNew ? `<div class="preset-bar">${icon('blocks')}<span id="presetName">${esc(templates[state.preset]?.name || '自定义 API')}</span><button type="button" class="icon-btn" id="changePreset" title="更换服务商模板" aria-label="更换服务商模板">${icon('arrow-right-left')}</button></div>` : ''}
-    <div class="editor-tabs" role="tablist" aria-label="提供商配置"><button type="button" role="tab" id="tab-connection" aria-controls="pane-connection" data-editor-tab="connection">${icon('plug')}连接</button><button type="button" role="tab" id="tab-models" aria-controls="pane-models" data-editor-tab="models">${icon('cpu')}模型</button><button type="button" role="tab" id="tab-test" aria-controls="pane-test" data-editor-tab="test">${icon('activity')}测试</button></div>
-    <form id="connectionForm"><div class="editor-body">
-      <section id="pane-connection" data-pane="connection" role="tabpanel" aria-labelledby="tab-connection"><div class="form-section-heading"><h3>连接信息</h3><span class="subtle">${esc(protocolNames[p.protocol])}</span></div><div class="form-grid"><div class="field"><label for="name">连接名称</label><input id="name" name="name" value="${esc(p.name)}" required maxlength="80" placeholder="我的 API" /></div><div class="field"><label for="protocol">API 协议</label><select id="protocol" name="protocol">${Object.entries(protocolNames).map(([v, n]) => `<option value="${v}" ${v === p.protocol ? 'selected' : ''}>${n}</option>`).join('')}</select></div><div class="field wide"><label for="base_url">API 地址</label><input type="url" id="base_url" name="base_url" value="${esc(p.base_url)}" required placeholder="https://api.example.com/v1" spellcheck="false" /></div><div class="field wide"><div class="model-heading"><label for="key">API Key</label>${p.has_key ? '<span class="key-state">'+icon('shield-check')+'已保存</span>' : ''}</div><div class="secret-input"><input id="key" name="key" type="password" placeholder="${p.has_key ? '保留已保存的密钥' : '填写 API Key'}" autocomplete="off" spellcheck="false" /><button type="button" class="icon-btn" id="showKeyBtn" title="显示或隐藏输入的密钥" aria-label="显示或隐藏输入的密钥">${icon('eye')}</button></div></div></div></section>
-      <section id="pane-models" data-pane="models" role="tabpanel" aria-labelledby="tab-models"><div class="form-section-heading"><h3>模型映射 ${help('自动模型映射', '自动读取 Science 的原生模型名称：Sonnet 对应默认模型，Opus 对应质量模型。实际 API 模型和协议统一在此设置，保存后后续请求立即生效。Science 保留原生模型选择；以前在网页中单独选择的模型也跟随这里的映射。')}</h3><button type="button" class="btn" id="fetchModelsBtn" title="获取模型列表" aria-label="获取模型列表">${icon('refresh-cw')}获取模型</button></div><div id="catalogStatus" class="catalog-status" role="status"></div><div class="model-routing">${Object.entries(modelLabels).map(([id, label], i) => `<div class="route-field"><div><label for="${id}">${label}</label><span class="route-alias">${['Sonnet', 'Opus'][i]}</span>${id === 'model' ? '' : modelProtocolControl(id, p)}</div>${modelControl(id, p[id], id === 'model')}</div>`).join('')}</div><div class="field token-field"><label for="max_tokens">最大输出 Tokens</label><input type="number" id="max_tokens" name="max_tokens" min="1" max="1000000" value="${p.max_tokens || 8192}" required /></div></section>
-      <section id="pane-test" data-pane="test" role="tabpanel" aria-labelledby="tab-test"><div class="form-section-heading"><h3>模型调用测试</h3><span class="badge">最小请求</span></div><div class="field test-role-field"><label for="test_role">测试档位</label><select id="test_role" name="test_role"><option value="default">默认模型 · Sonnet</option><option value="quality">质量模型 · Opus</option></select></div><div class="test-target"><span>测试地址</span><code id="testEndpoint"></code><span>测试模型</span><code id="testModel"></code><span>API 协议</span><code id="testProtocol"></code></div><div class="verification" id="verification" role="status"></div><div class="test-footer"><button type="button" class="btn" id="verifyBtn">${icon('activity')}测试连接</button><span class="subtle">可能产生少量 API 费用</span></div></section>
+    <form id="connectionForm"><div class="editor-body provider-sections">
+      <section id="pane-connection" class="provider-section" aria-labelledby="connectionHeading"><div class="form-section-heading"><h3 id="connectionHeading">${icon('plug')}连接信息</h3><span class="section-caption">API 访问配置</span></div><div class="form-grid"><div class="field"><label for="name">连接名称</label><input id="name" name="name" value="${esc(p.name)}" required maxlength="80" placeholder="我的 API" /></div><div class="field"><label for="protocol">API 协议</label><select id="protocol" name="protocol">${Object.entries(protocolNames).map(([v, n]) => `<option value="${v}" ${v === p.protocol ? 'selected' : ''}>${n}</option>`).join('')}</select></div><div class="field wide"><label for="base_url">API 地址</label><input type="url" id="base_url" name="base_url" value="${esc(p.base_url)}" required placeholder="https://api.example.com/v1" spellcheck="false" /></div><div class="field wide"><div class="model-heading"><label for="key">API Key</label>${p.has_key ? '<span class="key-state">'+icon('shield-check')+'已保存</span>' : ''}</div><div class="secret-input"><input id="key" name="key" type="password" placeholder="${p.has_key ? '保留已保存的密钥' : '填写 API Key'}" autocomplete="off" spellcheck="false" /><button type="button" class="icon-btn" id="showKeyBtn" title="显示或隐藏输入的密钥" aria-label="显示或隐藏输入的密钥">${icon('eye')}</button></div></div></div></section>
+      <section id="pane-models" class="provider-section" aria-labelledby="modelsHeading"><div class="form-section-heading"><h3 id="modelsHeading">${icon('cpu')}模型映射 ${help('自动模型映射', '自动读取 Science 的原生模型名称：Sonnet 对应默认模型，Opus 对应质量模型。实际 API 模型和协议统一在此设置，保存后后续请求立即生效。Science 保留原生模型选择；以前在网页中单独选择的模型也跟随这里的映射。')}</h3><button type="button" class="btn" id="fetchModelsBtn" title="获取模型列表" aria-label="获取模型列表">${icon('refresh-cw')}获取模型</button></div><div id="catalogStatus" class="catalog-status" role="status"></div><div class="model-routing">${Object.entries(modelLabels).map(([id, label], i) => `<div class="route-field"><div><label for="${id}">${label}</label><span class="route-alias">${['Sonnet', 'Opus'][i]}</span>${id === 'model' ? '' : modelProtocolControl(id, p)}</div>${modelControl(id, p[id], id === 'model')}</div>`).join('')}</div><div class="field token-field"><label for="max_tokens">最大输出 Tokens</label><input type="number" id="max_tokens" name="max_tokens" min="1" max="1000000" value="${p.max_tokens || 8192}" required /></div></section>
+      <section id="pane-test" class="provider-section provider-test" aria-labelledby="testHeading"><div class="form-section-heading"><h3 id="testHeading">${icon('activity')}连接测试</h3><div class="test-role-field"><label for="test_role">测试档位</label><select id="test_role" name="test_role"><option value="default">默认模型 · Sonnet</option><option value="quality">质量模型 · Opus</option></select></div></div><div class="test-layout"><div class="test-target"><span>测试地址</span><code id="testEndpoint"></code><span>测试模型</span><code id="testModel"></code><span>API 协议</span><code id="testProtocol"></code></div><div class="test-result"><div class="verification" id="verification" role="status"></div><div class="test-footer"><button type="button" class="btn" id="verifyBtn">${icon('activity')}测试连接</button><span class="subtle">最小请求 · 可能产生少量 API 费用</span></div></div></div></section>
     </div><div class="editor-actions"><div class="actions">${!isNew ? `<button type="button" class="icon-btn danger" id="clearKeyBtn" title="清除密钥" aria-label="清除密钥" ${p.has_key ? '' : 'disabled'}>${icon('key-round')}</button>` : ''}<button type="button" class="btn" id="cancelEditor">取消</button></div><div class="actions"><button type="button" class="btn" id="saveUseBtn">${icon('arrow-right-left')}保存并使用</button><button class="btn primary" type="submit">${icon('save')}保存连接</button></div></div></form>`;
   $('#closeEditor').onclick = closeEditor; $('#cancelEditor').onclick = closeEditor;
   $('#connectionForm').noValidate = true;
@@ -131,10 +122,6 @@ function renderEditor() {
     }
     showVerification(); updateTestTarget();
   };
-  document.querySelectorAll('[data-editor-tab]').forEach((b) => {
-    b.onclick = () => setEditorTab(b.dataset.editorTab);
-    b.onkeydown = (e) => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return; e.preventDefault(); const tabs = [...document.querySelectorAll('[data-editor-tab]')]; const idx = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (tabs.indexOf(b) + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length; tabs[idx].click(); tabs[idx].focus(); };
-  });
   if ($('#changePreset')) $('#changePreset').onclick = async () => { if (state.dirty && !await confirmAction('更换服务商模板？', '当前未保存的配置将被重置。')) return; state.dirty = false; state.catalogRequest++; state.catalogBusy = false; openPresets(); };
   if ($('#clearKeyBtn')) $('#clearKeyBtn').onclick = async () => {
     if (state.dirty) { notice('请先保存或取消当前修改。', true); return; }
@@ -143,7 +130,7 @@ function renderEditor() {
   };
   $('#verifyBtn').onclick = () => action(testDraft);
   $('#fetchModelsBtn').onclick = () => fetchModels(); bindModelControls();
-  setEditorTab(state.editorTab); updateTestTarget(); showVerification();
+  updateTestTarget(); showVerification();
   if (state.catalogs[p.id]?.signature === catalogSignature()) applyCatalog();
   else if (native() && p.has_key && !state.catalogAttempts.has(p.id + catalogSignature())) {
     queueMicrotask(() => { if (state.selected === p.id && !state.dirty && $('#connectionForm')) fetchModels(); });
@@ -171,7 +158,7 @@ function showVerification() {
 async function testDraft() {
   if (!validEditor()) return;
   const input = readDraft(); const id = state.selected;
-  if (!input.key && !selected().has_key) { setEditorTab('connection'); $('#key').focus(); notice('请填写 API Key。', true); return; }
+  if (!input.key && !selected().has_key) { $('#key').focus(); notice('请填写 API Key。', true); return; }
   state.testing = id; showVerification();
   try {
     const result = await call('test_connection', { input });
@@ -252,7 +239,7 @@ function applyCatalog() {
 async function fetchModels() {
   if (state.catalogBusy || state.busy) return;
   const input = readDraft(); if (!input) return;
-  if (!$('#base_url').checkValidity()) { setEditorTab('connection'); $('#base_url').reportValidity(); return; }
+  if (!$('#base_url').checkValidity()) { $('#base_url').reportValidity(); return; }
   const signature = catalogSignature(); const id = state.selected; const request = ++state.catalogRequest;
   state.catalogAttempts.add(id + signature); state.catalogBusy = true;
   $('#catalogStatus').textContent = '正在获取模型...'; $('#catalogStatus').classList.remove('err');

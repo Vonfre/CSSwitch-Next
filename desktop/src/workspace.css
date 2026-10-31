@@ -244,3 +244,59 @@ body[data-view="settings"] #pageTitle { font-size:30px; font-weight:450; }
   .skills-page .skill-row h3 { font-size:13px; }
   .skills-page .skill-row .row-detail p { font-size:11px; }
 }
+
+/* Provider configuration stays in one scrollable form, with actions always in reach. */
+.provider-dialog { width:1000px; border-radius:16px; max-height:calc(100dvh - 32px); }
+#editor { display:flex; flex-direction:column; max-height:calc(100dvh - 34px); }
+#editor > .dialog-heading, #editor > .preset-bar, #editor > .notice { flex-shrink:0; }
+#connectionForm { display:flex; flex-direction:column; min-height:0; }
+.provider-dialog .dialog-heading { padding:14px 24px; }
+.provider-dialog .dialog-heading h2 { font-size:20px; }
+.provider-sections { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; padding:20px; min-height:0; max-height:none; overflow-y:auto; background:var(--surface); }
+.provider-section { min-width:0; padding:16px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+.provider-section .form-section-heading { margin-bottom:16px; gap:8px; }
+.provider-section h3 { display:flex; align-items:center; gap:8px; font-size:14px; font-weight:550; }
+.provider-section h3 > svg { width:17px; height:17px; color:var(--muted); flex-shrink:0; }
+.section-caption { color:var(--muted); font-size:11px; }
+.provider-section .form-grid { gap:15px 12px; }
+.provider-section .model-routing { gap:16px; }
+.provider-section .route-field > div:first-child { flex-wrap:wrap; gap:6px; }
+.provider-section .token-field { margin-top:18px; max-width:none; }
+.provider-section .catalog-status:not(:empty) { margin-bottom:14px; }
+.provider-test { grid-column:1 / -1; }
+.provider-test .form-section-heading { margin-bottom:14px; }
+.provider-test .test-role-field { display:flex; align-items:center; gap:10px; margin:0; max-width:none; }
+.provider-test .test-role-field select { width:auto; min-height:32px; }
+.test-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:24px; align-items:start; }
+.provider-test .test-target { padding:8px 0; border:0; margin:0; gap:10px 14px; }
+.test-result { min-width:0; border-left:1px solid var(--line); padding-left:24px; }
+.provider-test .verification { min-height:40px; padding:0 0 12px; align-items:flex-start; }
+.provider-test .verification > svg { width:19px; height:19px; flex-shrink:0; }
+.provider-test .verification strong { margin-bottom:4px; }
+.provider-test .test-footer { gap:10px; }
+.provider-dialog .editor-actions { flex-shrink:0; background:var(--card); padding:14px 24px; }
+.stop-btn { white-space:nowrap; color:var(--muted); }
+.stop-btn:hover:not(:disabled) { color:var(--danger); }
+.compat-versions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 18px; }
+.compat-versions > div { min-width:0; background:var(--surface); border-radius:9px; padding:12px 14px; }
+.compat-versions dt { color:var(--muted); font-size:11px; }
+.compat-versions dd { margin:5px 0 0; font-size:15px; font-weight:500; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+@media (max-width:760px) {
+  .provider-sections { grid-template-columns:minmax(0,1fr); padding:14px; gap:12px; }
+  .provider-section { padding:16px; }
+  .test-layout { grid-template-columns:minmax(0,1fr); gap:14px; }
+  .test-result { border-left:0; border-top:1px solid var(--line); padding:14px 0 0; }
+  .provider-test .form-section-heading { flex-wrap:wrap; gap:12px; }
+  .provider-dialog .dialog-heading { padding:16px; }
+  .provider-dialog .editor-actions { padding:12px 16px; }
+}
+@media (max-width:480px) {
+  .provider-section .form-grid { grid-template-columns:minmax(0,1fr); }
+  .provider-test .test-role-field { width:100%; justify-content:space-between; }
+  .provider-test .test-role-field select { min-width:0; max-width:75%; }
+  .provider-dialog .editor-actions { flex-wrap:wrap; gap:10px; }
+  .provider-dialog .editor-actions > .actions:last-child { margin-left:auto; }
+  .compat-versions { gap:6px; }
+  .compat-versions > div { padding:10px 8px; }
+  .compat-versions dd { font-size:13px; }
+}

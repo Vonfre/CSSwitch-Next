@@ -4,9 +4,9 @@ function compatibilityCard() {
   const report = state.diagnostics?.compatibility;
   const issues = (report?.checks || []).filter(c => ['error', 'warning'].includes(c.status));
   const summary = report ? report.status === 'pass' ? '环境正常' : compatibilityLabels[report.status] || '待检查' : '尚未检查';
-  return `<div class="preference-row compat-overview"><div class="preference-label"><div>Claude Science ${help('Science 兼容性', '检查实际启动版本、运行资源、启动接口和连接器依赖，不启动或停止研究任务。应用包版本可能落后于自动更新版本，以实际启动版本为准。本机资源检查通过不代表远程数据源或模型已验证。')}</div><span>${esc(report?.science_version || '未识别版本')} <span class="inline-status ${report?.status === 'pass' ? 'ok' : issues.length ? 'attention' : ''}">${esc(summary)}</span></span></div><div class="actions"><button class="btn" id="checkCompatibility">重新检查</button>${report ? `<button class="icon-btn" id="exportCompatibility" aria-label="导出检查报告" title="导出检查报告">${icon('download')}</button>` : ''}</div></div>
-    ${report ? `${issues.length ? `<div class="compat-issues">${issues.map(c => `<div><strong>${esc(c.label)}</strong><p>${esc(c.detail)} ${esc(c.action)}</p></div>`).join('')}</div>` : ''}
-      <details class="compat-details" ${state.compatibilityExpanded ? 'open' : ''}><summary>查看检查详情 ${icon('chevron-right')}</summary><div class="compat-facts"><span>应用包 <strong>${esc(report.bundle_version || '未识别')}</strong></span><span>连接器资源 <strong>${esc(report.available_profiles)} / ${esc(report.total_profiles)}</strong></span></div>
+  return `<div class="preference-row compat-overview"><div class="preference-label"><div>Claude Science ${help('Science 兼容性', '检查实际启动版本、运行资源、启动接口和连接器依赖，不启动或停止研究任务。应用包版本可能落后于自动更新版本，以实际启动版本为准。每次进入设置或返回此窗口时自动检测当前版本，并检查启动接口与资源是否匹配；本机检查通过不代表远程数据源、模型或全部页面功能已验证。')}</div><span>${esc(report?.science_version || '未识别版本')} <span class="inline-status ${report?.status === 'pass' ? 'ok' : issues.length ? 'attention' : ''}">${esc(summary)}</span></span></div><div class="actions"><button class="btn" id="checkCompatibility">重新检查</button>${report ? `<button class="icon-btn" id="exportCompatibility" aria-label="导出检查报告" title="导出检查报告">${icon('download')}</button>` : ''}</div></div>
+    ${report ? `<dl class="compat-versions" aria-label="本机版本"><div><dt>当前启动版本</dt><dd>${esc(report.science_version || '未识别')}</dd></div><div><dt>应用包版本</dt><dd>${esc(report.bundle_version || '未识别')}</dd></div><div><dt>运行资源版本</dt><dd>${esc(report.runtime_version || '未识别')}</dd></div></dl>${issues.length ? `<div class="compat-issues">${issues.map(c => `<div><strong>${esc(c.label)}</strong><p>${esc(c.detail)} ${esc(c.action)}</p></div>`).join('')}</div>` : ''}
+      <details class="compat-details" ${state.compatibilityExpanded ? 'open' : ''}><summary>查看检查详情 ${icon('chevron-right')}</summary><div class="compat-facts"><span>连接器资源 <strong>${esc(report.available_profiles)} / ${esc(report.total_profiles)}</strong></span></div>
       <dl class="compat-checks">${report.checks.map(c => `<div class="compat-check" data-status="${esc(c.status)}"><dt>${icon(c.status === 'pass' ? 'check' : c.status === 'error' ? 'circle-x' : c.status === 'warning' ? 'triangle-alert' : 'info')}${esc(c.label)}</dt><dd>${esc(c.detail)}${c.action ? help(c.label, c.action) : ''}</dd></div>`).join('')}</dl>
       <details class="compat-paths"><summary>本机路径</summary><code>${esc(report.binary)}</code><code>${esc(report.runtime_path || '未找到运行资源')}</code></details><div class="compat-detail-footer"><button class="text-btn" id="compatibilityMcp">查看 MCP 状态</button><span>检查于 ${esc(new Date(report.checked_at).toLocaleString('zh-CN'))}</span>${help('检查报告', '导出报告包含版本和检查结果，不含密钥、对话和本机路径，不会自动上传。')}</div></details>` : `<p class="inline-warning">${esc(state.diagnostics?.compatibility_error || '请在桌面应用中检查本机环境。')}</p>`}`;
 }
@@ -22,9 +22,9 @@ function bindCompatibility() {
   if (!report) return;
   $('.compat-details').ontoggle = e => { if (e.target.isConnected) state.compatibilityExpanded = e.target.open; };
   $('#exportCompatibility').onclick = () => {
-    const { checked_at, baseline, science_version, bundle_version, runtime_version, available_profiles, total_profiles, status, checks } = report;
+    const { checked_at, science_version, bundle_version, runtime_version, available_profiles, total_profiles, status, checks } = report;
     download('csswitch-compatibility.json', JSON.stringify({ schema: 1, csswitch_version: state.diagnostics.version,
-      checked_at, baseline, science_version, bundle_version, runtime_version, available_profiles, total_profiles, status, checks }, null, 2), 'application/json');
+      checked_at, science_version, bundle_version, runtime_version, available_profiles, total_profiles, status, checks }, null, 2), 'application/json');
     notice('已导出版本和检查结果。');
   };
   $('#compatibilityMcp').onclick = () => showView('mcp');
@@ -64,3 +64,23 @@ async function launchScience(openOnly = false) {
     $('#launchProgress').hidden = true;
   }
 }
+
+// Re-read local versions after Science may have updated while this window was away.
+let compatibilityRefreshPending = false;
+let lastCompatibilityRefresh = 0;
+async function refreshCompatibilityOnReturn() {
+  if (!native() || document.hidden || state.view !== 'settings' || state.busy || compatibilityRefreshPending || Date.now() - lastCompatibilityRefresh < 1000) return;
+  compatibilityRefreshPending = true;
+  lastCompatibilityRefresh = Date.now();
+  try {
+    const diagnostics = await call('diagnostics');
+    if (state.view !== 'settings' || state.busy) return;
+    state.diagnostics = diagnostics;
+    $('#compatibilityCard').innerHTML = compatibilityCard();
+    bindCompatibility(); icons();
+  } catch {
+    // Keep the last report and its timestamp; manual recheck remains available.
+  } finally { compatibilityRefreshPending = false; }
+}
+window.addEventListener('focus', refreshCompatibilityOnReturn);
+document.addEventListener('visibilitychange', refreshCompatibilityOnReturn);

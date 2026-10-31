@@ -13,7 +13,7 @@ const templates = {
 };
 const templateIcons = { custom: 'sliders-horizontal', deepseek: 'sparkles', qwen: 'shapes', openrouter: 'route', openai: 'aperture', anthropic: 'asterisk', ollama: 'hard-drive' };
 const state = { config: null, runtime: { proxy: 'amber', sandbox: 'amber' }, view: 'workbench', selected: null,
-  draft: null, dirty: false, search: '', filter: 'all', sort: 'active', busy: false, usage: [], logs: { proxy: '', sandbox: '' }, logTab: 'proxy', verified: {}, diagnostics: null, catalogs: {}, catalogAttempts: new Set(), editorTab: 'connection', preset: 'custom', modelTarget: null, catalogRequest: 0, catalogBusy: false, testing: null, draftTest: null };
+  draft: null, dirty: false, search: '', filter: 'all', sort: 'active', busy: false, usage: [], logs: { proxy: '', sandbox: '' }, logTab: 'proxy', verified: {}, diagnostics: null, catalogs: {}, catalogAttempts: new Set(), preset: 'custom', modelTarget: null, catalogRequest: 0, catalogBusy: false, testing: null, draftTest: null };
 const native = () => Boolean(window.__TAURI__?.core?.invoke);
 const icons = () => window.lucide?.createIcons();
 const fmt = (n) => new Intl.NumberFormat('zh-CN').format(n || 0);
@@ -111,7 +111,7 @@ function renderRuntime() {
   const running = state.runtime.sandbox === 'green';
   const gateway = state.runtime.proxy === 'green';
   const verify = state.verified[p?.id];
-  box.innerHTML = `<div class="runtime"><div class="runtime-identity"><span class="science-mark">${icon('flask-conical')}</span><div><div class="runtime-title">Claude Science <span class="badge ${running && gateway ? 'active' : ''}">${running && gateway ? '运行中' : running ? '网关已停止' : '未启动'}</span></div><div class="runtime-sub"><strong>${esc(p?.name || '未选择提供商')}</strong><span>${esc(p?.model || '未选择模型')}</span></div></div></div><div class="actions"><button class="btn primary" id="startBtn">${icon(running && gateway ? 'external-link' : 'play')}${running && gateway ? '打开 Science' : '一键开始'}</button><button class="icon-btn outlined" id="stopBtn" title="停止网关与 Science" aria-label="停止网关与 Science">${icon('square')}</button></div></div>
+  box.innerHTML = `<div class="runtime"><div class="runtime-identity"><span class="science-mark">${icon('flask-conical')}</span><div><div class="runtime-title">Claude Science <span class="badge ${running && gateway ? 'active' : ''}">${running && gateway ? '运行中' : running ? '网关已停止' : '未启动'}</span></div><div class="runtime-sub"><strong>${esc(p?.name || '未选择提供商')}</strong><span>${esc(p?.model || '未选择模型')}</span></div></div></div><div class="actions"><button class="btn primary" id="startBtn">${icon(running && gateway ? 'external-link' : 'play')}${running && gateway ? '打开 Science' : '一键开始'}</button><button class="btn stop-btn" id="stopBtn" title="停止网关与 Science">停止服务</button></div></div>
     <div class="health"><span><span class="dot ${gateway ? 'green' : ''}"></span>网关 ${gateway ? '就绪' : '未启动'}</span><span><span class="dot ${running ? 'green' : ''}"></span>Science ${running ? '就绪' : '未启动'}</span><span><span class="dot ${verify ? verify.ok ? 'green' : 'red' : ''}"></span>模型 ${verify ? verify.ok ? '测试通过' : '测试失败' : '未测试'}</span><span class="history-label">${icon('folder-open')}官方对话目录</span></div>`;
   $('#stopBtn').disabled = !gateway && !running;
   $('#startBtn').disabled = !p || !p.has_key;

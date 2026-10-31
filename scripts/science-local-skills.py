@@ -187,7 +187,8 @@ class LocalSkills:
         finally:
             os.close(fd)
 
-    def info(self, name):
+    def catalog_info(self, name):
+        """Read owned skill metadata without walking large template libraries."""
         if not NAME.fullmatch(name):
             return None
         path = guarded(self.root / name)
@@ -196,20 +197,27 @@ class LocalSkills:
             return None
         if any((path / p).exists() or (path / p).is_symlink() for p in ('.catalog_stamp', '.sync-org', '.plugin', '.import-source.json')):
             return None
-        if not regular(path / 'SKILL.md'):
+        if not regular(path / 'SKILL.md') or (path / 'SKILL.md').stat().st_size > 256 * 1024:
             return None
         try:
             value = json.loads(marker.read_text())
             actual, description = metadata((path / 'SKILL.md').read_bytes())
         except (ValueError, OSError, LocalSkillError):
             return None
-        if value.get('owner') != 'CSSwitch' or value.get('name') != name or actual != name:
+        if not isinstance(value, dict) or value.get('owner') != 'CSSwitch' or value.get('name') != name or actual != name:
             return None
+        return {'name': name, 'description': description, 'source': 'csswitch-local',
+                'sourceKey': value.get('sourceKey'), 'fingerprint': value.get('fingerprint')}
+
+    def info(self, name):
+        info = self.catalog_info(name)
+        if info is None:
+            return None
+        path = guarded(self.root / name)
         files = self.files(path)
         current = fingerprint(files)
-        return {'name': name, 'description': description, 'source': 'csswitch-local',
-                'sourceKey': value.get('sourceKey'), 'fingerprint': current,
-                'locallyModified': bool(value.get('fingerprint') and current != value['fingerprint'])}
+        return {**info, 'fingerprint': current,
+                'locallyModified': bool(info.get('fingerprint') and current != info['fingerprint'])}
 
     def files(self, path):
         files, total = {}, 0

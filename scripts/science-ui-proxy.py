@@ -29,6 +29,7 @@ from csswitch_proxy import PROVIDERS
 from science_models import adapt_model_response
 from conversation_models import normalize_response
 from science_translation import Translator, TranslationError
+from science_skill_catalog import augment_catalog, CatalogError
 
 
 BOOTSTRAP = "(()=>{for(const name of ['zh','files','status']){const s=document.createElement('script');s.src='/__csswitch/'+name+'.js';document.head.append(s)}})();"
@@ -270,19 +271,23 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             selection_path = path in {'/api/frames', '/api/preferences/carried', '/api/preferences/reviewer-model'} or re.fullmatch(r'/api/frames/[A-Za-z0-9_-]+(?:/trace-shallow)?', path)
             is_selection = self.command == 'GET' and selection_path and res.status == 200 and 'application/json' in res.getheader('Content-Type', '') and not res.getheader('Content-Encoding')
-            is_json = is_models or is_selection
+            is_skills = self.command == 'GET' and path == '/api/skills/catalog' and res.status == 200 and 'application/json' in res.getheader('Content-Type', '') and not res.getheader('Content-Encoding')
+            is_json = is_models or is_selection or is_skills
             is_script = self.command == 'GET' and native_script and res.status == 200 and not res.getheader('Content-Encoding') and 'javascript' in res.getheader('Content-Type', '')
             payload = inject_html(res.read()) if is_html else res.read() if is_json or is_script else None
             if is_script:
                 self.translator().observe_asset(payload)
             if is_json:
                 try:
-                    cfg = json.loads(self.server.config.read_text())
-                    if cfg.get('mode', 'proxy') == 'proxy':
+                    if is_skills:
+                        data = augment_catalog(json.loads(payload), self.server.config, self.server.upstream_port,
+                                               lambda endpoint: native_json(self.server.upstream_port, self.headers, endpoint))
+                        payload = json.dumps(data, ensure_ascii=False).encode()
+                    elif json.loads(self.server.config.read_text()).get('mode', 'proxy') == 'proxy':
                         route = load_profile(str(self.server.config), PROVIDERS)
                         data = adapt_model_response(json.loads(payload), route['prov']) if is_models else normalize_response(json.loads(payload), path, route['prov']['native_models'])
                         payload = json.dumps(data, ensure_ascii=False).encode()
-                except (OSError, ValueError, TypeError, KeyError):
+                except (OSError, ValueError, TypeError, KeyError, AttributeError, FileActionError, CatalogError):
                     pass  # Preserve the native response when local configuration is unavailable.
             self.send_response(res.status)
             sent = True

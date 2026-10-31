@@ -1,9 +1,11 @@
 import base64
+from contextlib import closing
 import importlib.util
 import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -21,6 +23,15 @@ class Native(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     def log_message(self, *args): pass
     def do_GET(self):
+        if self.path in getattr(self.server, 'skill_responses', {}):
+            self.server.skill_requests.append((self.path, self.headers.get('Cookie')))
+            authorized = self.headers.get('Cookie') == 'operon_auth=fixture'
+            body = json.dumps(self.server.skill_responses[self.path] if authorized else {'error': 'unauthorized'}).encode()
+            self.send_response(200 if authorized else 401)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+            return
         if self.path.startswith('/api/artifacts/') or self.path == '/api/me':
             self.server.artifact_requests = getattr(self.server, 'artifact_requests', []) + [(self.path, self.headers.get('Cookie'), self.headers.get('Authorization'))]
             authorized = self.headers.get('Cookie') == 'operon_auth=fixture' or self.headers.get('Authorization') == 'Bearer fixture'
@@ -97,6 +108,73 @@ class ProxyTests(unittest.TestCase):
         self.temp.cleanup()
     def request(self, path, **kwargs):
         return self.opener.open(urllib.request.Request(self.base + path, **kwargs), timeout=3)
+
+    def local_skill_catalog(self):
+        import science_skill_catalog as catalog
+        root = Path(self.temp.name).resolve()
+        self.proxy.config = root / 'config.json'
+        shared = root / 'shared-science'; shared.mkdir()
+        auth = shared / 'auth'; auth.mkdir()
+        org = '12345678-1234-1234-1234-123456789abc'
+        (auth / 'active-org.json').write_text(json.dumps({'org_uuid': org}))
+        data = root / 'data'
+        orgdir = data / 'orgs' / org; orgdir.mkdir(parents=True)
+        with closing(sqlite3.connect(orgdir / 'operon-cli.db')) as db, db:
+            db.execute('CREATE TABLE capability_settings(user_id TEXT, kind TEXT, key TEXT, enabled INTEGER)')
+            db.execute("INSERT INTO capability_settings VALUES ('fixture-user','skill','disabled-skill',0)")
+        session = {'port': self.native.server_port, 'data_dir': str(data), 'config': str(shared / 'config.toml')}
+        (shared / 'session.json').write_text(json.dumps(session))
+        store = catalog.local.LocalSkills(data, auth)
+        for name in ('ppt-master', 'disabled-skill', 'native-skill'):
+            store.install(name, {'SKILL.md': f'---\nname: {name}\ndescription: Local fixture\n---\n'.encode()}, set())
+        self.native.skill_requests = []
+        self.native.skill_responses = {
+            '/api/skills/catalog': {'degraded': True, 'skills': [{'name': 'native-skill', 'source': 'anthropic', 'enabled': False, 'admin_blocked': True}]},
+            '/api/skills/drafts': {'drafts': ['ppt-master', 'disabled-skill', 'native-skill', 'unowned', '../escape']},
+            '/api/org-policy': {'caps': {'operon_custom_skills': {'allowed': True}}},
+            '/api/me': {'user_id': 'fixture-user'},
+            '/api/agents': [{'name': 'OPERON', 'skillNames': ['ppt-master']}],
+        }
+        return store
+
+    def test_native_skill_picker_includes_owned_drafts_without_reading_resources(self):
+        store = self.local_skill_catalog()
+        with patch.object(type(store), 'files', side_effect=AssertionError('must not walk skill assets')):
+            with self.request('/api/skills/catalog', headers={'Cookie': 'operon_auth=fixture'}) as response:
+                data = json.load(response)
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.assertTrue(data['degraded'])
+        rows = {r['name']: r for r in data['skills']}
+        self.assertEqual(set(rows), {'native-skill', 'ppt-master', 'disabled-skill'})
+        self.assertEqual(rows['native-skill'], self.native.skill_responses['/api/skills/catalog']['skills'][0])
+        self.assertEqual(rows['ppt-master']['displayName'], 'ppt-master')
+        self.assertEqual(rows['ppt-master']['source'], 'imported')
+        self.assertEqual(rows['ppt-master']['attachedAgents'], ['OPERON'])
+        self.assertTrue(rows['ppt-master']['enabled'])
+        self.assertFalse(rows['disabled-skill']['enabled'])
+        self.assertTrue(all(cookie == 'operon_auth=fixture' for _, cookie in self.native.skill_requests))
+        with closing(sqlite3.connect(store.dbpath)) as db, db:
+            db.execute("INSERT INTO capability_settings VALUES ('fixture-user','skill','ppt-master',0)")
+        with self.request('/api/skills/catalog', headers={'Cookie': 'operon_auth=fixture'}) as response:
+            self.assertFalse(next(r for r in json.load(response)['skills'] if r['name'] == 'ppt-master')['enabled'])
+
+    def test_skill_picker_preserves_auth_policy_and_session_boundaries(self):
+        self.local_skill_catalog()
+        native = self.native.skill_responses['/api/skills/catalog']
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/api/skills/catalog')
+        self.assertEqual(error.exception.code, 401)
+        self.assertEqual(self.native.skill_requests, [('/api/skills/catalog', None)])
+        self.native.skill_responses['/api/org-policy']['caps']['operon_custom_skills']['allowed'] = False
+        with self.request('/api/skills/catalog', headers={'Cookie': 'operon_auth=fixture'}) as response:
+            self.assertEqual(json.load(response), native)
+        self.native.skill_responses['/api/org-policy']['caps']['operon_custom_skills']['allowed'] = True
+        path = self.proxy.config.parent / 'shared-science/session.json'
+        session = json.loads(path.read_text()); session['port'] += 1; path.write_text(json.dumps(session))
+        self.native.skill_requests.clear()
+        with self.request('/api/skills/catalog', headers={'Cookie': 'operon_auth=fixture'}) as response:
+            self.assertEqual(json.load(response), native)
+        self.assertEqual(len(self.native.skill_requests), 1)
     def test_loopback_bind_does_not_depend_on_hostname_lookup(self):
         with patch('socket.getfqdn', side_effect=AssertionError('unexpected DNS lookup')):
             server = ui.LoopbackServer(('127.0.0.1', 0), ui.Handler)

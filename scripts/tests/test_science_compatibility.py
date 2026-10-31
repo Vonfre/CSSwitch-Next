@@ -64,10 +64,31 @@ class CompatibilityTests(unittest.TestCase):
         self.assertIsNone(result['science_version'])
         self.assertTrue(all(c['action'] for c in result['checks'] if c['status'] == 'error'))
 
-    def test_unknown_version_is_not_claimed_compatible(self):
+    def test_updated_binary_with_old_resources_is_not_claimed_compatible(self):
         result = self.inspect(lambda command: self.runner(command).replace('0.1.67', '0.1.99'))
         self.assertEqual(result['status'], 'warning')
-        self.assertEqual(next(c for c in result['checks'] if c['id'] == 'baseline')['status'], 'warning')
+        self.assertEqual(next(c for c in result['checks'] if c['id'] == 'runtime')['status'], 'warning')
+
+    def test_complete_update_refreshes_versions_without_a_fixed_baseline(self):
+        self.runtime.rename(self.runtime.parent / '0.1.99-release')
+        result = self.inspect(lambda command: self.runner(command).replace('0.1.67', '0.1.99'))
+        self.assertEqual(result['science_version'], '0.1.99')
+        self.assertEqual(result['runtime_version'], '0.1.99')
+        self.assertEqual(result['bundle_version'], '0.1.25')
+        self.assertEqual(result['status'], 'pass')
+        self.assertNotIn('baseline', result)
+        self.assertNotIn('0.1.67', json.dumps(result))
+        update = next(c for c in result['checks'] if c['id'] == 'bundle')
+        self.assertIn('0.1.99', update['detail'])
+
+    def test_matching_and_missing_bundle_versions_are_reported(self):
+        self.bundle.write_bytes(plistlib.dumps({'CFBundleShortVersionString': '0.1.67'}))
+        result = self.inspect()
+        self.assertIn('均为 0.1.67', next(c for c in result['checks'] if c['id'] == 'bundle')['detail'])
+        self.bundle.unlink()
+        result = self.inspect()
+        self.assertIsNone(result['bundle_version'])
+        self.assertIn('未识别应用包', next(c for c in result['checks'] if c['id'] == 'bundle')['detail'])
 
     def test_failed_probe_output_is_not_exported(self):
         result = self.inspect(lambda command: 'private-token-value /Users/private' if command[-1] == '--help' else self.runner(command))

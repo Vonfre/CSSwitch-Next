@@ -1,4 +1,5 @@
 import base64
+from contextlib import closing
 import importlib.util
 import io
 import json
@@ -22,7 +23,7 @@ class LocalSkillsTests(unittest.TestCase):
         (self.auth/'active-org.json').write_text(json.dumps({'org_uuid':'12345678-1234-1234-1234-123456789abc'}))
         org = self.data/'orgs/12345678-1234-1234-1234-123456789abc'
         org.mkdir(parents=True)
-        with sqlite3.connect(org/'operon-cli.db') as db:
+        with closing(sqlite3.connect(org/'operon-cli.db')) as db, db:
             db.execute('CREATE TABLE capability_settings(user_id TEXT, kind TEXT, key TEXT, enabled INTEGER)')
             db.execute('INSERT INTO capability_settings VALUES (?,?,?,?)', ('user','skill','local-fixture',0))
         self.store = local.LocalSkills(str(self.data),str(self.auth))
@@ -110,6 +111,9 @@ class LocalSkillsTests(unittest.TestCase):
         for filename,mode in entries:
             with self.subTest(filename=filename):
                 item=zipfile.ZipInfo(filename);item.external_attr=mode<<16
+                # ZipInfo normalizes backslashes on Windows; retain the actual
+                # malformed archive entry we want the importer to reject.
+                item.filename = filename
                 encoded=self.zip([('fixture/SKILL.md',self.text),(item,b'unsafe')])
                 with self.assertRaises(local.LocalSkillError): local.unpack('fixture.zip',encoded)
 
@@ -129,7 +133,12 @@ class LocalSkillsTests(unittest.TestCase):
 
     def test_symlinked_roots_identity_and_skill_dirs_rejected(self):
         outside=self.root/'outside';outside.mkdir()
-        self.store.root.symlink_to(outside)
+        try:
+            self.store.root.symlink_to(outside)
+        except OSError as error:
+            if getattr(error, 'winerror', None) == 1314:
+                self.skipTest('Windows symbolic link privilege is unavailable')
+            raise
         with self.assertRaises(local.LocalSkillError): local.LocalSkills(str(self.data),str(self.auth))
         self.store.root.unlink();self.store.root.mkdir()
         (self.store.root/'local-fixture').symlink_to(outside)

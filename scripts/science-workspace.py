@@ -96,7 +96,7 @@ def safe_zip(z, *, repository=False):
     for f in files:
         p = PurePosixPath(f.filename)
         mode = f.external_attr >> 16
-        if not agent_skills._platform.safe_archive_path(f.filename) or p.is_absolute() or '..' in p.parts or '\\' in f.filename or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)) or f.flag_bits & 1:
+        if not agent_skills._platform.safe_archive_path(f.orig_filename) or p.is_absolute() or '..' in p.parts or '\\' in f.filename or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)) or f.flag_bits & 1:
             raise WorkspaceError('压缩包包含不安全的路径或符号链接。')
     return files
 

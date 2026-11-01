@@ -182,7 +182,10 @@ class Library:
                     total += info.st_size
                     if total > self.local.MAX_BYTES or len(files) >= self.local.MAX_FILES:
                         raise self.error(self.local.LIMIT_MESSAGE)
-                    data = stream.read(self.local.MAX_BYTES + 1)
+                    # The bundle limit is not a per-file read buffer. Reserving
+                    # 256 MiB for every tiny icon is prohibitively slow on Windows.
+                    # One extra byte still detects files growing after fstat().
+                    data = stream.read(info.st_size + 1)
                     if len(data) != info.st_size: raise self.error('技能正在修改，请稍后重试。')
                     files[child.relative_to(path).as_posix()] = data
         if 'SKILL.md' not in files: raise self.error('技能缺少 SKILL.md。')
@@ -272,7 +275,7 @@ class Library:
             prefixes = set()
             for entry in entries:
                 parts = entry.filename.split('/')
-                if not _platform.safe_archive_path(entry.filename) or len(parts) < 2 or any(not p or p in ('.', '..') or p.startswith('.') for p in parts) or '\\' in entry.filename:
+                if not _platform.safe_archive_path(entry.orig_filename) or len(parts) < 2 or any(not p or p in ('.', '..') or p.startswith('.') for p in parts) or '\\' in entry.filename:
                     raise self.error('技能包包含不安全路径。')
                 prefixes.add(parts[0]); rel = '/'.join(parts[1:])
                 mode = entry.external_attr >> 16

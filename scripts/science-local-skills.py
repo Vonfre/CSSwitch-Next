@@ -124,7 +124,7 @@ def unpack(filename, encoded):
             for entry in entries:
                 path = PurePosixPath(entry.filename)
                 mode = entry.external_attr >> 16
-                if (not _platform.safe_archive_path(entry.filename) or path.is_absolute() or '..' in path.parts
+                if (not _platform.safe_archive_path(entry.orig_filename) or path.is_absolute() or '..' in path.parts
                         or '\\' in entry.filename or re.search(r'[\x00-\x1f]', entry.filename)
                         or (mode and stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR))
                         or entry.flag_bits & 1):

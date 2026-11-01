@@ -1,4 +1,5 @@
 import base64
+from contextlib import contextmanager
 import importlib.util
 import io
 import json
@@ -30,6 +31,37 @@ class AgentLibraryTests(unittest.TestCase):
 
     def imported(self):
         source = self.skill(); self.library.import_skill('agents:paper'); return source
+
+    def test_small_files_do_not_allocate_the_entire_bundle_limit(self):
+        source = self.skill()
+        (source / 'empty.svg').write_bytes(b'')
+        (source / 'icon.svg').write_bytes(b'<svg/>')
+        original = os.fdopen
+        @contextmanager
+        def bounded_open(fd, *args, **kwargs):
+            with original(fd, *args, **kwargs) as stream:
+                size = os.fstat(fd).st_size
+                class Reader:
+                    def fileno(self): return stream.fileno()
+                    def read(reader, amount):
+                        self.assertLessEqual(amount, size + 1)
+                        return stream.read(amount)
+                yield Reader()
+        with patch.object(os, 'fdopen', side_effect=bounded_open):
+            files = self.library.tree(source)
+        self.assertEqual(files['empty.svg'], b'')
+        self.assertEqual(files['icon.svg'], b'<svg/>')
+        self.assertEqual(files['references/ref.md'], b'Reference')
+
+    def test_tree_rejects_a_file_that_grows_after_stat(self):
+        source = self.skill()
+        original = os.fstat
+        def growing_file(fd):
+            info = original(fd)
+            return os.stat_result((*info[:6], info.st_size - 1, *info[7:]))
+        with patch.object(os, 'fstat', side_effect=growing_file):
+            with self.assertRaisesRegex(w.WorkspaceError, '技能正在修改'):
+                self.library.tree(source)
 
     def test_discovery_resolves_known_links_merges_locations_and_preserves_legacy_keys(self):
         source = self.skill(); codex = self.work.roots['codex']; codex.mkdir(parents=True)

@@ -12,6 +12,7 @@ mod science_compat;
 mod mcp;
 mod updater;
 mod workspace;
+mod subscriptions;
 
 use std::path::{Path, PathBuf};
 use std::io::Write;
@@ -24,6 +25,15 @@ use serde_json::json;
 use tauri::{Emitter, Manager, State};
 
 const SCIENCE_BIN: &str = "/Applications/Claude Science.app/Contents/Resources/bin/claude-science";
+
+#[tauri::command]
+async fn subscription_manage(app: tauri::AppHandle, operation: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    let root = asset_root(&app).ok_or("无法定位订阅管理资源。")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = RUNTIME_OPERATION.lock().unwrap_or_else(|e| e.into_inner());
+        subscriptions::manage(&root, &operation, params.unwrap_or(json!({})))
+    }).await.map_err(|_| "订阅管理任务异常。".to_string())?
+}
 
 #[tauri::command]
 async fn workspace_manage(app: tauri::AppHandle, operation: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
@@ -177,13 +187,17 @@ fn redact(s: &str, secret: &str) -> String {
 }
 
 fn tail_file(path: &Path, max: usize) -> String {
-    match std::fs::read(path) {
-        Ok(b) => {
-            let start = b.len().saturating_sub(max);
-            String::from_utf8_lossy(&b[start..]).trim().to_string()
-        }
-        Err(_) => String::new(),
-    }
+    use std::io::{Read, Seek, SeekFrom};
+    use crate::platform::PrivateOpenOptions;
+    let read = || -> std::io::Result<String> {
+        let mut file = std::fs::OpenOptions::new().read(true).nofollow().open(path)?;
+        let len = file.metadata()?.len();
+        file.seek(SeekFrom::Start(len.saturating_sub(max as u64)))?;
+        let mut bytes = Vec::new();
+        file.take(max as u64).read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).trim().to_string())
+    };
+    read().unwrap_or_default()
 }
 
 fn kill_child(slot: &mut Option<Child>) {
@@ -720,7 +734,11 @@ async fn list_models(app: tauri::AppHandle, query: ModelQuery) -> Result<serde_j
 }
 
 #[tauri::command]
-fn read_usage() -> Result<serde_json::Value, String> {
+async fn read_usage() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(read_usage_inner).await.map_err(|e| e.to_string())?
+}
+
+fn read_usage_inner() -> Result<serde_json::Value, String> {
     let path = config::default_dir().join("usage.jsonl");
     config::assert_not_symlink(&path).map_err(|e| e.to_string())?;
     let data = match std::fs::read_to_string(path) {
@@ -738,7 +756,11 @@ fn read_usage() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-fn read_logs() -> Result<serde_json::Value, String> {
+async fn read_logs() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(read_logs_inner).await.map_err(|e| e.to_string())?
+}
+
+fn read_logs_inner() -> Result<serde_json::Value, String> {
     let cfg = config::load_from(&config::default_dir()).map_err(|e| e.to_string())?;
     let clean = |name| {
         let mut s = redact(&tail_file(&log_path(name), 24000), &cfg.secret);
@@ -1121,6 +1143,7 @@ pub fn run() {
         .manage(updater::UpdateState::default())
         .manage(Mutex::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
+            subscription_manage,
             workspace_manage,
             updater::check_update,
             updater::download_update,
@@ -1185,6 +1208,19 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{first_http_url, key_fingerprint, redact, sandbox_home};
+
+    #[test]
+    fn log_tail_reads_only_suffix_and_handles_missing_files() {
+        use std::io::{Seek, SeekFrom, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.log");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.seek(SeekFrom::Start(1024 * 1024 * 1024)).unwrap();
+        file.write_all("末尾记录\n".as_bytes()).unwrap();
+        assert_eq!(super::tail_file(&path, "末尾记录\n".len()), "末尾记录");
+        assert_eq!(super::tail_file(&path, 0), "");
+        assert_eq!(super::tail_file(&dir.path().join("absent"), 10), "");
+    }
 
     #[test]
     fn model_catalog_needs_no_selected_model_and_guards_saved_keys() {

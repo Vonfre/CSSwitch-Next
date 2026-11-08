@@ -46,6 +46,11 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Install Subscription Test Dependency
+        run: python3 -m pip install cryptography==49.0.0
       - name: Check Runner Python
         run: |
           python3 --version

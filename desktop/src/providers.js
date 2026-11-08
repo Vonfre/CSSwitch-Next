@@ -267,7 +267,7 @@ function renderWorkbench() {
   document.querySelectorAll('[data-mode]').forEach((b) => b.onclick = async () => {
     if (b.dataset.mode === state.config.mode) return;
     if (b.dataset.mode === 'official' && state.runtime.sandbox === 'green' && !await confirmAction('切换到官方模式？', '共享 Science 和网关会停止。对话记录保留，请先结束正在运行的任务。')) return;
-    action(async () => { await call('set_mode', { mode: b.dataset.mode }); await loadConfig(); await refreshRuntime(); renderWorkbench(); notice('运行模式已切换。'); });
+    action(async () => { await call('set_mode', { mode: b.dataset.mode }); await loadConfig(); await refreshRuntime(true); renderWorkbench(); notice('运行模式已切换。'); });
   });
   if (official) $('#officialBtn').onclick = () => action(async () => { await call('open_official'); notice('已打开官方 Claude Science。'); });
   else renderRuntime();

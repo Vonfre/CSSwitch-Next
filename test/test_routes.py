@@ -20,7 +20,45 @@ import csswitch_proxy as cs
 from private_files import protect_windows
 
 
+def official_search_history(pending=False):
+    blocks = [
+        {"type": "text", "text": "Searching the literature.\n"},
+        {"type": "server_tool_use", "id": "srvtoolu_search", "name": "web_search",
+         "input": {"query": "protein folding"}},
+    ]
+    if not pending:
+        blocks.extend([
+            {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_search", "content": [
+                {"type": "web_search_result", "url": "https://example.org/paper",
+                 "title": "Folding study", "encrypted_content": "opaque-search-data"}]},
+            {"type": "text", "text": "\nFound a relevant study."},
+        ])
+    return [{"role": "user", "content": "Find a study."},
+            {"role": "assistant", "content": blocks},
+            {"role": "user", "content": "Continue after the pause."}]
+
+
 class RouteContracts(unittest.TestCase):
+    def test_official_server_tools_are_historical_context_not_pending_functions(self):
+        from responses_adapter import from_chat
+        cs.PROV = cs.PROVIDERS["qwen"]
+        for pending in (False, True):
+            with self.subTest(pending=pending):
+                messages = official_search_history(pending)
+                before = json.dumps(messages)
+                chat = cs.anthropic_to_openai({"messages": messages})
+                history = chat["messages"][1]["content"]
+                self.assertIn("protein folding", history)
+                self.assertIn("srvtoolu_search", history)
+                if not pending:
+                    self.assertLess(history.index("protein folding"), history.index("https://example.org/paper"))
+                    self.assertLess(history.index("Folding study"), history.index("Found a relevant study."))
+                self.assertFalse(any(m.get("tool_calls") or m["role"] == "tool" for m in chat["messages"]))
+                converted = from_chat(chat)
+                self.assertFalse(any(i.get("type") in ("function_call", "function_call_output") for i in converted["input"]))
+                self.assertIn("protein folding", json.dumps(converted))
+                self.assertEqual(json.dumps(messages), before)
+
     def test_endpoints_and_transport_validation(self):
         self.assertEqual(endpoint_for("https://example.test", "anthropic"), "https://example.test/v1/messages")
         self.assertEqual(endpoint_for("https://example.test/v1", "responses"), "https://example.test/v1/responses")
@@ -208,6 +246,31 @@ class GatewayIntegration(unittest.TestCase):
             headers={"Content-Type": "application/json", "Authorization": "Bearer inbound-oauth-must-not-leak", "x-api-key": "inbound-key"})
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.read().decode()
+
+    def test_resume_official_search_history_in_both_openai_protocols(self):
+        for protocol in ("chat", "responses"):
+            self.write_config(protocol)
+            for pending in (False, True):
+                for stream in (False, True):
+                    with self.subTest(protocol=protocol, pending=pending, stream=stream):
+                        result = self.request(stream=stream, messages=official_search_history(pending))
+                        self.assertIn("message_stop" if stream else '"text": "OK"', result)
+                        body = self.hits[-1][1]
+                        self.assertIn("protein folding", json.dumps(body))
+                        self.assertNotIn('"type": "server_tool_use"', json.dumps(body))
+
+    def test_unsupported_history_returns_400_without_contacting_upstream(self):
+        for protocol in ("chat", "responses"):
+            self.write_config(protocol)
+            before = len(self.hits)
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.request(stream=True, messages=[{"role": "user", "content": [
+                    {"type": "unknown_future_block"}]}])
+            self.assertEqual(caught.exception.code, 400)
+            error = json.loads(caught.exception.read())["error"]
+            self.assertEqual(error["type"], "invalid_request_error")
+            self.assertIn("unknown_future_block", error["message"])
+            self.assertEqual(len(self.hits), before)
 
     def test_all_protocols_stream_tools_credentials_and_usage(self):
         for id in ("chat", "responses", "native"):

@@ -1,0 +1,125 @@
+/* Subscription account cards, scoped to this page. */
+body[data-view="subscriptions"] .topbar { height:72px; margin-bottom:24px; border-bottom:1px solid var(--line); }
+body[data-view="subscriptions"] #pageTitle { display:flex; align-items:center; gap:10px; font-size:22px; font-weight:550; }
+body[data-view="subscriptions"] #pageTitle svg { width:22px; height:22px; stroke-width:1.7; }
+.subscription-panel { --subscription-line:color-mix(in srgb,var(--text) 13%,var(--card)); display:grid; gap:18px; max-width:1080px; margin:0 auto; }
+.subscription-card { border:1px solid var(--subscription-line); border-radius:12px; background:var(--card); overflow:hidden; }
+.subscription-card-header { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:20px 22px; border-bottom:1px solid var(--line); }
+.subscription-provider { display:flex; align-items:center; gap:13px; min-width:0; }
+.subscription-provider-mark { display:grid; place-items:center; width:42px; height:42px; border-radius:11px; color:#b8684c; background:#fbefe8; flex-shrink:0; }
+.subscription-provider-mark svg { width:25px; height:25px; stroke-width:1.6; }
+.subscription-title-line { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+.subscription-title-line h2 { font-size:16px; font-weight:600; margin:0; line-height:1.4; }
+.subscription-provider p,.subscription-science-info p { color:var(--muted); font-size:12px; line-height:1.6; margin:4px 0 0; }
+.subscription-label { border:1px solid var(--subscription-line); border-radius:5px; font-size:10px; color:var(--muted); padding:1px 6px; white-space:nowrap; }
+.subscription-card-header > .btn { flex-shrink:0; min-height:34px; }
+.subscription-list-label { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px 22px 0; color:var(--muted); font-size:11px; }
+.subscription-list-label > span { display:inline-flex; align-items:center; gap:6px; }
+.subscription-count { background:var(--surface); border-radius:4px; padding:0 5px; font-variant-numeric:tabular-nums; }
+.subscription-login-success { color:var(--success); }
+.subscription-login-success svg { width:13px; height:13px; }
+.subscription-accounts { padding:0 22px; }
+.subscription-account { display:flex; align-items:center; gap:12px; padding:19px 0; min-width:0; }
+.subscription-account + .subscription-account { border-top:1px solid var(--line); }
+.subscription-avatar { display:grid; place-items:center; flex-shrink:0; width:36px; height:36px; border-radius:50%; font-size:14px; font-weight:600; color:var(--muted); background:var(--surface); }
+.subscription-account.is-current .subscription-avatar { background:#f8eee8; color:#a55e43; }
+.subscription-account-info { flex:1; min-width:0; }
+.subscription-account-name { display:flex; align-items:center; gap:8px; min-width:0; }
+.subscription-account-name strong { font-size:13px; font-weight:550; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.subscription-plan { flex-shrink:0; font-size:10px; line-height:18px; padding:0 6px; border-radius:4px; background:var(--surface); color:var(--muted); }
+.subscription-account-meta { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:5px; color:var(--muted); font-size:11px; }
+.subscription-account-state { display:inline-flex; align-items:center; gap:4px; }
+.subscription-account-state svg { width:12px; height:12px; }
+.subscription-account-state.is-current { color:var(--success); }
+.subscription-account-state.is-error { color:var(--danger); }
+.subscription-panel .subscription-account-action { flex-shrink:0; min-height:30px; font-size:11px; padding:5px 10px; }
+.subscription-policy { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 22px; border-top:1px solid var(--line); background:var(--surface); }
+.subscription-policy-info { display:flex; gap:10px; align-items:center; min-width:0; }
+.subscription-policy-icon { display:grid; place-items:center; color:var(--muted); flex-shrink:0; }
+.subscription-policy-icon svg { width:17px; height:17px; }
+.subscription-policy-title { display:flex; align-items:center; gap:8px; }
+.subscription-policy-title strong { font-size:12px; font-weight:500; }
+.subscription-mode { color:var(--muted); font-size:10px; border:1px solid var(--subscription-line); padding:0 5px; border-radius:4px; }
+.subscription-mode.is-auto { color:var(--success); border-color:color-mix(in srgb,var(--success) 30%,transparent); }
+.subscription-policy-info p { margin:3px 0 0; font-size:11px; color:var(--muted); line-height:1.5; }
+.subscription-auto-control { display:flex; align-items:center; gap:10px; flex-shrink:0; font-size:11px; color:var(--muted); }
+.subscription-panel .switch { flex-shrink:0; }
+.subscription-science-main { display:flex; align-items:center; gap:13px; padding:18px 22px; }
+.subscription-science-mark { display:grid; place-items:center; flex-shrink:0; width:36px; height:36px; border-radius:9px; background:var(--surface); color:var(--muted); }
+.subscription-science-mark svg { width:20px; height:20px; stroke-width:1.6; }
+.subscription-science-info { flex:1; min-width:0; }
+.subscription-science-info h2 { font-size:14px; }
+.subscription-connection { display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:10px; }
+.subscription-connection.is-connected { color:var(--success); }
+.subscription-science-main > .btn { flex-shrink:0; font-size:12px; }
+.subscription-service-bar { display:flex; align-items:center; gap:18px; min-height:38px; border-top:1px solid var(--line); padding:8px 22px; color:var(--muted); font-size:11px; }
+.subscription-service-bar > span { display:inline-flex; align-items:center; gap:6px; }
+.subscription-service-bar .btn { margin-left:auto; min-height:26px; padding:3px 9px; font-size:11px; }
+.subscription-service-note { margin-left:auto; }
+.subscription-help { color:var(--muted); font-size:12px; }
+.subscription-help summary { display:flex; align-items:center; gap:6px; list-style:none; cursor:pointer; width:fit-content; padding:2px 0; border-radius:4px; }
+.subscription-help summary::-webkit-details-marker { display:none; }
+.subscription-help summary svg { width:14px; height:14px; }
+.subscription-help summary svg:last-child { width:12px; height:12px; margin-left:4px; transition:transform .15s; }
+.subscription-help[open] summary svg:last-child { transform:rotate(180deg); }
+.subscription-help > div { max-width:740px; padding:3px 0 0 20px; line-height:1.8; }
+.subscription-help p { margin:7px 0; }
+.subscription-empty { display:flex; flex-direction:column; align-items:center; text-align:center; padding:28px 12px 32px; gap:8px; }
+.subscription-empty-icon { display:grid; place-items:center; width:42px; height:42px; background:var(--surface); color:var(--muted); border-radius:50%; margin-bottom:2px; }
+.subscription-empty-icon svg { width:20px; height:20px; }
+.subscription-empty strong { font-size:13px; font-weight:500; }
+.subscription-empty p { font-size:12px; color:var(--muted); margin:0; }
+.subscription-login-status { display:flex; align-items:flex-start; gap:9px; padding:12px 14px; margin:16px 22px 0; border:1px solid var(--subscription-line); border-radius:7px; background:var(--surface); font-size:12px; }
+.subscription-login-status > svg { flex-shrink:0; width:15px; height:15px; margin-top:2px; }
+.subscription-login-status strong { font-weight:550; }
+.subscription-login-status p { font-size:11px; margin:3px 0 0; color:var(--muted); overflow-wrap:anywhere; }
+.subscription-login-status.is-error { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 25%,var(--line)); }
+:root[data-theme="dark"] .subscription-provider-mark { background:#372b26; color:#dba58a; }
+:root[data-theme="dark"] .subscription-account.is-current .subscription-avatar { background:#372d27; color:#d3a286; }
+@media (max-width:760px) {
+  .subscription-card-header { padding:17px; }
+  .subscription-provider p { max-width:250px; }
+  .subscription-list-label { padding:13px 17px 0; }
+  .subscription-accounts { padding:0 17px; }
+  .subscription-policy { padding:13px 17px; align-items:flex-start; }
+  .subscription-science-main { flex-wrap:wrap; padding:17px; }
+  .subscription-science-info { flex-basis:calc(100% - 50px); }
+  .subscription-science-main > .btn { margin-left:49px; }
+  .subscription-service-bar { padding-inline:17px; flex-wrap:wrap; gap:7px 14px; }
+  .subscription-service-note { display:none !important; }
+  .subscription-login-status { margin-inline:17px; }
+}
+@media (max-width:480px) {
+  body[data-view="subscriptions"] .topbar { height:65px; margin-bottom:16px; }
+  body[data-view="subscriptions"] #pageTitle { font-size:20px; }
+  .subscription-panel { gap:14px; }
+  .subscription-card-header { gap:12px; align-items:flex-start; flex-wrap:wrap; }
+  .subscription-provider { gap:10px; width:100%; }
+  .subscription-provider-mark { width:34px; height:34px; border-radius:8px; }
+  .subscription-provider-mark svg { width:21px; height:21px; }
+  .subscription-provider p { max-width:none; font-size:11px; }
+  .subscription-title-line h2 { font-size:15px; }
+  .subscription-card-header > .btn { margin-left:44px; min-height:30px; font-size:12px; }
+  .subscription-account { display:grid; grid-template-columns:30px minmax(0,1fr); gap:9px 10px; padding:16px 0; }
+  .subscription-avatar { width:30px; height:30px; font-size:12px; }
+  .subscription-account-name { flex-wrap:wrap; gap:5px; }
+  .subscription-account-name strong { max-width:100%; font-size:12px; }
+  .subscription-account-action { grid-column:2; justify-self:start; }
+  .subscription-policy { flex-wrap:wrap; gap:12px; }
+  .subscription-auto-control { margin-left:27px; width:calc(100% - 27px); justify-content:space-between; }
+  .subscription-science-info h2 { font-size:14px; }
+  .subscription-science-info p { font-size:11px; }
+  .subscription-science-mark { width:30px; height:30px; }
+  .subscription-science-main > .btn { margin-left:43px; }
+  .subscription-help { font-size:11px; }
+}
+@media (prefers-reduced-motion:reduce) { .subscription-help summary svg:last-child { transition:none; } }
+
+.subscription-routing { border-top:1px solid var(--line); padding:14px 22px; font-size:12px; }
+.subscription-routing > div { display:flex; align-items:center; flex-wrap:wrap; gap:7px 12px; margin-bottom:8px; }
+.subscription-routing > div > span:first-child { color:var(--muted); min-width:60px; }
+.subscription-routing strong { font-weight:550; overflow-wrap:anywhere; min-width:0; }
+.subscription-routing-state,.subscription-routing time { color:var(--muted); font-size:11px; }
+.subscription-routing-state.is-confirmed { color:var(--success); }
+.subscription-routing p { color:var(--muted); font-size:11px; line-height:1.7; margin:10px 0 0; }
+@media (max-width:760px) { .subscription-routing { padding:14px 17px; } }

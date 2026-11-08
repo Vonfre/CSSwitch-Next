@@ -289,6 +289,13 @@ def open_stream(url, data, headers, attempts=1, timeout=300):
 
 
 # ---------- Anthropic -> OpenAI 翻译（qwen 路径） ----------
+SERVER_HISTORY_BLOCKS = frozenset({
+    "server_tool_use", "web_search_tool_result", "web_fetch_tool_result",
+    "code_execution_tool_result", "bash_code_execution_tool_result",
+    "text_editor_code_execution_tool_result", "tool_search_tool_result",
+})
+
+
 def anthropic_to_openai(req):
     msgs = []
     sys_prompt = req.get("system")
@@ -308,6 +315,14 @@ def anthropic_to_openai(req):
             if t == "text":
                 text_parts.append(blk.get("text", ""))
                 media.append({"type": "text", "text": blk.get("text", "")})
+            elif t in SERVER_HISTORY_BLOCKS:
+                # Claude-hosted tools already ran on the official service. Keep
+                # their inputs/results in order as context, including a paused
+                # call with no result. Replaying these as function calls would
+                # require unavailable tools and can create unmatched call IDs.
+                text = "\n[Historical Claude server tool record]\n" + json.dumps(blk, ensure_ascii=False) + "\n"
+                text_parts.append(text)
+                media.append({"type": "text", "text": text})
             elif t == "image":
                 source = blk.get("source", {})
                 if source.get("type") == "base64":
@@ -718,13 +733,22 @@ class H(BaseHTTPRequestHandler):
         stream = bool(areq.get("stream"))
         self.target_model = resolve_model(model_id)
         try:
-            oreq = anthropic_to_openai(areq)
-            oreq["stream"] = stream
-            responses = prov()["mode"] == "responses"
-            if responses:
-                oreq = from_chat(oreq)
-            elif stream:
-                oreq["stream_options"] = {"include_usage": True}
+            try:
+                oreq = anthropic_to_openai(areq)
+                oreq["stream"] = stream
+                responses = prov()["mode"] == "responses"
+                if responses:
+                    oreq = from_chat(oreq)
+                elif stream:
+                    oreq["stream_options"] = {"include_usage": True}
+            except ValueError as e:
+                # A deterministic adapter limitation is not an upstream outage.
+                # Return an actionable error instead of triggering endless 502 retries.
+                detail = safe_error(e)
+                log(f"  !! 请求转换失败: {detail}")
+                self._send_json(400, {"type": "error", "error": {
+                    "type": "invalid_request_error", "message": detail}})
+                return
             headers = {"Authorization": f"Bearer {route()['key']}", "Content-Type": "application/json"}
             data = json.dumps(oreq).encode()
             log(f"Messages -> {oreq['model']}, protocol={prov()['mode']}, stream={stream}")

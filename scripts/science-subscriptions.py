@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""CSSwitch subscriptions, native Science login switching and local session handoff."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from subscription_store import Store, SubscriptionError, private_read, private_write
+except ModuleNotFoundError as exc:
+    if not (exc.name or '').startswith('cryptography'):
+        raise
+    print(json.dumps({'ok': False, 'message': '订阅管理需要带 cryptography 的 Python；请修复 Science 的本地 Python 环境。'}, ensure_ascii=False))
+    sys.exit(1)
+
+
+class Manager:
+    def __init__(self, home=None, runner=subprocess.run):
+        self.home = Path(home or Path.home())
+        self.runner = runner
+        self.store = Store(self.home / '.csswitch-next/subscriptions')
+        self.science = next((p for p in (
+            self.home / '.claude-science/bin/claude-science',
+            Path('/Applications/Claude Science.app/Contents/Resources/bin/claude-science'),
+        ) if p.is_file()), None)
+        self.local_http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def run(self, executable, args, timeout=20, env=None):
+        if executable is None:
+            raise SubscriptionError('未找到 Claude Science。')
+        try:
+            result = self.runner([str(executable), *args], capture_output=True,
+                                 text=True, timeout=timeout, env=env)
+        except subprocess.TimeoutExpired:
+            raise SubscriptionError('操作超时，请刷新检查状态。') from None
+        except OSError:
+            raise SubscriptionError('无法运行本机管理组件。') from None
+        if result.returncode:
+            # Child output may include credentials or one-shot login URLs.
+            raise SubscriptionError('本机组件未完成操作，请检查 Science 状态。')
+        return result
+
+    def science_state(self):
+        if self.science is None:
+            return {'running': False, 'installed': False}
+        try:
+            value = json.loads(self.run(self.science, ['status']).stdout)
+            if not isinstance(value.get('running'), bool):
+                raise ValueError()
+            if value['running'] and (type(value.get('pid')) is not int or value['pid'] <= 0):
+                raise ValueError()
+            return {k: value[k] for k in ('running', 'pid', 'port', 'version', 'started_at') if k in value}
+        except (ValueError, AttributeError):
+            raise SubscriptionError('无法确认 Science 运行状态，未执行接入。') from None
+
+    def base_url(self):
+        settings = self.store.gateway()
+        return f"http://127.0.0.1:{settings['port']}/{settings['secret']}"
+
+    def gateway_request(self, path, post=False):
+        req = urllib.request.Request(self.base_url() + path, data=b'' if post else None)
+        with self.local_http.open(req, timeout=2) as response:
+            return json.load(response)
+
+    def health(self):
+        try:
+            value = self.gateway_request('/health')
+            return value if value.get('service') == 'csswitch-subscriptions' else None
+        except Exception:
+            return None
+
+    def ensure_gateway(self, allow_native=False):
+        if self.store.snapshot().get('native_mode') and not allow_native:
+            raise SubscriptionError('当前使用 Science 原生登录，模型请求直接访问官方服务，无需订阅网关。')
+        if self.health():
+            return
+        settings = self.store.gateway()
+        with socket.socket() as probe:
+            # Match the HTTP server: recent health connections can leave
+            # TIME_WAIT sockets after a clean upgrade, without a live listener.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(('127.0.0.1', settings['port']))
+            except OSError:
+                raise SubscriptionError('订阅网关端口被占用；未连接到其他程序。') from None
+        child = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name('subscription_gateway.py')),
+                                  '--root', str(self.store.root)],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        for _ in range(40):
+            if self.health():
+                return
+            if child.poll() is not None:
+                break
+            time.sleep(0.1)
+        raise SubscriptionError('CSSwitch 订阅网关启动失败，请检查 Python 加密依赖或端口。')
+
+    def owned(self, science):
+        path = self.store.root / 'science.json'
+        if not science.get('running') or not path.exists():
+            return False
+        mark = json.loads(private_read(path))
+        if any(science.get(k) != mark.get(k) for k in ('pid', 'port', 'started_at')):
+            return False
+        # PID reuse or a different launcher must never be reported as connected.
+        try:
+            process = self.run('/bin/ps', ['eww', '-p', str(science['pid']), '-o', 'command=']).stdout
+            return 'ANTHROPIC_BASE_URL=' + self.base_url() in process
+        except SubscriptionError:
+            return False
+
+    def status(self):
+        science = self.science_state()
+        health = self.health()
+        public = self.store.public()
+        last = (health or {}).get('last_inference')
+        last = {k: last[k] for k in ('account_id', 'revision', 'started_at', 'completed_at') if k in last} if isinstance(last, dict) else None
+        confirmed = bool(last and last.get('revision') == public['revision']
+                         and any(a['current'] and a['id'] == last.get('account_id') for a in public['accounts']))
+        from science_native_switch import NativeSwitcher
+        native = NativeSwitcher(self).summary() if self.science is not None else {}
+        return {**public, 'installed': self.science is not None, 'native': native,
+                'gateway': bool(health), 'active_requests': health.get('active_requests', 0) if health else 0,
+                'science': science, 'connected': self.owned(science), 'last_inference': last,
+                'live_validation': 'confirmed' if confirmed else 'pending'}
+
+    def route(self, ident=None):
+        if self.store.snapshot().get('native_mode'):
+            raise SubscriptionError('当前使用原生登录切换；请选择「切换登录」，完成重启后在原会话 Resume。')
+        before = self.science_state()
+        self.store.route(ident)
+        after = self.science_state()
+        same = all(before.get(k) == after.get(k) for k in ('running', 'pid', 'started_at'))
+        return {'message': ('已设置下次推理使用的订阅账号。' if ident else '已启用订阅账号自动接管。')
+                + '设置在下一个请求生效，已发出的请求保持原账号。'
+                + ' Science 登录邮箱保持不变；实际使用账号请查看推理记录。'
+                + (' Science 进程未改变。' if same else ' Science 进程在外部发生变化，请检查任务状态。'),
+                'same_process': same}
+
+    def connect(self):
+        before = self.science_state()
+        if before.get('running'):
+            if self.owned(before):
+                self.ensure_gateway()
+                return {'message': 'Science 已接入 CSSwitch；保留当前进程。', 'same_process': True}
+            raise SubscriptionError('Science 正在运行且未接入 CSSwitch。请在任务完成后自行退出服务，再首次接入；当前进程保持运行。')
+        if self.science is None:
+            raise SubscriptionError('未找到 Claude Science。')
+        if self.store.public()['ready_accounts'] < 1:
+            raise SubscriptionError('请先添加有效订阅账号。')
+        self.ensure_gateway()
+        if self.science_state().get('running'):
+            raise SubscriptionError('Science 已被其他程序启动，请刷新；未改动它。')
+        env = {k: v for k, v in os.environ.items() if k not in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'BUN_OPTIONS')}
+        env['ANTHROPIC_BASE_URL'] = self.base_url()
+        self.run(self.science, ['serve', '--detached', '--no-browser'], timeout=150, env=env)
+        after = self.science_state()
+        if not after.get('running'):
+            raise SubscriptionError('Science 启动尚未完成，请刷新状态。')
+        private_write(self.store.root / 'science.json', json.dumps(after).encode())
+        if not self.owned(after):
+            raise SubscriptionError('Science 已运行，但未确认订阅网关接入；未停止它，请检查启动环境。')
+        return {'message': 'Science 已接入 CSSwitch。保留 Science 自身登录，在原会话中继续使用。'}
+
+    def manage(self, operation, params=None):
+        params = params or {}
+        if operation == 'status':
+            return self.status()
+        if operation == 'switch':
+            from science_native_switch import NativeSwitcher
+            return NativeSwitcher(self).switch(params.get('id'))
+        if operation == 'recover':
+            from science_native_switch import NativeSwitcher
+            return NativeSwitcher(self).recover()
+        if operation == 'auto':
+            return self.route()
+        if operation == 'select':
+            ident = params.get('id')
+            if not isinstance(ident, str) or not ident:
+                raise SubscriptionError('请选择账号。')
+            return self.route(ident)
+        if operation == 'connect':
+            return self.connect()
+        if operation == 'start':
+            self.ensure_gateway()
+            return {'message': 'CSSwitch 订阅网关已就绪。'}
+        if operation == 'login':
+            self.ensure_gateway(allow_native=True)
+            url = self.gateway_request('/login', post=True).get('url', '')
+            if not url.startswith('https://claude.ai/oauth/authorize?'):
+                raise SubscriptionError('登录地址无效，未打开浏览器。')
+            self.run('/usr/bin/open', [url])
+            return {'message': '已打开官方授权页。完成后刷新账号列表；添加第二个账号时请在官方页面切换登录。'}
+        raise SubscriptionError('未知订阅管理操作。')
+
+
+def main():
+    if len(sys.argv) > 1:
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument('operation', choices=['status', 'auto', 'select', 'switch', 'recover', 'connect', 'login', 'start'])
+        parser.add_argument('id', nargs='?')
+        args = parser.parse_args()
+        request = {'operation': args.operation, 'params': {'id': args.id}}
+    else:
+        request = json.load(sys.stdin)
+    try:
+        manager = Manager()
+        fd = os.open(manager.store.root / '.manager.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise SubscriptionError('另一个订阅操作尚未完成，请稍后刷新。') from None
+            result = manager.manage(request.get('operation'), request.get('params'))
+        print(json.dumps({'ok': True, 'value': result}, ensure_ascii=False))
+        return 0
+    except SubscriptionError as exc:
+        message = str(exc)
+    except Exception:
+        message = '订阅管理未完成；未返回敏感诊断信息。'
+    print(json.dumps({'ok': False, 'message': message}, ensure_ascii=False))
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

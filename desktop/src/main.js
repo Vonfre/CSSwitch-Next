@@ -15,7 +15,14 @@ const templateIcons = { custom: 'sliders-horizontal', deepseek: 'sparkles', qwen
 const state = { config: null, runtime: { proxy: 'amber', sandbox: 'amber' }, view: 'workbench', selected: null,
   draft: null, dirty: false, search: '', filter: 'all', sort: 'active', busy: false, usage: [], logs: { proxy: '', sandbox: '' }, logTab: 'proxy', verified: {}, diagnostics: null, catalogs: {}, catalogAttempts: new Set(), preset: 'custom', modelTarget: null, catalogRequest: 0, catalogBusy: false, testing: null, draftTest: null };
 const native = () => Boolean(window.__TAURI__?.core?.invoke);
-const icons = () => window.lucide?.createIcons();
+const icons = () => {
+  if (!window.lucide) return;
+  const pending = document.querySelectorAll('i[data-lucide]');
+  if (!pending.length) return;
+  pending.forEach(node => node.setAttribute('data-csswitch-icon', node.dataset.lucide));
+  window.lucide.createIcons({ nameAttr: 'data-csswitch-icon' });
+  document.querySelectorAll('svg[data-csswitch-icon]').forEach(node => node.removeAttribute('data-csswitch-icon'));
+};
 const fmt = (n) => new Intl.NumberFormat('zh-CN').format(n || 0);
 
 async function call(command, args = {}) {
@@ -78,12 +85,22 @@ async function loadConfig() {
   if (!state.selected) state.selected = state.config.provider;
 }
 
-async function refreshRuntime() {
-  if (!native()) return;
-  const previousProxy = state.runtime.proxy;
-  state.runtime = await call('status');
-  renderRuntime();
-  if (previousProxy !== state.runtime.proxy && state.view === 'workbench') renderList();
+let runtimeRequest = null;
+function refreshRuntime(fresh = false) {
+  if (!native()) return Promise.resolve();
+  // Mutations require a probe started after the operation, not a pending old snapshot.
+  if (fresh && runtimeRequest) return runtimeRequest.catch(() => {}).then(() => refreshRuntime());
+  // Share slow probes so timer ticks never accumulate subprocesses.
+  if (runtimeRequest) return runtimeRequest;
+  runtimeRequest = (async () => {
+    const previous = state.runtime;
+    state.runtime = { ...await call('status') };
+    if (state.view === 'workbench') {
+      if (previous.proxy !== state.runtime.proxy || previous.sandbox !== state.runtime.sandbox) renderRuntime();
+      if (previous.proxy !== state.runtime.proxy) renderList();
+    }
+  })().finally(() => { runtimeRequest = null; });
+  return runtimeRequest;
 }
 
 function active() { return state.config?.connections.find((p) => p.id === state.config.provider); }
@@ -124,7 +141,7 @@ function renderRuntime() {
   });
   $('#stopBtn').onclick = () => action(async () => {
     if (!await confirmAction('停止 Science？', '正在运行的研究任务会中断，对话记录保留。')) return;
-    await call('stop_all'); notice('网关与共享 Science 已停止。'); await refreshRuntime();
+    await call('stop_all'); notice('网关与共享 Science 已停止。'); await refreshRuntime(true);
   });
   icons();
 }
@@ -146,8 +163,53 @@ function renderLogs() {
 }
 
 
+let viewRequest = 0;
+let viewLoading = false;
+const viewReads = new Map();
+function loadView(view, refresh = false) {
+  if (viewReads.has(view)) return viewReads.get(view);
+  const pending = (async () => {
+    if (view === 'subscriptions') await loadSubscriptions();
+    else if (['mcp', 'skills', 'sessions'].includes(view)) await ({ mcp: loadMcp, skills: loadSkills, sessions: loadSessions })[view](refresh);
+    else if (native()) {
+      if (view === 'workbench' && refresh) { await loadConfig(); await refreshRuntime(true); }
+      if (view === 'usage') await loadUsage();
+      if (view === 'logs') state.logs = await call('read_logs');
+      if (view === 'settings') state.diagnostics = await call('diagnostics');
+    }
+  })().finally(() => { viewReads.delete(view); });
+  viewReads.set(view, pending);
+  return pending;
+}
+
+async function readView(view, refresh = false) {
+  const request = ++viewRequest;
+  viewLoading = true;
+  $('#content').setAttribute('aria-busy', 'true');
+  $('#refreshBtn').classList.add('spin');
+  $('#content').innerHTML = '<div class="empty" role="status">正在读取数据…</div>';
+  try {
+    await loadView(view, refresh);
+    // A late response from a page we left must never replace the current page.
+    if (request !== viewRequest || state.view !== view) return;
+    ({ workbench: renderWorkbench, subscriptions: renderSubscriptions, mcp: renderMcp, skills: renderSkills,
+       sessions: renderSessions, usage: renderUsage, logs: renderLogs, settings: renderSettings })[view]();
+  } catch (e) {
+    if (request === viewRequest) {
+      $('#content').innerHTML = '<div class="empty">读取失败，请点击刷新重试。</div>';
+      notice(String(e.message || e), true);
+    }
+  } finally {
+    if (request === viewRequest) {
+      viewLoading = false;
+      $('#content').setAttribute('aria-busy', 'false');
+      $('#refreshBtn').classList.remove('spin');
+    }
+  }
+}
+
 async function showView(view) {
-  if (state.busy || view === state.view) return;
+  if (state.busy || !state.config || view === state.view) return;
   if (state.dirty && view !== state.view) {
     if (!await confirmAction('放弃未保存的修改？', '离开工作台会丢弃当前表单的修改。')) return;
     state.dirty = false; state.draft = null; state.selected = state.config.provider;
@@ -156,23 +218,13 @@ async function showView(view) {
   state.view = view;
   $('#launchHelp').hidden = true;
   document.body.dataset.view = view;
+  document.body.classList.remove('session-detail');
   document.querySelectorAll('.nav-item').forEach(b => {
     b.classList.toggle('active', b.dataset.view === view);
     if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
-  $('#pageTitle').textContent = { workbench: '提供商', mcp: 'MCP 管理', skills: 'Skills 管理', sessions: '会话管理', usage: '用量统计', logs: '运行日志', settings: '设置' }[view];
-  if (['mcp', 'skills', 'sessions'].includes(view)) {
-    $('#content').innerHTML = '<div class="empty">正在读取管理数据…</div>';
-    await action(async () => { await ({ mcp: loadMcp, skills: loadSkills, sessions: loadSessions })[view](); ({ mcp: renderMcp, skills: renderSkills, sessions: renderSessions })[view](); }); return;
-  }
-  await action(async () => {
-    if (native()) {
-      if (view === 'usage') await loadUsage();
-      if (view === 'logs') state.logs = await call('read_logs');
-      if (view === 'settings') state.diagnostics = await call('diagnostics');
-    }
-    ({ workbench: renderWorkbench, usage: renderUsage, logs: renderLogs, settings: renderSettings })[view]();
-  });
+  $('#pageTitle').textContent = { workbench: '提供商', subscriptions: '订阅账号', mcp: 'MCP 管理', skills: 'Skills 管理', sessions: '会话管理', usage: '用量统计', logs: '运行日志', settings: '设置' }[view];
+  await readView(view);
 }
 
 document.querySelectorAll('.nav-item[data-view]').forEach((b) => { b.onclick = () => showView(b.dataset.view); });
@@ -199,30 +251,27 @@ applyFont();
 $('#workspaceDialog').oncancel = e => { if (state.busy) e.preventDefault(); };
 $('#workspaceDialog').onclose = () => { if (!$('#workspaceDialog').open) $('#workspaceDialog').innerHTML = ''; };
 $('#quitBtn').onclick = () => action(() => call('quit_app'));
-$('#refreshBtn').onclick = () => action(async () => {
+$('#refreshBtn').onclick = async () => {
+  if (state.busy || viewLoading || !state.config) return;
   if (state.dirty) { notice('请先保存连接配置，再刷新。', true); return; }
-  await loadConfig(); await refreshRuntime();
-  if (['mcp', 'skills', 'sessions'].includes(state.view)) { await ({ mcp: loadMcp, skills: loadSkills, sessions: loadSessions })[state.view](state.view === 'sessions'); ({ mcp: renderMcp, skills: renderSkills, sessions: renderSessions })[state.view](); return; }
-  if (state.view === 'usage') await loadUsage();
-  if (state.view === 'logs') state.logs = await call('read_logs');
-  if (state.view === 'settings') state.diagnostics = await call('diagnostics');
-  ({ workbench: renderWorkbench, usage: renderUsage, logs: renderLogs, settings: renderSettings })[state.view]();
-});
+  await readView(state.view, true);
+};
 
 async function init() {
   icons();
   try {
-    if (native()) { await loadConfig(); await refreshRuntime(); }
+    if (native()) await loadConfig();
     else {
       $('#previewLabel').hidden = false;
       state.config = { provider: '', mode: 'proxy', proxy_port: 18992, sandbox_port: 8991, connections: [] };
       state.selected = '';
     }
     $('#content').setAttribute('aria-busy', 'false'); renderWorkbench();
+    if (native() && state.config.mode !== 'official') refreshRuntime().catch(() => {});
     initUpdater();
   } catch (e) { $('#content').innerHTML = '<div class="empty">无法读取配置，请检查本地配置文件。</div>'; notice(String(e), true); }
 }
 init();
 setInterval(() => {
-  if (native() && !state.busy && state.view === 'workbench' && !document.hidden) refreshRuntime().catch(() => {});
+  if (native() && !state.busy && !viewLoading && state.config?.mode !== 'official' && state.view === 'workbench' && !document.hidden) refreshRuntime().catch(() => {});
 }, 8000);

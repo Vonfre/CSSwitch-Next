@@ -50,7 +50,7 @@ function renderSettings() {
       await call('stop_all');
     }
     await call('set_config', { cfg: { provider: state.config.provider, proxy_port, sandbox_port } });
-    await loadConfig(); await refreshRuntime(); renderSettings(); notice('端口已保存。');
+    await loadConfig(); await refreshRuntime(true); renderSettings(); notice('端口已保存。');
   }); };
   bindCompatibility(); renderUpdater(); icons();
 }

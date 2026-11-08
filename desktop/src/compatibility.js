@@ -53,10 +53,10 @@ async function launchScience(openOnly = false) {
     } catch { /* Elapsed time still provides feedback. */ }
     const result = openOnly ? (await call('open_url'), { msg: '已打开正在运行的 Science。' }) : await call('one_click_login');
     notice([result.msg || 'Claude Science 已就绪。', result.mcp_notice].filter(Boolean).join(' '));
-    await refreshRuntime();
+    await refreshRuntime(true);
   } catch (error) {
     $('#launchHelp').hidden = false;
-    await refreshRuntime().catch(() => {});
+    await refreshRuntime(true).catch(() => {});
     throw error;
   } finally {
     clearInterval(timer);

@@ -1,4 +1,4 @@
-"""Offline native account handoff for the verified macOS Science 0.1.72 layout.
+"""Offline native account handoff for supported Science credential layouts.
 
 Credentials have one refresh owner: Science. Each switch checkpoints the stopped
 instance, carries the complete local workspace, and verifies native /auth/status.
@@ -15,6 +15,7 @@ import plistlib
 from pathlib import Path
 import re
 import signal
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -28,6 +29,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from subscription_store import SubscriptionError, private_dir, private_read, private_write
+from subscription_platform import WINDOWS, linked, close_science_windows
 
 
 def checked_uuid(value):
@@ -49,7 +51,7 @@ def file_hash(path):
 
 def tree_stamp(root):
     """Detect independently edited inactive workspaces and concurrent writers."""
-    if root.is_symlink():
+    if linked(root):
         raise SubscriptionError('会话目录不能是符号链接。')
     digest = hashlib.sha256()
     for parent, dirs, files in os.walk(root, followlinks=False):
@@ -57,7 +59,7 @@ def tree_stamp(root):
         for name in sorted(dirs + files):
             path = Path(parent) / name
             meta = path.lstat()
-            if not (stat.S_ISREG(meta.st_mode) or stat.S_ISDIR(meta.st_mode)):
+            if linked(path) or not (stat.S_ISREG(meta.st_mode) or stat.S_ISDIR(meta.st_mode)):
                 raise SubscriptionError('会话目录包含链接或特殊文件，未自动迁移。')
             # Directories change mtime when populated by cp; file mtimes survive.
             record = [str(path.relative_to(root)), 'd' if path.is_dir() else 'f',
@@ -83,10 +85,15 @@ class NativeSwitcher:
     def __init__(self, manager):
         self.manager = manager
         self.store = manager.store
-        self.native = manager.home / '.claude-science'
+        layout = getattr(manager, 'layout', {}) if WINDOWS else {}
+        self.native = Path(layout.get('auth', manager.home / '.claude-science'))
+        self.data = Path(layout.get('data', manager.home / '.claude-science'))
         self.root = private_dir(self.store.root / 'native')
         self.slots = private_dir(self.root / 'accounts')
         self.journal = self.root / 'switch.json'
+        # Publication and rollback use rename, so staging must share the data
+        # volume even when Science stores its conversations on D: or E:.
+        self.backups = self.data / '.csswitch-subscription-backups' if WINDOWS else self.root / 'backups'
 
     def json_file(self, path, default=None):
         return json.loads(private_read(path)) if path.exists() else default
@@ -119,6 +126,9 @@ class NativeSwitcher:
         current = next((i for i, a in state['accounts'].items() if a['account_uuid'] == active.get('account_uuid')), None)
         journal = self.json_file(self.journal, {})
         return {'enabled': bool(state.get('native_mode')), 'account_id': current,
+                'initial_login_required': not bool(active.get('account_uuid')),
+                'supported_versions': '0.1.71 / 0.1.72（Windows）' if WINDOWS else '0.1.72（macOS）',
+                'backup_dir': str(self.backups),
                 'last_switch': {k: journal[k] for k in ('phase', 'at', 'counts') if k in journal}}
 
     def save_slot(self, active):
@@ -156,7 +166,7 @@ class NativeSwitcher:
             private_write(slot / 'token.enc', Fernet(self.key()).encrypt(json.dumps(token).encode()))
             (slot / 'refresh-journal').unlink(missing_ok=True)
             private_write(slot / 'active.json', json.dumps({'account_uuid': ident, 'org_uuid': account['org_uuid'],
-                                                          'login_owner_data_dir': str(self.native)}).encode())
+                                                          'login_owner_data_dir': str(self.data)}).encode())
         if token.get('account_uuid') != ident or token.get('org_uuid') != account['org_uuid']:
             raise SubscriptionError('目标账号的登录身份不匹配，未切换。')
         return slot
@@ -165,7 +175,7 @@ class NativeSwitcher:
         tokens = self.native / '.oauth-tokens'
         # The stopped native client requires exactly one .enc in its live slot.
         for path in tokens.glob('*.enc'):
-            if path.is_symlink():
+            if linked(path):
                 raise SubscriptionError('拒绝符号链接凭据。')
             path.unlink()
         private_write(self.token_path(account), private_read(slot / 'token.enc'))
@@ -179,7 +189,17 @@ class NativeSwitcher:
     def clone(self, source, target):
         if target.exists():
             raise SubscriptionError('暂存目录已存在，未覆盖。')
-        self.manager.run('/bin/cp', ['-cRp', str(source), str(target)], timeout=300)
+        if WINDOWS:
+            tree_stamp(source)
+            shutil.copytree(source, target, copy_function=shutil.copy2)
+        else:
+            self.manager.run('/bin/cp', ['-cRp', str(source), str(target)], timeout=300)
+
+    def open_gui(self):
+        if WINDOWS:
+            self.manager.run(self.manager.science, ['open'])
+        else:
+            self.manager.run('/usr/bin/open', ['-a', '/Applications/Claude Science.app'])
 
     def launch(self, gateway=False):
         env = {k: v for k, v in os.environ.items() if k not in (
@@ -229,6 +249,11 @@ class NativeSwitcher:
         return True
 
     def close_gui(self):
+        if WINDOWS:
+            try:
+                return close_science_windows(self.manager.home, self.manager.runner)
+            except Exception:
+                raise SubscriptionError('Science 窗口未退出，请关闭窗口后再切换。') from None
         app = Path('/Applications/Claude Science.app')
         if not (app / 'Contents/Info.plist').exists():
             return False
@@ -259,7 +284,7 @@ class NativeSwitcher:
         if operation.get('phase') in (None, 'complete', 'rolled_back'):
             return {'message': '没有需要恢复的账号切换。'}
         backup = Path(operation['backup'])
-        if backup.parent != self.root / 'backups' or backup.is_symlink():
+        if backup.parent != self.backups or linked(backup):
             raise SubscriptionError('恢复目录无效，未改动数据。')
         active = self.active()
         if active.get('account_uuid') not in (operation['from'], operation['to']):
@@ -278,7 +303,7 @@ class NativeSwitcher:
         slot = live_slot if active['account_uuid'] == old['account_uuid'] else backup / 'original-login'
         self.install_slot(old['account_uuid'], slot)
         target_account = next(a for a in original['accounts'].values() if a['account_uuid'] == operation['to'])
-        target = self.native / 'orgs' / checked_uuid(target_account['org_uuid'])
+        target = self.data / 'orgs' / checked_uuid(target_account['org_uuid'])
         # A published workspace has no history-next left in staging.
         if not (backup / 'history-next').exists() and (backup / 'history-source').exists() and target.exists():
             target.rename(backup / ('history-recovered-' + uuid.uuid4().hex[:8]))
@@ -300,7 +325,7 @@ class NativeSwitcher:
         self.verify_login(latest['accounts'][original_id])
         operation['phase'] = 'rolled_back'
         private_write(self.journal, json.dumps(operation).encode())
-        self.manager.run('/usr/bin/open', ['-a', '/Applications/Claude Science.app'])
+        self.open_gui()
         return {'message': '已恢复原 Science 登录。切换前后会话快照均已保留。'}
 
     def switch(self, ident):
@@ -309,33 +334,36 @@ class NativeSwitcher:
             raise SubscriptionError('请选择已授权的账号。')
         pending = self.json_file(self.journal, {})
         if pending.get('phase') not in (None, 'complete', 'rolled_back'):
-            raise SubscriptionError('上次切换未完成，请先恢复；备份位于订阅目录 native/backups，未覆盖现有数据。')
+            raise SubscriptionError('上次切换未完成，请先恢复；备份目录请查看订阅页，未覆盖现有数据。')
         account = state['accounts'][ident]
         current = self.active()
+        if not current.get('account_uuid'):
+            raise SubscriptionError('请先在官方 Science 完成一次登录并打开原会话，再使用订阅切换。现有对话未修改。')
         checked_uuid(current.get('account_uuid')); checked_uuid(current.get('org_uuid')); checked_uuid(account.get('org_uuid'))
         if current['account_uuid'] == account['account_uuid'] and state.get('native_mode'):
             if not self.manager.science_state().get('running'):
                 self.launch()
             self.verify_login(account)
-            self.manager.run('/usr/bin/open', ['-a', '/Applications/Claude Science.app'])
+            self.open_gui()
             return {'message': 'Science 已登录此账号。打开原会话后可继续或 Resume。'}
         version = self.manager.run(self.manager.science, ['--version']).stdout
-        if not re.search(r'\b' + re.escape(self.VERSION) + r'\b', version):
+        versions = ('0.1.71', '0.1.72') if WINDOWS else (self.VERSION,)
+        if not any(re.search(r'\b' + re.escape(v) + r'\b', version) for v in versions):
             raise SubscriptionError('当前 Science 版本尚未验证原生切换，请先适配；未修改登录。')
         config = self.native / 'config.toml'
-        if config.exists():
+        if config.exists() and not WINDOWS:
             import tomllib
             cfg = tomllib.loads(config.read_text())
             if cfg.get('data_dir_from') or Path(cfg.get('data_dir', str(self.native))).expanduser() != self.native or Path(cfg.get('paths', {}).get('auth_dir', str(self.native))).expanduser() != self.native:
                 raise SubscriptionError('自定义 Science 数据或认证目录尚不支持原生切换。')
-        source = self.native / 'orgs' / current['org_uuid']
-        target = self.native / 'orgs' / account['org_uuid']
-        if self.native.is_symlink() or not (source / 'operon-cli.db').is_file() or (source / 'operon-cli.db').is_symlink():
+        source = self.data / 'orgs' / current['org_uuid']
+        target = self.data / 'orgs' / account['org_uuid']
+        if any(linked(p) for p in (self.native, self.data, *self.data.parents)) or not (source / 'operon-cli.db').is_file() or linked(source / 'operon-cli.db'):
             raise SubscriptionError('Science 原会话目录无效，未修改登录。')
         if source == target:
             raise SubscriptionError('同组织多身份尚未适配，未改动原账号。')
         for path in (source, target, self.native / '.oauth-tokens'):
-            if path.is_symlink():
+            if linked(path):
                 raise SubscriptionError('拒绝符号链接目录。')
         lineage_path = self.root / 'history.json'
         lineage = self.json_file(lineage_path, {})
@@ -343,7 +371,10 @@ class NativeSwitcher:
             raise SubscriptionError('目标账号有独立或更新过的历史，未覆盖。请先处理历史合并。')
         before = self.manager.science_state()
         was_gateway = self.manager.owned(before)
-        backup = private_dir(private_dir(self.root / 'backups') / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]))
+        # Validate the installed client's real credential schema before stopping
+        # it or changing any history. An unknown encryption layout fails closed.
+        self.read_token(self.token_path(current['account_uuid']))
+        backup = private_dir(private_dir(self.backups) / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]))
         private_write(backup / 'accounts.enc', private_read(self.store.root / 'accounts.enc'))
         private_write(backup / 'active.json', private_read(self.native / 'active-org.json'))
         operation = {'phase': 'stopping', 'at': time.time(), 'backup': str(backup), 'from': current['account_uuid'], 'to': account['account_uuid']}
@@ -371,10 +402,13 @@ class NativeSwitcher:
             if health:
                 if health.get('active_requests'):
                     raise SubscriptionError('网关仍有请求，请稍后切换。')
-                cmd = self.manager.run('/bin/ps', ['-p', str(health['pid']), '-o', 'command=']).stdout
-                if 'subscription_gateway.py' not in cmd:
-                    raise SubscriptionError('无法确认订阅网关进程，未停止其他服务。')
-                os.kill(health['pid'], signal.SIGTERM)
+                if WINDOWS:
+                    self.manager.gateway_request('/shutdown', post=True)
+                else:
+                    cmd = self.manager.run('/bin/ps', ['-p', str(health['pid']), '-o', 'command=']).stdout
+                    if 'subscription_gateway.py' not in cmd:
+                        raise SubscriptionError('无法确认订阅网关进程，未停止其他服务。')
+                    os.kill(health['pid'], signal.SIGTERM)
                 for _ in range(50):
                     if not self.manager.health():
                         break
@@ -429,7 +463,7 @@ class NativeSwitcher:
             private_write(lineage_path, json.dumps(lineage).encode())
             phase('complete')
             (self.store.root / 'science.json').unlink(missing_ok=True)
-            self.manager.run('/usr/bin/open', ['-a', '/Applications/Claude Science.app'])
+            self.open_gui()
             return {'message': '已切换 Science 真实登录账号并验证成功。原项目与会话已保留；中断会话请点击 Resume 继续。',
                     'native_login_verified': True, 'counts': operation['counts']}
         except Exception as exc:
@@ -441,6 +475,8 @@ class NativeSwitcher:
                 if self.manager.science_state().get('running') and installed:
                     self.manager.run(self.manager.science, ['stop'], timeout=90)
                 if installed:
+                    if self.manager.science_state().get('running'):
+                        raise SubscriptionError('Science 尚未停止，备份已保留，请关闭后恢复。')
                     if attempted_start:
                         self.save_slot(self.active())
                     self.install_slot(current['account_uuid'], old_slot)
@@ -470,7 +506,7 @@ class NativeSwitcher:
                         private_write(self.store.root / 'science.json', json.dumps(launched).encode())
                 phase('rolled_back')
                 if gui:
-                    self.manager.run('/usr/bin/open', ['-a', '/Applications/Claude Science.app'])
+                    self.open_gui()
             except Exception:
                 phase('recovery_required')
                 raise SubscriptionError('切换未完成，自动恢复也未完成。已保留原登录与会话备份，请先恢复再操作。') from None

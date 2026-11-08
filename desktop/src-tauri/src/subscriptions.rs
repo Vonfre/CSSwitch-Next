@@ -4,14 +4,11 @@ use std::io::Write;
 use std::process::Stdio;
 
 pub fn manage(root: &std::path::Path, operation: &str, params: Value) -> Result<Value, String> {
-    if !cfg!(target_os = "macos") {
-        return Err("订阅接管目前仅在 macOS 提供。".into());
-    }
     if !["status", "auto", "select", "switch", "recover", "connect", "login", "start"].contains(&operation) {
         return Err("未知订阅管理操作。".into());
     }
-    let native_python = std::env::var_os("HOME").map(std::path::PathBuf::from)
-        .map(|p| p.join(".claude-science/conda/envs/claude-science-mcp/bin/python3"));
+    let native_python = if cfg!(windows) { None } else { super::platform::home()
+        .map(|p| p.join(".claude-science/conda/envs/claude-science-mcp/bin/python3")) };
     let python = native_python.filter(|p| p.is_file()).or_else(|| super::proc::find_exe("python3"))
         .ok_or("订阅管理需要 Python 3 和 cryptography。")?;
     let mut child = super::platform::command(python)

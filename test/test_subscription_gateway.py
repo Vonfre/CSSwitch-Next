@@ -14,9 +14,6 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit, urlencode
 
-if sys.platform == 'win32':
-    raise unittest.SkipTest('Native subscription storage uses POSIX locks and is not supported on Windows.')
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from subscription_store import Store, SubscriptionError
 import subscription_gateway as module

@@ -4,6 +4,8 @@ import argparse
 import hashlib
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -47,6 +49,14 @@ def prepare(destination):
                 for file in ('node.exe', 'LICENSE', 'README.md'):
                     shutil.copy2(source / file, target / file)
             marker.write_text(expected + '\n', encoding='ascii')
+    requirements = Path(__file__).with_name('windows-subscriptions-requirements.txt')
+    expected = hashlib.sha256(requirements.read_bytes()).hexdigest()
+    marker = destination / 'python/.subscriptions-sha256'
+    if not marker.is_file() or marker.read_text().strip() != expected:
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--require-hashes', '--only-binary=:all:',
+                        '--platform', 'win_amd64', '--python-version', '3.14', '--implementation', 'cp', '--abi', 'cp314',
+                        '--no-compile', '--upgrade', '--target', str(destination / 'python'), '-r', str(requirements)], check=True)
+        marker.write_text(expected + '\n', encoding='ascii')
     print(f'Windows runtimes ready: {destination}')
 
 

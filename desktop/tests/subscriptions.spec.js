@@ -59,6 +59,22 @@ test('empty accounts invite official authorization', async ({ page }) => {
     .toEqual(['login']);
 });
 
+test('Windows shows detected Unicode data path and first login guidance without overflow', async ({ page }) => {
+  await setup(page, false);
+  await page.evaluate(() => {
+    window.subscriptionStatus.data_dir = 'D:\\科研 数据\\很长的本机对话目录\\Claude Science';
+    window.subscriptionStatus.history_found = true;
+    window.subscriptionStatus.native.initial_login_required = true;
+    window.subscriptionStatus.native.supported_versions = '0.1.71 / 0.1.72（Windows）';
+  });
+  await page.locator('#refreshBtn').click();
+  await expect(page.locator('.subscription-routing')).toContainText('已发现本地会话库');
+  await expect(page.locator('.subscription-routing')).toContainText('请先在官方 Science 完成一次登录');
+  await expect(page.locator('.subscription-routing')).toContainText('D:\\科研 数据');
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+
 test('failed switch keeps native account and offers recovery for interrupted handoff', async ({ page }) => {
   await setup(page);
   await page.evaluate(() => { window.subscriptionFail = true; });

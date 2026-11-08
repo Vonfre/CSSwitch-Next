@@ -1,6 +1,6 @@
 # Windows 版本
 
-CSSwitch Next 同时支持 macOS 和 Windows x64。Windows 版保留相同的 Tauri 界面、连接配置、协议代理、MCP、Skills、会话、用量与汉化功能，并同步 v0.8.8 的统一提供商表单和实时版本检测。
+CSSwitch Next 同时支持 macOS 和 Windows x64。Windows 版保留相同的 Tauri 界面、连接配置、协议代理、MCP、Skills、会话、用量与汉化功能。v0.8.19 补齐官方订阅账号管理、原生登录切换和 Windows 数据目录识别。
 
 ## 本机使用
 
@@ -14,6 +14,12 @@ CSSwitch Next 同时支持 macOS 和 Windows x64。Windows 版保留相同的 Ta
 默认识别 `%LOCALAPPDATA%\Programs\ClaudeScience\claude-science.exe`，优先使用 `%USERPROFILE%\.claude-science\bin\claude-science.exe`。自定义安装可设置 `CSSWITCH_SCIENCE_BIN` 为实际 EXE 路径。
 
 配置位于 `%USERPROFILE%\.csswitch-next`；可用 `CSSWITCH_DATA_DIR` 指定独立目录。密钥只保存在本机，以 NTFS 私有 ACL 限制访问。API 字段保持空白，由用户填写。原有 Science 数据继续位于原目录；同时支持根目录单数据库和旧版按组织分目录的数据库布局。
+
+订阅账号在侧栏「订阅账号」添加，使用官方 OAuth 授权；详情见 [订阅与 Resume](SUBSCRIPTIONS.md)。首次切换前需在官方 Science 登录一次。订阅库位于 `%USERPROFILE%\.csswitch-next\subscriptions`，其密钥由当前用户 DPAPI 保护。
+
+会话与订阅页共用目录识别：优先读取 `%USERPROFILE%\.claude-science\config.toml` 的 `data_dir` / `paths.auth_dir`，支持 `~\`、中文、空格及环境变量；无显式数据目录时检查默认目录及 `%APPDATA%` / `%LOCALAPPDATA%` 下的 `ClaudeScience`、`Claude Science`、`claude-science`。只有含会话数据库的目录才作为历史候选。存在多个候选时提示选择，不自动合并或新建空历史。
+
+非默认实例可设置 `CSSWITCH_SCIENCE_CONFIG` 为实际 TOML 文件、`CSSWITCH_SCIENCE_DATA_DIR` 为数据目录，然后重启 CSSwitch。显式目录优先；订阅页显示实际识别路径。Science 正在迁移目录时拒绝切换。安装包中的 Python 固定使用 UTF-8，避免中文 Windows 编码导致会话内容无法解析。
 
 ## 构建
 

@@ -237,9 +237,11 @@ jobs:
         run: ./desktop/scripts/test-windows.ps1
       - name: Windows Python Tests
         run: |
+          python -m pip install --require-hashes -r scripts/windows-subscriptions-requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s test -p "test_*.py"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($suite in @('test_science_compatibility.py', 'test_science_workspace.py', 'test_science_local_skills.py', 'test_science_skills_manage.py', 'test_science_ui_proxy.py', 'test_science_translation.py', 'test_update_manifest.py')) {
+          foreach ($suite in @('test_science_paths.py', 'test_science_subscriptions.py', 'test_science_native_switch.py', 'test_science_compatibility.py', 'test_science_workspace.py', 'test_science_local_skills.py', 'test_science_skills_manage.py', 'test_science_ui_proxy.py', 'test_science_translation.py', 'test_update_manifest.py')) {
             python -m unittest discover -s scripts/tests -p $suite
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
@@ -264,7 +266,7 @@ jobs:
           Copy-Item -LiteralPath ($installers[0].FullName + '.sig') "release-assets/$name-setup.exe.sig"
           python scripts/package-windows.py --binary desktop/src-tauri/target/release/desktop.exe --runtime .runtime --output "release-assets/$name"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "release-assets/$name/runtime/python/python.exe" -I -c "import sqlite3, ssl, routing, science_translation; print('Bundled runtime OK')"
+          & "release-assets/$name/runtime/python/python.exe" -X utf8 -I -c "import sqlite3, ssl, routing, science_translation, subscription_store, science_native_switch, science_paths; print('Bundled runtime OK')"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: needs.test.outputs.tag != ''

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import ssl
 import sys
 import threading
@@ -26,7 +27,7 @@ CLIENT_ID = 'a135f8ff-7c18-4143-b5c4-78cf58d0ed17'
 TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
 PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 SCOPES = 'user:inference user:file_upload user:profile user:mcp_servers user:plugins'
-USER_AGENT = 'CSSwitch/0.8.17'
+USER_AGENT = 'CSSwitch/0.8.19'
 
 
 class OAuthLoginError(SubscriptionError):
@@ -100,7 +101,12 @@ def retry_delay(headers):
 
 class Gateway(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = os.name != 'nt'
+
+    def server_bind(self):
+        if os.name == 'nt':
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def __init__(self, address, store, upstream='https://api.anthropic.com'):
         self.store = store
@@ -110,6 +116,7 @@ class Gateway(ThreadingHTTPServer):
         self.lock = threading.RLock()
         self.refresh_locks = {}
         self.active = 0
+        self.stopping = False
         self.requests = 0
         self.last_account = ''
         self.last_inference = None
@@ -297,6 +304,14 @@ class Handler(BaseHTTPRequestHandler):
                     'last_inference': self.server.last_inference})
         if route == '/login' and self.command == 'POST':
             return self.send_json(200, {'url': self.server.begin_login()})
+        if route == '/shutdown' and self.command == 'POST':
+            with self.server.lock:
+                if self.server.active:
+                    return self.error(409, '网关仍有请求，请稍后重试。')
+                self.server.stopping = True
+            self.send_json(200, {'stopping': True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if (self.command, route) not in (('POST', '/v1/messages'), ('POST', '/v1/messages/count_tokens'), ('GET', '/v1/models')):
             self.close_connection = True
             return self.error(404, '不支持此网关路径。')
@@ -317,6 +332,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return self.error(400, '请求未接收完整。')
         with self.server.lock:
+            if self.server.stopping:
+                return self.error(503, '网关正在停止。')
             self.server.active += 1
             self.server.requests += 1
         try:
@@ -445,7 +462,10 @@ def main():
     store = Store(args.root)
     gateway = store.gateway()
     server = Gateway(('127.0.0.1', gateway['port']), store)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 if __name__ == '__main__':

@@ -89,6 +89,52 @@ pub fn preferred_binary(home: Option<&Path>, fallback: &Path) -> PathBuf {
 }
 
 pub fn local_settings(home: &Path) -> Result<(PathBuf, toml::Value), String> {
+    let (data, _, settings) = local_layout(home)?;
+    Ok((data, settings))
+}
+
+fn local_layout(home: &Path) -> Result<(PathBuf, PathBuf, toml::Value), String> {
+    #[cfg(windows)]
+    {
+        // Embed the same read-only resolver used by subscriptions so installed
+        // builds cannot select different history directories in the two pages.
+        let python = super::proc::find_exe("python3").ok_or("查找 Science 目录需要内置 Python。")?;
+        let mut child = crate::platform::command(python)
+            .args(["-I", "-c", include_str!("../../../scripts/science_paths.py")])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
+            .spawn().map_err(|_| "无法启动 Science 目录识别组件。")?;
+        let request = serde_json::to_vec(&serde_json::json!({"home": home})).map_err(|e| e.to_string())?;
+        if child.stdin.take().unwrap().write_all(&request).is_err() {
+            let _ = child.kill(); let _ = child.wait();
+            return Err("无法发送 Science 目录查询。".into());
+        }
+        let out = child.wait_with_output().map_err(|_| "Science 目录识别未完成。")?;
+        let result: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| "Science 目录识别返回无效。")?;
+        if result["ok"].as_bool() != Some(true) {
+            return Err(result["message"].as_str().unwrap_or("无法确定 Science 数据目录。").into());
+        }
+        let path = |key: &str| -> Result<PathBuf, String> {
+            result["value"][key].as_str().map(PathBuf::from).ok_or("Science 目录识别返回不完整。".into())
+        };
+        let data = path("data")?;
+        let auth = path("auth")?;
+        let mut settings: toml::Value = match read_private(&path("config")?)? {
+            Some(s) => toml::from_str(s.trim_start_matches('\u{feff}')).map_err(|_| "Science config.toml 格式不正确。")?,
+            None => toml::Value::Table(Default::default()),
+        };
+        settings.as_table_mut().ok_or("Science 设置必须是 TOML 表。")?
+            .insert("data_dir".into(), toml::Value::String(data.to_string_lossy().into_owned()));
+        Ok((data, auth, settings))
+    }
+    #[cfg(not(windows))]
+    {
+        let (data, settings) = mac_local_settings(home)?;
+        Ok((data, home.join(".claude-science"), settings))
+    }
+}
+
+#[cfg(not(windows))]
+fn mac_local_settings(home: &Path) -> Result<(PathBuf, toml::Value), String> {
     let native = home.join(".claude-science");
     let mut settings: toml::Value = match read_private(&native.join("config.toml"))? {
         Some(s) => {
@@ -242,7 +288,7 @@ fn history_owner(db: &Path) -> Result<Option<String>, String> {
 }
 
 pub fn prepare(home: &Path, root: &Path, port: u16) -> Result<Session, String> {
-    let (data_dir, mut settings) = local_settings(home)?;
+    let (data_dir, native, mut settings) = local_layout(home)?;
     // Enable the native updater only in our launch copy, preserving its channel settings.
     settings
         .as_table_mut()
@@ -252,7 +298,6 @@ pub fn prepare(home: &Path, root: &Path, port: u16) -> Result<Session, String> {
         .as_table_mut()
         .ok_or("Science update 设置无效。")?
         .insert("auto_update".into(), toml::Value::Boolean(true));
-    let native = home.join(".claude-science");
     if root.starts_with(&native) || root.starts_with(&data_dir) || data_dir.starts_with(root) {
         return Err("CSSwitch 认证目录不能与 Science 对话数据目录重叠。".into());
     }

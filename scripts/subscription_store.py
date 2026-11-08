@@ -1,7 +1,6 @@
 """CSSwitch private, encrypted subscription state. No Science auth files are written."""
 import base64
 from contextlib import contextmanager
-import fcntl
 import hashlib
 import json
 import os
@@ -12,6 +11,7 @@ import tempfile
 import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from subscription_platform import WINDOWS, linked, protect, private_handle, dpapi, lock_file, open_read
 
 
 class SubscriptionError(Exception):
@@ -21,30 +21,34 @@ class SubscriptionError(Exception):
 def private_dir(path):
     path = Path(path)
     for parent in (path, *path.parents):
-        if parent.is_symlink():
+        if linked(parent):
             raise SubscriptionError('订阅存储路径不能包含符号链接。')
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path, 0o700)
+    protect(path)
     return path
 
 
 def private_read(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    path = Path(path)
+    if any(linked(p) for p in (path, *path.parents)):
+        raise SubscriptionError('拒绝链接凭据。')
+    fd = open_read(path)
     with os.fdopen(fd, 'rb') as stream:
         meta = os.fstat(stream.fileno())
-        if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid() or meta.st_mode & 0o077:
-            raise SubscriptionError('订阅配置必须属于当前用户且权限为 0600。')
+        safe = private_handle(fd) if WINDOWS else meta.st_uid == os.getuid() and not meta.st_mode & 0o077
+        if not stat.S_ISREG(meta.st_mode) or getattr(meta, 'st_file_attributes', 0) & 0x400 or not safe:
+            raise SubscriptionError('订阅配置权限不安全，请检查当前用户的私有存储权限。')
         return stream.read()
 
 
 def private_write(path, data):
     path = Path(path)
-    if path.is_symlink():
+    if any(linked(p) for p in (path, *path.parents)):
         raise SubscriptionError('拒绝符号链接配置。')
     fd, name = tempfile.mkstemp(prefix='.write-', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as stream:
-            os.fchmod(stream.fileno(), 0o600)
+            protect(name)
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
@@ -60,17 +64,24 @@ class Store:
 
     @contextmanager
     def locked(self):
-        fd = os.open(self.root / '.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, 'w') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        path = self.root / '.lock'
+        if linked(path):
+            raise SubscriptionError('拒绝链接锁文件。')
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        with os.fdopen(fd, 'r+b') as lock:
+            protect(path)
+            lock_file(lock.fileno())
             yield
 
     def key(self):
         path = self.root / 'vault.key'
         if not path.exists():
             # Only called inside the store lock.
-            private_write(path, secrets.token_bytes(32))
+            key = secrets.token_bytes(32)
+            private_write(path, b'CSDP1:' + dpapi(key) if WINDOWS else key)
         key = private_read(path)
+        if WINDOWS and key.startswith(b'CSDP1:'):
+            key = dpapi(key[6:], decrypt=True)
         if len(key) != 32:
             raise SubscriptionError('订阅密钥文件损坏，未改写账号数据。')
         return key

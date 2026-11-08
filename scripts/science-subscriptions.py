@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """CSSwitch subscriptions, native Science login switching and local session handoff."""
 import argparse
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -12,6 +11,8 @@ import time
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from subscription_platform import WINDOWS, linked, protect, lock_file, subprocess_options
+from science_paths import resolve
 try:
     from subscription_store import Store, SubscriptionError, private_read, private_write
 except ModuleNotFoundError as exc:
@@ -22,22 +23,29 @@ except ModuleNotFoundError as exc:
 
 
 class Manager:
-    def __init__(self, home=None, runner=subprocess.run):
+    def __init__(self, home=None, runner=subprocess.run, env=None):
         self.home = Path(home or Path.home())
         self.runner = runner
         self.store = Store(self.home / '.csswitch-next/subscriptions')
-        self.science = next((p for p in (
-            self.home / '.claude-science/bin/claude-science',
-            Path('/Applications/Claude Science.app/Contents/Resources/bin/claude-science'),
-        ) if p.is_file()), None)
+        try:
+            self.layout = resolve(self.home, env=env)
+        except (OSError, ValueError):
+            raise SubscriptionError('无法确定 Science 目录，请检查配置文件和 CSSWITCH_SCIENCE_DATA_DIR / CSSWITCH_SCIENCE_CONFIG。') from None
+        binary = Path(self.layout['binary'])
+        self.science = binary if binary.is_file() else None
         self.local_http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def run(self, executable, args, timeout=20, env=None):
         if executable is None:
             raise SubscriptionError('未找到 Claude Science。')
+        if executable == self.science and args and args[0] != '--version' and WINDOWS:
+            args = [*args, '--data-dir', self.layout['data']]
+            if Path(self.layout['config']).is_file():
+                args += ['--config', self.layout['config']]
         try:
             result = self.runner([str(executable), *args], capture_output=True,
-                                 text=True, timeout=timeout, env=env)
+                                 text=True, encoding='utf-8', errors='replace', timeout=timeout, env=env,
+                                 **subprocess_options())
         except subprocess.TimeoutExpired:
             raise SubscriptionError('操作超时，请刷新检查状态。') from None
         except OSError:
@@ -85,15 +93,16 @@ class Manager:
         with socket.socket() as probe:
             # Match the HTTP server: recent health connections can leave
             # TIME_WAIT sockets after a clean upgrade, without a live listener.
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE if WINDOWS else socket.SO_REUSEADDR, 1)
             try:
                 probe.bind(('127.0.0.1', settings['port']))
             except OSError:
                 raise SubscriptionError('订阅网关端口被占用；未连接到其他程序。') from None
-        child = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name('subscription_gateway.py')),
+        child = subprocess.Popen([sys.executable, '-X', 'utf8', '-I', str(Path(__file__).with_name('subscription_gateway.py')),
                                   '--root', str(self.store.root)],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+                                 stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                                 **subprocess_options())
         for _ in range(40):
             if self.health():
                 return
@@ -103,6 +112,10 @@ class Manager:
         raise SubscriptionError('CSSwitch 订阅网关启动失败，请检查 Python 加密依赖或端口。')
 
     def owned(self, science):
+        if WINDOWS:
+            # The legacy inference launcher cannot attest a Windows process's
+            # environment. Native switching does not rely on gateway ownership.
+            return False
         path = self.store.root / 'science.json'
         if not science.get('running') or not path.exists():
             return False
@@ -127,6 +140,7 @@ class Manager:
         from science_native_switch import NativeSwitcher
         native = NativeSwitcher(self).summary() if self.science is not None else {}
         return {**public, 'installed': self.science is not None, 'native': native,
+                'data_dir': self.layout['data'], 'history_found': self.layout['history_found'],
                 'gateway': bool(health), 'active_requests': health.get('active_requests', 0) if health else 0,
                 'science': science, 'connected': self.owned(science), 'last_inference': last,
                 'live_validation': 'confirmed' if confirmed else 'pending'}
@@ -145,6 +159,8 @@ class Manager:
                 'same_process': same}
 
     def connect(self):
+        if WINDOWS:
+            raise SubscriptionError('Windows 请使用「切换登录」进入 Science 原生订阅模式。')
         before = self.science_state()
         if before.get('running'):
             if self.owned(before):
@@ -196,9 +212,15 @@ class Manager:
             url = self.gateway_request('/login', post=True).get('url', '')
             if not url.startswith('https://claude.ai/oauth/authorize?'):
                 raise SubscriptionError('登录地址无效，未打开浏览器。')
-            self.run('/usr/bin/open', [url])
+            self.open_url(url)
             return {'message': '已打开官方授权页。完成后刷新账号列表；添加第二个账号时请在官方页面切换登录。'}
         raise SubscriptionError('未知订阅管理操作。')
+
+    def open_url(self, url):
+        if WINDOWS:
+            os.startfile(url)
+        else:
+            self.run('/usr/bin/open', [url])
 
 
 def main():
@@ -212,10 +234,14 @@ def main():
         request = json.load(sys.stdin)
     try:
         manager = Manager()
-        fd = os.open(manager.store.root / '.manager.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, 'w') as lock:
+        path = manager.store.root / '.manager.lock'
+        if linked(path):
+            raise SubscriptionError('拒绝链接锁文件。')
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        with os.fdopen(fd, 'r+b') as lock:
+            protect(path)
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_file(lock.fileno(), blocking=False)
             except BlockingIOError:
                 raise SubscriptionError('另一个订阅操作尚未完成，请稍后刷新。') from None
             result = manager.manage(request.get('operation'), request.get('params'))

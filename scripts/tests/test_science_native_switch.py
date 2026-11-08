@@ -14,9 +14,6 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
-if sys.platform == 'win32':
-    raise unittest.SkipTest('Native subscription storage uses POSIX locks and is not supported on Windows.')
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cryptography.fernet import Fernet
 from science_native_switch import NativeSwitcher, tree_stamp, file_hash
@@ -68,6 +65,7 @@ class NativeSwitchTests(unittest.TestCase):
             science_state=lambda: {'running': self.running, 'pid': 1 if self.running else None}, owned=lambda s: False,
             health=lambda: None, ensure_gateway=Mock(), base_url=lambda: 'http://127.0.0.1:1/synthetic')
         self.switcher = NativeSwitcher(self.manager)
+        self.switcher.close_gui = Mock(return_value=False)
         self.switcher.verify_login = Mock(return_value=True)
         def launch(gateway=False):
             self.running = True
@@ -129,7 +127,7 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertEqual(self.switcher.summary()['last_switch']['phase'], 'rolled_back')
         self.assertEqual((self.source / 'tool-results/result.txt').read_text(), '37')
         self.assertFalse((self.native / 'orgs' / self.orgs[1]).exists())
-        self.assertTrue(list((self.switcher.root / 'backups').glob('*/history-failed')))
+        self.assertTrue(list(self.switcher.backups.glob('*/history-failed')))
 
     def test_failed_clone_keeps_original_login_and_history(self):
         self.switcher.clone = Mock(side_effect=OSError('simulated full disk'))
@@ -165,9 +163,70 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertNotIn(['stop'], self.commands)
 
     def test_symlink_history_is_rejected(self):
-        (self.source / 'outside').symlink_to(self.home)
+        try:
+            (self.source / 'outside').symlink_to(self.home, target_is_directory=True)
+        except OSError as error:
+            if getattr(error, 'winerror', None) == 1314:
+                self.skipTest('Windows symlink privilege is unavailable')
+            raise
         with self.assertRaisesRegex(SubscriptionError, '链接'):
             tree_stamp(self.source)
+
+    def test_missing_initial_login_preserves_history(self):
+        (self.native / 'active-org.json').unlink()
+        before = file_hash(self.source / 'operon-cli.db')
+        with self.assertRaisesRegex(SubscriptionError, '先在官方 Science'):
+            self.switcher.switch(self.ids[1])
+        self.assertEqual(file_hash(self.source / 'operon-cli.db'), before)
+        self.assertNotIn(['stop'], self.commands)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows custom data volume')
+    def test_custom_data_and_auth_directories_keep_staging_on_data_volume(self):
+        data = self.home / '研究 数据'
+        data.mkdir()
+        shutil.move(str(self.native / 'orgs'), str(data / 'orgs'))
+        self.manager.layout = {'data': str(data), 'auth': str(self.native)}
+        switcher = NativeSwitcher(self.manager)
+        switcher.close_gui = Mock(return_value=False)
+        switcher.launch = self.switcher.launch
+        switcher.verify_login = Mock(return_value=True)
+        switcher.switch(self.ids[1])
+        self.assertEqual(switcher.backups.parent, data)
+        self.assertTrue((data / 'orgs' / self.orgs[1] / 'operon-cli.db').exists())
+        self.assertEqual(switcher.active()['account_uuid'], self.account_ids[1])
+
+    @unittest.skipUnless(os.name == 'nt', 'NTFS junctions')
+    def test_junction_history_rejected_without_symlink_privilege(self):
+        link = self.source / 'junction'
+        subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(link), str(self.home)],
+                       check=True, capture_output=True)
+        with self.assertRaisesRegex(SubscriptionError, '链接'):
+            tree_stamp(self.source)
+
+    def test_unknown_native_token_layout_fails_before_stop(self):
+        private_write(self.switcher.token_path(self.account_ids[0]), b'unsupported-encryption')
+        with self.assertRaises(Exception):
+            self.switcher.switch(self.ids[1])
+        self.assertNotIn(['stop'], self.commands)
+        self.assertFalse(self.switcher.journal.exists())
+
+    def test_v2_native_credentials_preserve_identity_and_refresh_owner(self):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        from cryptography.hazmat.primitives import hashes
+        path = self.switcher.token_path(self.account_ids[0])
+        token = self.switcher.read_token(path)
+        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=b'',
+                   info=b'operon:aes-256-gcm:oauth').derive(base64.b64decode(self.switcher.key()))
+        nonce = os.urandom(12)
+        private_write(path, b'v2:' + base64.b64encode(nonce + AESGCM(key).encrypt(nonce, json.dumps(token).encode(), b'v2:oauth')))
+        if os.name == 'nt':
+            original = self.manager.run
+            self.manager.run = lambda exe, args, **kw: subprocess.CompletedProcess([], 0, '0.1.71', '') if args == ['--version'] else original(exe, args, **kw)
+        self.switcher.switch(self.ids[1])
+        saved = self.switcher.read_token(self.switcher.slots / self.account_ids[0] / 'token.enc')
+        self.assertEqual(saved, token)
+        self.assertNotIn('refresh_token', self.store.snapshot()['accounts'][self.ids[0]])
 
 
 if __name__ == '__main__':

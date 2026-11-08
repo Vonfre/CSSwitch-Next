@@ -17,7 +17,7 @@ spec = importlib.util.spec_from_file_location('subscription_manager', SCRIPTS / 
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 from subscription_store import Store, SubscriptionError, private_read, private_write
-from subscription_platform import WINDOWS, private_handle
+from subscription_platform import WINDOWS, private_handle, linked
 
 
 def account(name):
@@ -30,6 +30,11 @@ class StoreTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.store = Store(Path(self.temp.name).resolve() / 'subscriptions')
+
+    def test_non_directory_component_can_be_checked_before_its_parent(self):
+        path = self.store.root / 'file'
+        path.touch()
+        self.assertFalse(linked(path / 'child'))
 
     def test_encrypted_private_public_whitelist(self):
         ident = self.store.add(account('A'))
@@ -244,7 +249,7 @@ class GatewayLifecycleTests(unittest.TestCase):
                 second = manager.health()['pid']
                 pids.add(second)
                 self.assertNotEqual(first, second)
-                self.assertEqual(manager.health()['version'], '0.8.19')
+                self.assertEqual(manager.health()['version'], '0.8.20')
             finally:
                 for pid in pids:
                     try:

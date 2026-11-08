@@ -27,7 +27,7 @@ CLIENT_ID = 'a135f8ff-7c18-4143-b5c4-78cf58d0ed17'
 TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
 PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 SCOPES = 'user:inference user:file_upload user:profile user:mcp_servers user:plugins'
-USER_AGENT = 'CSSwitch/0.8.19'
+USER_AGENT = 'CSSwitch/0.8.20'
 
 
 class OAuthLoginError(SubscriptionError):

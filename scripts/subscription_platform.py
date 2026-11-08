@@ -13,7 +13,7 @@ WINDOWS = os.name == 'nt'
 def linked(path):
     try:
         return path.is_symlink() or bool(getattr(path.lstat(), 'st_file_attributes', 0) & 0x400)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
 
 

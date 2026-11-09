@@ -233,6 +233,9 @@ jobs:
           restore-keys: release-Windows-x64-
       - name: Prepare bundled runtimes
         run: python scripts/prepare-windows-runtime.py
+      - name: Windows Model and Subscription UI Tests
+        working-directory: desktop
+        run: npx playwright test tests/workbench.spec.js tests/subscriptions.spec.js tests/science-model-compat.spec.js
       - name: Windows Rust Tests
         run: ./desktop/scripts/test-windows.ps1
       - name: Windows Python Tests

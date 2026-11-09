@@ -22,6 +22,6 @@
 
 [下载 macOS / Windows 安装包](https://github.com/Vonfre/CSSwitch-Next/releases/latest)
 
-[Windows 安装与构建](docs/WINDOWS.md) · [管理工作空间使用说明](docs/MANAGEMENT.md) · [汉化与翻译方式](docs/TRANSLATION.md)
+[跨平台功能与发布](docs/CROSS-PLATFORM.md) · [Windows 安装与构建](docs/WINDOWS.md) · [管理工作空间使用说明](docs/MANAGEMENT.md) · [汉化与翻译方式](docs/TRANSLATION.md)
 
 [本机优化与后续规划（Science 0.1.67）](docs/ROADMAP-0.9.md)

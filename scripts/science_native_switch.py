@@ -111,7 +111,7 @@ class NativeSwitcher:
         if data.startswith(b'v2:'):
             raw = base64.b64decode(data[3:], validate=True)
             derived = HKDF(algorithm=hashes.SHA256(), length=32, salt=b'',
-                           info=b'operon:aes-256-gcm:oauth').derive(base64.b64decode(key))
+                           info=b'operon:aes-256-gcm:oauth').derive(base64.b64decode(key, altchars=b'-_', validate=True))
             plain = AESGCM(derived).decrypt(raw[:12], raw[12:], b'v2:oauth')
         else:
             plain = Fernet(key).decrypt(data)

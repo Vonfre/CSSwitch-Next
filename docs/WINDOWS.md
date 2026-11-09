@@ -1,6 +1,6 @@
 # Windows 版本
 
-CSSwitch Next 同时支持 macOS 和 Windows x64。Windows 版保留相同的 Tauri 界面、连接配置、协议代理、MCP、Skills、会话、用量与汉化功能。v0.8.20 补齐官方订阅账号管理、原生登录切换和 Windows 数据目录识别；v0.8.21 合入与 macOS 一致的四档模型配置和 Science 菜单。
+CSSwitch Next 同时支持 macOS 和 Windows x64。Windows 版保留相同的 Tauri 界面、连接配置、协议代理、MCP、Skills、会话、用量与汉化功能。v0.8.20 补齐官方订阅账号管理、原生登录切换和 Windows 数据目录识别；v0.8.22 合入与 macOS 一致的四档模型配置和 Science 菜单。
 
 ## 本机使用
 

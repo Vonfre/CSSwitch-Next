@@ -1,6 +1,6 @@
 # Claude Science 账号切换与 Resume
 
-CSSwitch Next 0.8.21 支持在 macOS 和 Windows 切换 Science 的真实登录账号。切换完成后核对 Science 返回的目标身份，模型请求由 Science 直接发送到官方服务。账号管理独立于其他软件。
+CSSwitch Next 0.8.22 支持在 macOS 和 Windows 切换 Science 的真实登录账号。切换完成后核对 Science 返回的目标身份，模型请求由 Science 直接发送到官方服务。账号管理独立于其他软件。
 
 ## 使用
 

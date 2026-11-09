@@ -217,7 +217,7 @@ class NativeSwitchTests(unittest.TestCase):
         path = self.switcher.token_path(self.account_ids[0])
         token = self.switcher.read_token(path)
         key = HKDF(algorithm=hashes.SHA256(), length=32, salt=b'',
-                   info=b'operon:aes-256-gcm:oauth').derive(base64.b64decode(self.switcher.key()))
+                   info=b'operon:aes-256-gcm:oauth').derive(base64.urlsafe_b64decode(self.switcher.key()))
         nonce = os.urandom(12)
         private_write(path, b'v2:' + base64.b64encode(nonce + AESGCM(key).encrypt(nonce, json.dumps(token).encode(), b'v2:oauth')))
         if os.name == 'nt':
@@ -227,6 +227,26 @@ class NativeSwitchTests(unittest.TestCase):
         saved = self.switcher.read_token(self.switcher.slots / self.account_ids[0] / 'token.enc')
         self.assertEqual(saved, token)
         self.assertNotIn('refresh_token', self.store.snapshot()['accounts'][self.ids[0]])
+
+    def test_v2_keys_accept_standard_and_urlsafe_base64(self):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        from cryptography.hazmat.primitives import hashes
+        # Force both alphabet-specific characters; random keys made this intermittent.
+        raw_key = b'\xfb\xff' * 16
+        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=b'',
+                   info=b'operon:aes-256-gcm:oauth').derive(raw_key)
+        token = {**self.old, 'refresh_token': 'synthetic-v2-refresh'}
+        nonce = bytes(range(12))
+        encrypted = b'v2:' + base64.b64encode(nonce + AESGCM(key).encrypt(
+            nonce, json.dumps(token).encode(), b'v2:oauth'))
+        path = self.switcher.token_path(self.account_ids[0])
+        private_write(path, encrypted)
+        for encode in (base64.b64encode, base64.urlsafe_b64encode):
+            with self.subTest(encoding=encode.__name__):
+                private_write(self.native / 'encryption.key', b'OAUTH_ENCRYPTION_KEY=' + encode(raw_key) + b'\n')
+                self.assertEqual(self.switcher.read_token(path), token)
+                self.assertEqual(path.read_bytes(), encrypted)
 
 
 if __name__ == '__main__':

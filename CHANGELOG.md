@@ -1,11 +1,12 @@
 # 更新记录
 
-## 0.8.21
+## 0.8.22
 
 - 合并 macOS 的四档模型功能与 v0.8.20 的 Windows 路径、订阅修复；同时发布 macOS Apple Silicon / Intel 和 Windows x64 安装包及便携包。
 - 提供商配置固定显示 Fable、Opus、Sonnet、Haiku 四行，每档独立设置 API 模型与 Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses 连接方式，并可单独测试。
 - Science 对话、默认模型、子代理和审阅模型菜单统一显示「档位 → API 模型」，例如「Fable → gpt-6-astra」；清理旧版本重复选项，兼容旧版 Science，修复 Fable 选择后误用 Sonnet 的问题。
 - 旧的默认、质量及按版本模型配置会预填到四档设置；保存后按档位路由，保留连接密钥。官方订阅的模型目录与登录策略保持原生行为。
+- 修复 v2 原生订阅凭据的密钥解码，兼容普通及 URL-safe Base64，避免包含特定字符时切换失败；增加固定密钥样例回归测试。
 - 保留 Windows AppData / 自定义目录、中文和空格路径识别，以及订阅 OAuth、DPAPI / NTFS 凭据保护、同磁盘备份、切换回滚和 Resume 状态保留；macOS 沿用原生凭据与 APFS 快照。
 - 发布检查覆盖两端 Rust / Python 回归、Windows Edge 的四档配置与订阅界面，以及签名更新包验证。macOS 四档原生 Science 调用已通过隔离的本地上游测试；Windows 真实双账号授权与切换的验证边界见订阅文档。
 

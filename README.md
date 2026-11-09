@@ -2,12 +2,15 @@
 
 一个用于 Claude Science 的 macOS / Windows 第三方 API 管理与切换工具。
 
+- macOS 11+ 的 Apple Silicon / Intel 安装包内置 Python 与所需加密依赖，无需自行安装 Python 或 pip；下载与芯片匹配的版本。
+- 官方订阅支持免重启推理切换、自动接管和指定优先消耗账号。
 - 自行添加 API 提供商，管理连接和密钥。
 - 自动获取 API 可选模型，一次配置 Fable、Opus、Sonnet、Haiku 四个对话模型，每个独立选择连接方式并测试；同一档位的新旧版本共用设置。
 - 第三方模式的聊天框及默认、子代理、审阅选择器显示四个配置档位：「Fable / Opus / Sonnet / Haiku → API 模型」，兼容本机旧版 Science。
 - 在官方模式与第三方 API 之间切换，沿用本机对话记录。
 - macOS / Windows 原生订阅账号管理：官方授权、加密存储、切换真实登录账号及删除非当前账号；切换会重启 Science，保留本地会话并支持手动 Resume；[使用方式与验证边界](docs/SUBSCRIPTIONS.md)。
 - 支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
+- 订阅账号卡片显示官方 5 小时 / 一周剩余额度、重置与更新时间，启动时查询一次，之后手动刷新，支持失效授权提示。
 - 查看用量趋势、模型统计、缓存用量和预估费用，筛选与导出请求记录。
 - 按项目或时间浏览 Science 会话，进入全窗口阅读页查看提问、回复和执行过程，搜索内容、定位消息、导出完整记录。
 - 从本地及 GitHub 发现 Skills，批量安装、启停和卸载，多文件 / 多技能 ZIP 导入，检查并更新已管理的技能。

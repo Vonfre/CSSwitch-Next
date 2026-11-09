@@ -18,7 +18,7 @@ def release_notes(root, version):
     return match.group(1).strip()
 
 
-def generate(root, assets, version, repo, verify=True):
+def generate(root, assets, version, repo, verify=True, macos_only=False):
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError("Invalid release version")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
@@ -29,7 +29,10 @@ def generate(root, assets, version, repo, verify=True):
     with tempfile.TemporaryDirectory() as temp:
         public = Path(temp) / "public.key"
         public.write_bytes(pubkey)
-        for arch, target in (("arm64", "darwin-aarch64"), ("x64", "darwin-x86_64"), ("windows-x64", "windows-x86_64")):
+        targets = [("arm64", "darwin-aarch64"), ("x64", "darwin-x86_64")]
+        if not macos_only:
+            targets.append(("windows-x64", "windows-x86_64"))
+        for arch, target in targets:
             name = f"CSSwitch-Next-{version}-{arch}" + ("-setup.exe" if target.startswith("windows") else ".app.tar.gz")
             archive = assets / name
             if not archive.is_file() or not archive.stat().st_size:
@@ -58,8 +61,9 @@ if __name__ == "__main__":
     parser.add_argument("--assets", type=Path, required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--repo", required=True)
+    parser.add_argument("--macos-only", action="store_true", help="Publish only Apple Silicon and Intel macOS updates")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    manifest = generate(root, args.assets, args.version, args.repo)
+    manifest = generate(root, args.assets, args.version, args.repo, macos_only=args.macos_only)
     (args.assets / "latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     (args.assets / "RELEASE-NOTES.md").write_text(manifest["notes"] + "\n")

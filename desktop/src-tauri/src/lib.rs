@@ -6,6 +6,7 @@ mod platform;
 mod config;
 mod oauth_forge;
 mod proc;
+mod python_runtime;
 mod science_shared;
 mod science_ui;
 mod science_compat;
@@ -30,7 +31,9 @@ const SCIENCE_BIN: &str = "/Applications/Claude Science.app/Contents/Resources/b
 async fn subscription_manage(app: tauri::AppHandle, operation: String, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let root = asset_root(&app).ok_or("无法定位订阅管理资源。")?;
     tauri::async_runtime::spawn_blocking(move || {
-        let _operation = RUNTIME_OPERATION.lock().unwrap_or_else(|e| e.into_inner());
+        let _operation = if operation == "usage" || operation == "status" { None } else {
+            Some(RUNTIME_OPERATION.lock().unwrap_or_else(|e| e.into_inner()))
+        };
         subscriptions::manage(&root, &operation, params.unwrap_or(json!({})))
     }).await.map_err(|_| "订阅管理任务异常。".to_string())?
 }
@@ -429,13 +432,25 @@ fn set_mode_inner(
     Ok(())
 }
 
-/// 官方模式：干净地打开用户【真实】的 Claude Science（用户自己的官方登录与订阅）。
-///
-/// 铁律：绝不碰/复制真实凭证；用 `open`（系统 LaunchServices 正常启动）而非注入环境变量，
-/// 并显式抹掉任何 `ANTHROPIC_*`，确保**不用改过的环境变量启动真实实例**（真实实例走它自己的
-/// 官方端点，不经本代理）。CSSwitch 只把用户交回官方客户端，不托管其登录。
+/// Honor explicitly enabled subscription routing when reopening Science.
 #[tauri::command]
-fn open_official() -> Result<(), String> {
+async fn open_official(app: tauri::AppHandle) -> Result<(), String> {
+    let root = asset_root(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = RUNTIME_OPERATION.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(root) = root {
+            if let Ok(status) = subscriptions::manage(&root, "status", json!({})) {
+                if status.get("hot_mode").and_then(|v| v.as_bool()) == Some(true) {
+                    subscriptions::manage(&root, "hot_enable", json!({}))?;
+                    return Ok(());
+                }
+            }
+        }
+        open_official_direct()
+    }).await.map_err(|_| "打开 Science 任务异常。".to_string())?
+}
+
+fn open_official_direct() -> Result<(), String> {
     #[cfg(windows)] {
         platform::command(science_bin()).env_remove("ANTHROPIC_BASE_URL").env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN").spawn().map_err(|e| format!("打开官方 Science 失败：{e}"))?;
         return Ok(());

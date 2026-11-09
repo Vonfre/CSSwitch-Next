@@ -150,16 +150,20 @@ class Store:
             self.write(state)
         return ident
 
-    def route(self, ident=None):
+    def route(self, ident=None, prefer=False):
         with self.locked():
             state = self.read()
             usable = [k for k, a in state['accounts'].items() if not a.get('lapsed')
-                      and (a.get('expires_at', 0) > time.time() or a.get('refresh_token'))]
+                      and (a.get('native_owned') or a.get('expires_at', 0) > time.time() or a.get('refresh_token'))]
             if ident is not None and ident not in usable:
                 raise SubscriptionError('该账号不存在或需要重新登录。')
-            if ident is None and len(usable) < 2:
+            if ident is None and len(usable) < (1 if prefer else 2):
                 raise SubscriptionError('请先添加至少两个有效订阅账号。')
-            state['mode'] = 'manual' if ident else 'auto'
+            state['mode'] = 'manual' if ident and not prefer else 'auto'
+            if prefer:
+                state['preferred'] = ident
+            elif ident is None and not state.get('preferred'):
+                state['preferred'] = state['selected']
             if ident:
                 state['selected'] = ident
             for key, account in state['accounts'].items():
@@ -173,17 +177,32 @@ class Store:
             if ident not in state['accounts']:
                 return
             account = state['accounts'][ident]
-            if access_token is not None and account['access_token'] != access_token:
+            if access_token is not None and not account.get('native_owned') and account.get('access_token') != access_token:
                 return  # A new login/refresh supersedes this old request's error.
             account['last_status'] = status
             if cooldown:
                 account['cooldown_until'] = time.time() + cooldown
-            if status == 401:
+            if status == 401 and not account.get('native_owned'):
                 account['lapsed'] = True
             # An old request must not undo a manual change made while it ran.
             if status == 200 and state['revision'] == revision and state['mode'] == 'auto':
                 state['selected'] = ident
             self.write(state)
+
+    @staticmethod
+    def candidate_ids(state, now=None):
+        if state.get('native_mode') and not state.get('hot_mode'):
+            return []
+        now = time.time() if now is None else now
+        selected = state['selected']
+        preferred = state.get('preferred') if state['mode'] == 'auto' else selected
+        ids = list(dict.fromkeys([preferred, selected, *state['accounts']]))
+        return [i for i in ids if i in state['accounts']
+                and (state.get('hot_mode') or not state['accounts'][i].get('native_owned'))
+                and state['accounts'][i].get('enabled', True)
+                and not state['accounts'][i].get('lapsed')
+                and state['accounts'][i].get('cooldown_until', 0) <= now
+                and (state['mode'] == 'auto' or selected == i)]
 
     def public(self):
         state = self.snapshot()
@@ -195,7 +214,9 @@ class Store:
                              'lapsed': bool(account.get('lapsed') or expired),
                              'on': account.get('enabled', True) and (state['mode'] == 'auto' or state['selected'] == ident),
                              'current': state['selected'] == ident,
+                             'preferred': state.get('preferred', state['selected']) == ident,
                              'cooldown_until': account.get('cooldown_until', 0),
                              'last_status': account.get('last_status'), 'windows': []})
-        return {'accounts': accounts, 'mode': state['mode'], 'revision': state['revision'], 'native_mode': bool(state.get('native_mode')),
+        candidates = self.candidate_ids(state)
+        return {'preferred_id': state.get('preferred', state['selected']), 'next_account_id': next(iter(candidates), None), 'accounts': accounts, 'mode': state['mode'], 'revision': state['revision'], 'native_mode': bool(state.get('native_mode')), 'hot_mode': bool(state.get('hot_mode')),
                 'ready_accounts': sum(not a['lapsed'] for a in accounts), 'login': self.login_status()}

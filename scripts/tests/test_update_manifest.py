@@ -38,6 +38,19 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Missing updater archive'):
             manifest.generate(ROOT, self.assets, '0.5.0', 'Vonfre/CSSwitch-Next', verify=False)
 
+    def test_macos_only_release_requires_both_mac_architectures_but_no_windows(self):
+        for path in self.assets.glob('*windows*'):
+            path.unlink()
+        data = manifest.generate(ROOT, self.assets, '0.5.0', 'Vonfre/CSSwitch-Next', verify=False, macos_only=True)
+        self.assertEqual(set(data['platforms']), {'darwin-aarch64', 'darwin-x86_64'})
+        (self.assets / 'CSSwitch-Next-0.5.0-x64.app.zip').unlink()
+        with self.assertRaisesRegex(ValueError, 'Missing installer'):
+            manifest.generate(ROOT, self.assets, '0.5.0', 'Vonfre/CSSwitch-Next', verify=False, macos_only=True)
+
+    def test_current_release_changelog_can_be_published(self):
+        version = json.loads((ROOT / 'desktop/package.json').read_text())['version']
+        self.assertTrue(manifest.release_notes(ROOT, version))
+
     def test_invalid_signature_and_version_are_rejected(self):
         (self.assets / 'CSSwitch-Next-0.5.0-arm64.app.tar.gz.sig').write_text('not a signature!')
         with self.assertRaises(ValueError):

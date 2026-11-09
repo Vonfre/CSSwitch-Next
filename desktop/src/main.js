@@ -195,6 +195,7 @@ async function readView(view, refresh = false) {
     if (request !== viewRequest || state.view !== view) return;
     ({ workbench: renderWorkbench, subscriptions: renderSubscriptions, mcp: renderMcp, skills: renderSkills,
        sessions: renderSessions, usage: renderUsage, logs: renderLogs, settings: renderSettings })[view]();
+    if (view === 'subscriptions') { if (refresh) refreshSubscriptionUsage(); else initializeSubscriptionUsage(); }
   } catch (e) {
     if (request === viewRequest) {
       $('#content').innerHTML = '<div class="empty">读取失败，请点击刷新重试。</div>';
@@ -270,6 +271,7 @@ async function init() {
     $('#content').setAttribute('aria-busy', 'false'); renderWorkbench();
     if (native() && state.config.mode !== 'official') refreshRuntime().catch(() => {});
     initUpdater();
+    if (native()) initializeSubscriptionUsage();
   } catch (e) { $('#content').innerHTML = '<div class="empty">无法读取配置，请检查本地配置文件。</div>'; notice(String(e), true); }
 }
 init();

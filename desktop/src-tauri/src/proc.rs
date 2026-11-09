@@ -244,6 +244,7 @@ pub fn which_via_login_shell(name: &str) -> Option<PathBuf> {
 /// 再用 [`which_via_login_shell`] 解析用户真实 PATH。node / python3 都走这个，覆盖
 /// 「GUI 最小 PATH + 版本管理器」这类多位客户反馈的「已装 node 却报缺依赖」（修 #2）。
 pub fn find_exe(name: &str) -> Option<PathBuf> {
+    if name == "python3" { return crate::python_runtime::find(); }
     #[cfg(windows)] {
         if name == "python3" || name == "node" {
             if let Ok(exe) = std::env::current_exe() {

@@ -87,8 +87,19 @@ class Manager:
     def ensure_gateway(self, allow_native=False):
         if self.store.snapshot().get('native_mode') and not allow_native:
             raise SubscriptionError('当前使用 Science 原生登录，模型请求直接访问官方服务，无需订阅网关。')
-        if self.health():
-            return
+        health = self.health()
+        if health:
+            from subscription_gateway import USER_AGENT
+            if health.get('version') == USER_AGENT.split('/')[-1]:
+                return
+            if health.get('active_requests'):
+                raise SubscriptionError('订阅服务需要更新，当前回复完成后再试。Science 无需重启。')
+            self.gateway_request('/shutdown', post=True)
+            for _ in range(50):
+                if not self.health(): break
+                time.sleep(.1)
+            else:
+                raise SubscriptionError('旧订阅服务尚未退出，请稍后重试。')
         settings = self.store.gateway()
         with socket.socket() as probe:
             # Match the HTTP server: recent health connections can leave
@@ -140,22 +151,29 @@ class Manager:
         from science_native_switch import NativeSwitcher
         native = NativeSwitcher(self).summary() if self.science is not None else {}
         return {**public, 'installed': self.science is not None, 'native': native,
+                'hot_supported': not WINDOWS,
                 'data_dir': self.layout['data'], 'history_found': self.layout['history_found'],
                 'gateway': bool(health), 'active_requests': health.get('active_requests', 0) if health else 0,
                 'science': science, 'connected': self.owned(science), 'last_inference': last,
                 'live_validation': 'confirmed' if confirmed else 'pending'}
 
-    def route(self, ident=None):
-        if self.store.snapshot().get('native_mode'):
+    def route(self, ident=None, prefer=False):
+        state = self.store.snapshot()
+        if state.get('native_mode') and not state.get('hot_mode'):
             raise SubscriptionError('当前使用原生登录切换；请选择「切换登录」，完成重启后在原会话 Resume。')
         before = self.science_state()
-        self.store.route(ident)
+        if state.get('hot_mode') and (not self.owned(before) or not self.health()):
+            raise SubscriptionError('免重启路由尚未连接，请点击「连接免重启模式」。')
+        if prefer:
+            self.ensure_gateway(allow_native=bool(state.get('hot_mode')))
+        self.store.route(ident, prefer=prefer)
         after = self.science_state()
         same = all(before.get(k) == after.get(k) for k in ('running', 'pid', 'started_at'))
-        return {'message': ('已设置下次推理使用的订阅账号。' if ident else '已启用订阅账号自动接管。')
-                + '设置在下一个请求生效，已发出的请求保持原账号。'
-                + ' Science 登录邮箱保持不变；实际使用账号请查看推理记录。'
-                + (' Science 进程未改变。' if same else ' Science 进程在外部发生变化，请检查任务状态。'),
+        message = ('已设置优先消耗，不可用时自动使用备用账号。' if prefer and ident else
+                   '已关闭优先消耗，沿用当前账号；不可用时自动使用备用账号。' if prefer else
+                   '已更换回复使用的账号。' if ident else '已开启自动使用备用账号。')
+        return {'message': message + '正在进行的回复不受影响。'
+                + ('' if same else ' Science 运行状态在外部发生变化，请检查任务。'),
                 'same_process': same}
 
     def connect(self):
@@ -187,11 +205,20 @@ class Manager:
 
     def manage(self, operation, params=None):
         params = params or {}
+        if operation == 'usage':
+            from subscription_usage import UsageService
+            return UsageService(self).refresh(params.get('id'), params.get('force') is True)
         if operation == 'status':
             return self.status()
+        if operation == 'sync_login':
+            from science_native_switch import NativeSwitcher
+            return NativeSwitcher(self).switch(params.get('id'), preserve_hot=True)
         if operation == 'switch':
             from science_native_switch import NativeSwitcher
             return NativeSwitcher(self).switch(params.get('id'))
+        if operation in ('hot_enable', 'hot_disable'):
+            from science_hot_switch import configure
+            return configure(self, operation == 'hot_enable')
         if operation == 'recover':
             from science_native_switch import NativeSwitcher
             return NativeSwitcher(self).recover()
@@ -200,11 +227,16 @@ class Manager:
             return NativeSwitcher(self).remove(params.get('id'))
         if operation == 'auto':
             return self.route()
-        if operation == 'select':
+        if operation in ('select', 'priority'):
             ident = params.get('id')
             if not isinstance(ident, str) or not ident:
                 raise SubscriptionError('请选择账号。')
-            return self.route(ident)
+            if operation == 'priority' and params.get('enabled') is False:
+                current = self.store.snapshot()
+                if current.get('preferred', current['selected']) != ident:
+                    return {'message': '此账号未设置优先消耗。'}
+                return self.route(None, prefer=True)
+            return self.route(ident, prefer=operation == 'priority')
         if operation == 'connect':
             return self.connect()
         if operation == 'start':
@@ -229,7 +261,7 @@ class Manager:
 def main():
     if len(sys.argv) > 1:
         parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument('operation', choices=['status', 'auto', 'select', 'switch', 'recover', 'delete', 'connect', 'login', 'start'])
+        parser.add_argument('operation', choices=['status', 'usage', 'auto', 'priority', 'select', 'sync_login', 'switch', 'recover', 'delete', 'connect', 'login', 'start', 'hot_enable', 'hot_disable'])
         parser.add_argument('id', nargs='?')
         args = parser.parse_args()
         request = {'operation': args.operation, 'params': {'id': args.id}}
@@ -237,6 +269,11 @@ def main():
         request = json.load(sys.stdin)
     try:
         manager = Manager()
+        if request.get('operation') in ('usage', 'status'):
+            # Reads must not contend with selections or native credential work.
+            result = manager.manage(request['operation'], request.get('params'))
+            print(json.dumps({'ok': True, 'value': result}, ensure_ascii=False))
+            return 0
         path = manager.store.root / '.manager.lock'
         if linked(path):
             raise SubscriptionError('拒绝链接锁文件。')

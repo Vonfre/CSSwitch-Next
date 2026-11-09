@@ -59,8 +59,14 @@ def tree_stamp(root):
         for name in sorted(dirs + files):
             path = Path(parent) / name
             meta = path.lstat()
+            if stat.S_ISLNK(meta.st_mode):
+                # Virtual environments normally contain interpreter symlinks.
+                # Fingerprint the link itself; never inspect its destination.
+                record = [str(path.relative_to(root)), 'l', os.readlink(path)]
+                digest.update(json.dumps(record).encode())
+                continue
             if linked(path) or not (stat.S_ISREG(meta.st_mode) or stat.S_ISDIR(meta.st_mode)):
-                raise SubscriptionError('会话目录包含链接或特殊文件，未自动迁移。')
+                raise SubscriptionError('会话目录包含不支持的链接或特殊文件：' + str(path.relative_to(root)) + '。原数据已保留。')
             # Directories change mtime when populated by cp; file mtimes survive.
             record = [str(path.relative_to(root)), 'd' if path.is_dir() else 'f',
                       0 if path.is_dir() else meta.st_size, 0 if path.is_dir() else meta.st_mtime_ns]
@@ -125,11 +131,22 @@ class NativeSwitcher:
         state = self.store.snapshot()
         current = next((i for i, a in state['accounts'].items() if a['account_uuid'] == active.get('account_uuid')), None)
         journal = self.json_file(self.journal, {})
+        authenticated = False
+        try:
+            if self.manager.science_state().get('running'):
+                opener, origin = self.local_client()
+                with opener.open(origin + '/api/auth/status', timeout=5) as response:
+                    login = json.load(response)
+                authenticated = bool(login.get('authenticated') and login.get('account_uuid') == active.get('account_uuid')
+                                     and not any(login.get(k) for k in ('oauth_stale', 'reauth_required', 'restart_pending', 'rotation_breaker_tripped')))
+        except Exception:
+            pass
         return {'enabled': bool(state.get('native_mode')), 'account_id': current,
+                'authenticated': authenticated,
                 'initial_login_required': not bool(active.get('account_uuid')),
                 'supported_versions': '0.1.71 / 0.1.72（Windows）' if WINDOWS else '0.1.72（macOS）',
                 'backup_dir': str(self.backups),
-                'last_switch': {k: journal[k] for k in ('phase', 'at', 'counts') if k in journal}}
+                'last_switch': {k: journal[k] for k in ('phase', 'at', 'counts', 'history_transferred') if k in journal}}
 
     def save_slot(self, active):
         account = checked_uuid(active['account_uuid'])
@@ -177,6 +194,8 @@ class NativeSwitcher:
                 if had_slot:
                     slot.rmdir()
                 del state['accounts'][ident]
+                if state.get('preferred') == ident:
+                    state.pop('preferred', None)
                 if state['selected'] == ident or not state['accounts']:
                     # Do not silently switch the legacy inference gateway to another identity.
                     state.update(selected='', mode='manual')
@@ -235,7 +254,7 @@ class NativeSwitcher:
             raise SubscriptionError('暂存目录已存在，未覆盖。')
         if WINDOWS:
             tree_stamp(source)
-            shutil.copytree(source, target, copy_function=shutil.copy2)
+            shutil.copytree(source, target, copy_function=shutil.copy2, symlinks=True)
         else:
             self.manager.run('/bin/cp', ['-cRp', str(source), str(target)], timeout=300)
 
@@ -245,7 +264,32 @@ class NativeSwitcher:
         else:
             self.manager.run('/usr/bin/open', ['-a', '/Applications/Claude Science.app'])
 
-    def launch(self, gateway=False):
+    def launch(self, gateway=False, hot=False):
+        if not WINDOWS and not gateway:
+            # Let the native macOS shell establish its own local browser login.
+            # Attaching it to a CLI-started daemon leaves its webview at the
+            # single-use "Sign in" form even when OAuth is valid.
+            if hot:
+                self.manager.run('/usr/bin/open', ['-a', '/Applications/Claude Science.app',
+                    '--env', 'ANTHROPIC_BASE_URL=' + self.manager.base_url(),
+                    '--env', 'ANTHROPIC_API_KEY=', '--env', 'ANTHROPIC_AUTH_TOKEN='])
+            else:
+                self.open_gui()
+            deadline = time.monotonic() + 180
+            while time.monotonic() < deadline:
+                state = self.manager.science_state()
+                if state.get('running'):
+                    # The app publishes its daemon lock before the browser
+                    # authentication routes finish initializing/rotating.
+                    try:
+                        opener, origin = self.local_client()
+                        with opener.open(origin + '/api/auth/status', timeout=15) as response:
+                            json.load(response)
+                        return state
+                    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError, SubscriptionError):
+                        pass
+                time.sleep(.5)
+            raise SubscriptionError('Science 应用尚未启动服务，请检查应用窗口。')
         env = {k: v for k, v in os.environ.items() if k not in (
             'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
             'ANTHROPIC_ORGANIZATION_ID', 'BUN_OPTIONS') and not k.startswith('OPERON_AUTH_')}
@@ -257,7 +301,7 @@ class NativeSwitcher:
             raise SubscriptionError('Science 尚未启动，请检查本地服务。')
         return state
 
-    def verify_login(self, expected):
+    def local_client(self):
         # Mint an official single-use local login URL; consume it in memory only.
         raw = self.manager.run(self.manager.science, ['url']).stdout
         urls = re.findall(r'http://[^\s\x1b]+', raw)
@@ -286,10 +330,39 @@ class NativeSwitcher:
             headers={'Content-Type': 'application/x-www-form-urlencoded', 'Origin': origin})
         with opener.open(request, timeout=15) as response:
             response.read(1024)
-        with opener.open(f'http://{parsed.netloc}/api/auth/status', timeout=15) as response:
+        return opener, origin
+
+    def verify_login(self, expected):
+        opener, origin = self.local_client()
+        token = self.read_token(self.token_path(expected['account_uuid']))
+        expires = token.get('token_expires_at')
+        if expires and datetime.fromisoformat(expires.replace('Z', '+00:00')).timestamp() <= time.time() + 30:
+            # Science owns the live refresh token and its refresh journal/locks.
+            # Ask its native handler to refresh rather than rotating a copy.
+            with opener.open(urllib.request.Request(origin + '/api/csrf', headers={'Origin': origin}), timeout=15) as response:
+                response.read()
+            cookie = next((h.cookiejar for h in opener.handlers if isinstance(h, urllib.request.HTTPCookieProcessor)), [])
+            csrf = next((c.value for c in cookie if c.name == 'operon_csrf'), '')
+            req = urllib.request.Request(origin + '/api/auth/refresh-tier', data=b'{}',
+                headers={'Origin': origin, 'Content-Type': 'application/json', 'x-operon-csrf': csrf})
+            with opener.open(req, timeout=45) as response:
+                response.read()
+        with opener.open(origin + '/api/auth/status', timeout=15) as response:
             value = json.load(response)
-        if not value.get('authenticated') or any(value.get(k) != expected.get(k) for k in ('account_uuid', 'org_uuid', 'email')):
+        if not value.get('authenticated') or any(value.get(k) != expected.get(k) for k in ('account_uuid', 'org_uuid', 'email')) or any(value.get(k) for k in ('oauth_stale', 'reauth_required', 'restart_pending', 'rotation_breaker_tripped')):
             raise SubscriptionError('Science 实际登录身份未通过验证，已停止并尝试恢复原账号。')
+        # authenticated:true only means a file exists. Confirm that the official
+        # server accepts the current token and identifies the same real account.
+        from subscription_usage import request_json
+        token = self.read_token(self.token_path(expected['account_uuid']))
+        try:
+            profile = request_json('https://api.anthropic.com/api/oauth/profile', token=token['access_token'])
+        except Exception:
+            raise SubscriptionError('官方登录验证失败，未将本地身份文件当作登录成功；请重新授权或检查网络。') from None
+        identity = profile.get('account') or profile
+        organization = profile.get('organization') or {}
+        if identity.get('uuid') != expected['account_uuid'] or (identity.get('email_address') or identity.get('email')) != expected['email'] or organization.get('uuid') != expected['org_uuid']:
+            raise SubscriptionError('官方返回的账号或组织不匹配，未确认切换成功。')
         return True
 
     def close_gui(self):
@@ -363,17 +436,46 @@ class NativeSwitcher:
             original_id = next((i for i, a in latest['accounts'].items() if a['account_uuid'] == old['account_uuid']), None)
             if not original_id:
                 raise SubscriptionError('原 Science 账号不在账号列表，备份仍保留。')
-            latest.update(native_mode=True, mode='manual', selected=original_id, revision=latest['revision'] + 1)
+            hot = bool(original.get('hot_mode'))
+            latest.update(native_mode=True, hot_mode=hot, mode=original.get('mode', 'manual') if hot else 'manual', selected=original.get('selected', original_id) if hot else original_id, revision=latest['revision'] + 1)
+            if hot:
+                latest['preferred'] = original.get('preferred', original_id)
             self.store.write(latest)
-        self.launch()
+        if hot:
+            self.manager.ensure_gateway(allow_native=True)
+            launched = self.launch(hot=True)
+            private_write(self.store.root / 'science.json', json.dumps(launched).encode())
+            if not self.manager.owned(launched):
+                raise SubscriptionError('已恢复登录数据，订阅路由尚未接入，请重新连接。')
+        else:
+            self.launch()
         self.verify_login(latest['accounts'][original_id])
         operation['phase'] = 'rolled_back'
         private_write(self.journal, json.dumps(operation).encode())
         self.open_gui()
         return {'message': '已恢复原 Science 登录。切换前后会话快照均已保留。'}
 
-    def switch(self, ident):
+    def ensure_login_switch_idle(self):
+        health = self.manager.health()
+        if health and health.get('active_requests'):
+            raise SubscriptionError('当前回复尚未结束，请完成后再同步 Science 登录。优先消耗设置仍可免重启更改。')
+        active = self.active()
+        if not active.get('org_uuid'):
+            return
+        path = self.data / 'orgs' / checked_uuid(active['org_uuid']) / 'operon-cli.db'
+        if path.is_file():
+            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
+                busy = db.execute("SELECT 1 FROM frames WHERE status IN ('processing','running','pending','queued') LIMIT 1").fetchone()
+            if busy:
+                raise SubscriptionError('Science 仍有任务运行，请任务完成或暂停后再同步登录。未中断任务，也未修改登录。')
+
+    def switch(self, ident, preserve_hot=False):
         state = self.store.snapshot()
+        hot = bool(state.get('hot_mode') and preserve_hot)
+        if state.get('hot_mode') and not preserve_hot:
+            raise SubscriptionError('免重启模式请使用「同步 Science 登录」切换真实邮箱。')
+        if preserve_hot and not hot:
+            raise SubscriptionError('请在免重启模式中同步登录，或使用原生切换。')
         if ident not in state['accounts']:
             raise SubscriptionError('请选择已授权的账号。')
         pending = self.json_file(self.journal, {})
@@ -384,12 +486,21 @@ class NativeSwitcher:
         if not current.get('account_uuid'):
             raise SubscriptionError('请先在官方 Science 完成一次登录并打开原会话，再使用订阅切换。现有对话未修改。')
         checked_uuid(current.get('account_uuid')); checked_uuid(current.get('org_uuid')); checked_uuid(account.get('org_uuid'))
-        if current['account_uuid'] == account['account_uuid'] and state.get('native_mode'):
+        if current['account_uuid'] == account['account_uuid'] and state.get('native_mode') and account.get('native_owned'):
             if not self.manager.science_state().get('running'):
-                self.launch()
+                if hot:
+                    self.manager.ensure_gateway(allow_native=True)
+                    launched = self.launch(hot=True)
+                    private_write(self.store.root / 'science.json', json.dumps(launched).encode())
+                    if not self.manager.owned(launched):
+                        raise SubscriptionError('Science 尚未接入订阅服务，请恢复连接。')
+                else:
+                    self.launch()
             self.verify_login(account)
             self.open_gui()
             return {'message': 'Science 已登录此账号。打开原会话后可继续或 Resume。'}
+        if hot:
+            self.ensure_login_switch_idle()
         version = self.manager.run(self.manager.science, ['--version']).stdout
         versions = ('0.1.71', '0.1.72') if WINDOWS else (self.VERSION,)
         if not any(re.search(r'\b' + re.escape(v) + r'\b', version) for v in versions):
@@ -404,15 +515,21 @@ class NativeSwitcher:
         target = self.data / 'orgs' / account['org_uuid']
         if any(linked(p) for p in (self.native, self.data, *self.data.parents)) or not (source / 'operon-cli.db').is_file() or linked(source / 'operon-cli.db'):
             raise SubscriptionError('Science 原会话目录无效，未修改登录。')
-        if source == target:
-            raise SubscriptionError('同组织多身份尚未适配，未改动原账号。')
         for path in (source, target, self.native / '.oauth-tokens'):
             if linked(path):
                 raise SubscriptionError('拒绝符号链接目录。')
+        for name in ('operon-cli.db', 'operon-cli.db-wal', 'operon-cli.db-shm'):
+            if linked(source / name):
+                raise SubscriptionError('会话数据库或 WAL 不能是链接，未修改登录。')
         lineage_path = self.root / 'history.json'
         lineage = self.json_file(lineage_path, {})
-        if target.exists() and (target.name not in lineage or tree_stamp(target) != lineage[target.name]):
-            raise SubscriptionError('目标账号有独立或更新过的历史，未覆盖。请先处理历史合并。')
+        # Every successful cross-account switch carries the shared history.
+        # Existing target history is merged into staging, never skipped.
+        transfer_history = source != target
+        target_stamp = tree_stamp(target) if transfer_history and target.exists() else None
+        for name in ('operon-cli.db', 'operon-cli.db-wal', 'operon-cli.db-shm'):
+            if linked(target / name):
+                raise SubscriptionError('目标会话数据库或 WAL 不能是链接，未修改登录。')
         before = self.manager.science_state()
         was_gateway = self.manager.owned(before)
         # Validate the installed client's real credential schema before stopping
@@ -421,7 +538,7 @@ class NativeSwitcher:
         backup = private_dir(private_dir(self.backups) / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]))
         private_write(backup / 'accounts.enc', private_read(self.store.root / 'accounts.enc'))
         private_write(backup / 'active.json', private_read(self.native / 'active-org.json'))
-        operation = {'phase': 'stopping', 'at': time.time(), 'backup': str(backup), 'from': current['account_uuid'], 'to': account['account_uuid']}
+        operation = {'phase': 'stopping', 'at': time.time(), 'backup': str(backup), 'from': current['account_uuid'], 'to': account['account_uuid'], 'history_transferred': transfer_history}
         def phase(value):
             operation['phase'] = value
             private_write(self.journal, json.dumps(operation).encode())
@@ -433,6 +550,8 @@ class NativeSwitcher:
         displaced = False
         attempted_start = False
         try:
+            if hot:
+                self.ensure_login_switch_idle()
             gui = self.close_gui()
             if before.get('running'):
                 self.manager.run(self.manager.science, ['stop'], timeout=90)
@@ -460,39 +579,61 @@ class NativeSwitcher:
                 if self.manager.health():
                     raise SubscriptionError('网关未停止，未转交登录凭据。')
             old_slot = self.save_slot(current)
-            target_slot = self.prepare_target(account)
             # Retain immutable per-operation copies in addition to mutable slots.
             self.clone(old_slot, backup / 'original-login')
-            phase('copying')
-            with closing(sqlite3.connect(source / 'operon-cli.db', timeout=3)) as db:
-                if db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] != 0:
-                    raise SubscriptionError('会话库仍被其他程序占用，未迁移。')
-            original_stamp = tree_stamp(source)
-            verify_database(source / 'operon-cli.db')
-            self.clone(source, backup / 'history-source')
-            if original_stamp != tree_stamp(source) or original_stamp != tree_stamp(backup / 'history-source'):
-                raise SubscriptionError('停止后仍有程序写入会话目录，未迁移。')
-            stage = backup / 'history-next'
-            self.clone(backup / 'history-source', stage)
-            if file_hash(stage / 'operon-cli.db') != file_hash(source / 'operon-cli.db'):
-                raise SubscriptionError('会话备份校验失败，原数据保留。')
-            operation['counts'] = verify_database(stage / 'operon-cli.db')
-            phase('prepared')
-            # Recheck target immediately before publication, including absence.
-            if target.exists():
-                if target.name not in lineage or tree_stamp(target) != lineage[target.name]:
-                    raise SubscriptionError('目标历史发生变化，未覆盖。')
-                target.rename(backup / 'history-target-before')
-                displaced = True
-            stage.rename(target)
-            published = True
+            old_slot = backup / 'original-login'
+            target_slot = self.prepare_target(account)
+            if transfer_history:
+                phase('copying')
+                with closing(sqlite3.connect(source / 'operon-cli.db', timeout=3)) as db:
+                    if db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] != 0:
+                        raise SubscriptionError('会话库仍被其他程序占用，未迁移。')
+                original_stamp = tree_stamp(source)
+                verify_database(source / 'operon-cli.db')
+                self.clone(source, backup / 'history-source')
+                if original_stamp != tree_stamp(source) or original_stamp != tree_stamp(backup / 'history-source'):
+                    raise SubscriptionError('停止后仍有程序写入会话目录，未迁移。')
+                stage = backup / 'history-next'
+                self.clone(backup / 'history-source', stage)
+                if file_hash(stage / 'operon-cli.db') != file_hash(source / 'operon-cli.db'):
+                    raise SubscriptionError('会话备份校验失败，原数据保留。')
+                if target.exists():
+                    if tree_stamp(target) != target_stamp:
+                        raise SubscriptionError('目标会话在切换时发生变化，未覆盖。')
+                    if (target / 'operon-cli.db').exists():
+                        with closing(sqlite3.connect(target / 'operon-cli.db', timeout=3)) as db:
+                            if db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] != 0:
+                                raise SubscriptionError('目标会话仍被使用，未合并。')
+                        verify_database(target / 'operon-cli.db')
+                    target_stamp = tree_stamp(target)
+                    self.clone(target, backup / 'history-target-snapshot')
+                    if target_stamp != tree_stamp(target) or target_stamp != tree_stamp(backup / 'history-target-snapshot'):
+                        raise SubscriptionError('目标会话快照校验失败，未覆盖原历史。')
+                    from science_history_merge import merge_database, merge_files
+                    snapshot = backup / 'history-target-snapshot'
+                    operation['merge'] = {**merge_database(snapshot / 'operon-cli.db', stage / 'operon-cli.db'),
+                                          **merge_files(snapshot, stage, self.clone)}
+                operation['counts'] = verify_database(stage / 'operon-cli.db')
+                if tree_stamp(source) != original_stamp:
+                    raise SubscriptionError('合并期间原会话发生变化，未发布切换。')
+                phase('prepared')
+                # Recheck target immediately before publication, including absence.
+                if target.exists():
+                    if tree_stamp(target) != target_stamp:
+                        raise SubscriptionError('目标历史发生变化，未覆盖。')
+                    target.rename(backup / 'history-target-before')
+                    displaced = True
+                stage.rename(target)
+                published = True
             installed = True
             self.install_slot(account['account_uuid'], target_slot)
             with self.store.locked():
                 updated = self.store.read()
                 if updated['revision'] != state['revision']:
                     raise SubscriptionError('账号配置在切换过程中改变，已中止。')
-                updated.update(native_mode=True, mode='manual', selected=ident, revision=updated['revision'] + 1)
+                updated.update(native_mode=True, hot_mode=hot, mode=state['mode'] if hot else 'manual', selected=ident, revision=updated['revision'] + 1)
+                if hot:
+                    updated['preferred'] = ident
                 for a in updated['accounts'].values():
                     if a['account_uuid'] in (current['account_uuid'], account['account_uuid']):
                         a['native_owned'] = True
@@ -501,20 +642,32 @@ class NativeSwitcher:
                 self.store.write(updated)
             phase('starting')
             attempted_start = True
-            self.launch()
+            if hot:
+                self.manager.ensure_gateway(allow_native=True)
+                launched = self.launch(hot=True)
+                private_write(self.store.root / 'science.json', json.dumps(launched).encode())
+                if not self.manager.owned(launched):
+                    raise SubscriptionError('真实登录已启动但未接入订阅服务，正在恢复原状态。')
+            else:
+                self.launch()
             self.verify_login(account)
-            lineage[source.name] = original_stamp
-            private_write(lineage_path, json.dumps(lineage).encode())
+            if transfer_history:
+                lineage[source.name] = original_stamp
+                private_write(lineage_path, json.dumps(lineage).encode())
             phase('complete')
-            (self.store.root / 'science.json').unlink(missing_ok=True)
+            if not hot:
+                (self.store.root / 'science.json').unlink(missing_ok=True)
             self.open_gui()
-            return {'message': '已切换 Science 真实登录账号并验证成功。原项目与会话已保留；中断会话请点击 Resume 继续。',
-                    'native_login_verified': True, 'counts': operation['counts']}
+            return {'message': ('已同步 Science 真实登录邮箱并验证成功，免重启推理切换已重新接入。项目和会话已保留。' if hot else '已切换 Science 真实登录账号并验证成功。原项目与会话已保留；中断会话请点击 Resume 继续。' if transfer_history else
+                                '已更新并验证 Science 官方登录，原项目与会话保持不变。'),
+                    'native_login_verified': True, 'history_transferred': transfer_history, 'counts': operation.get('counts')}
         except Exception as exc:
             # Never roll back an account's rotated token to a stale pre-launch copy.
             # Preserve the target's latest native token before restoring old login.
             operation['failed_phase'] = operation['phase']
             operation['error_type'] = type(exc).__name__
+            if isinstance(exc, urllib.error.HTTPError):
+                operation['http_status'] = exc.code
             try:
                 if self.manager.science_state().get('running') and installed:
                     self.manager.run(self.manager.science, ['stop'], timeout=90)
@@ -543,10 +696,14 @@ class NativeSwitcher:
                                 restored.update(selected=original_id, mode='manual')
                     self.store.write(restored)
                 if before.get('running') and not self.manager.science_state().get('running'):
-                    if was_gateway:
-                        self.manager.ensure_gateway()
-                    launched = self.launch(gateway=was_gateway)
-                    if was_gateway:
+                    if hot:
+                        self.manager.ensure_gateway(allow_native=True)
+                        launched = self.launch(hot=True)
+                    else:
+                        if was_gateway:
+                            self.manager.ensure_gateway()
+                        launched = self.launch(gateway=was_gateway)
+                    if was_gateway or hot:
                         private_write(self.store.root / 'science.json', json.dumps(launched).encode())
                 phase('rolled_back')
                 if gui:

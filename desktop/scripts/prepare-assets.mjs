@@ -14,3 +14,5 @@ for (const [source, target] of [
 ]) copyFileSync(fileURLToPath(new URL(source, root)), fileURLToPath(new URL(target, assets)));
 
 await import('./build-mcp.mjs');
+
+await import('./prepare-macos-runtime.mjs');

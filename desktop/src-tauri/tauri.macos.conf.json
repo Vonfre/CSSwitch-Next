@@ -1,0 +1,6 @@
+{
+  "bundle": {
+    "macOS": { "minimumSystemVersion": "11.0" },
+    "resources": { "../../.runtime/macos/python": "runtime/python" }
+  }
+}

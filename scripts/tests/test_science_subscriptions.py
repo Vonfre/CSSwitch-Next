@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -30,6 +31,15 @@ class StoreTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.store = Store(Path(self.temp.name).resolve() / 'subscriptions')
+
+    def test_status_does_not_take_manager_mutation_lock(self):
+        manager = Mock()
+        manager.manage.return_value = {'connected': True}
+        output = io.StringIO()
+        with patch.object(module, 'Manager', return_value=manager), patch.object(module.sys, 'argv', ['science-subscriptions.py', 'status']), patch.object(module.sys, 'stdout', output), patch.object(module, 'lock_file', side_effect=BlockingIOError):
+            self.assertEqual(module.main(), 0)
+        self.assertTrue(json.loads(output.getvalue())['ok'])
+        manager.manage.assert_called_once_with('status', {'id': None})
 
     def test_non_directory_component_can_be_checked_before_its_parent(self):
         path = self.store.root / 'file'
@@ -151,6 +161,20 @@ class ManagerTests(unittest.TestCase):
         self.assertTrue(all(args[1] == 'status' for args in self.calls))
         self.assertEqual(self.manager.store.public()['mode'], 'auto')
 
+    def test_priority_switch_off_keeps_fallback_and_does_not_clear_a_newer_choice(self):
+        self.manager.manage('priority', {'id': self.a, 'enabled': True})
+        self.manager.manage('priority', {'id': self.b, 'enabled': True})
+        self.manager.manage('priority', {'id': self.a, 'enabled': False})
+        self.assertEqual(self.manager.store.public()['preferred_id'], self.b)
+        result = self.manager.manage('priority', {'id': self.b, 'enabled': False})
+        public = self.manager.store.public()
+        self.assertIsNone(public['preferred_id'])
+        self.assertEqual(public['mode'], 'auto')
+        self.assertEqual(public['next_account_id'], self.b)
+        self.assertTrue(result['same_process'])
+        self.assertEqual(self.manager.store.candidate_ids(self.manager.store.snapshot()), [self.b, self.a])
+        self.assertTrue(all(args[1] == 'status' for args in self.calls))
+
     def test_delete_dispatch_removes_only_requested_account_without_service_changes(self):
         ident = self.manager.store.add({**account('removed'), 'account_uuid': '10000000-0000-4000-8000-000000000003'})
         result = self.manager.manage('delete', {'id': ident})
@@ -256,7 +280,7 @@ class GatewayLifecycleTests(unittest.TestCase):
                 second = manager.health()['pid']
                 pids.add(second)
                 self.assertNotEqual(first, second)
-                self.assertEqual(manager.health()['version'], '0.8.20')
+                self.assertEqual(manager.health()['version'], '0.8.30')
             finally:
                 for pid in pids:
                     try:

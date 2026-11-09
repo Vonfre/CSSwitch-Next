@@ -27,7 +27,7 @@ CLIENT_ID = 'a135f8ff-7c18-4143-b5c4-78cf58d0ed17'
 TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
 PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 SCOPES = 'user:inference user:file_upload user:profile user:mcp_servers user:plugins'
-USER_AGENT = 'CSSwitch/0.8.20'
+USER_AGENT = 'CSSwitch/0.8.30'
 
 
 class OAuthLoginError(SubscriptionError):
@@ -194,6 +194,15 @@ class Gateway(ThreadingHTTPServer):
             account = state['accounts'].get(ident)
             if account is None:
                 raise SubscriptionError('账号已删除，请重新选择账号。')
+            if account.get('native_owned'):
+                if not state.get('hot_mode'):
+                    raise SubscriptionError('请先启用免重启切换。')
+                from science_hot_switch import native_token
+                from subscription_usage import UsageError
+                try:
+                    return native_token(self.store, ident, account)
+                except UsageError as error:
+                    raise SubscriptionError(error.message) from None
             if account.get('expires_at', 0) > time.time() + 60:
                 return account['access_token']
             if not account.get('refresh_token'):
@@ -218,17 +227,7 @@ class Gateway(ThreadingHTTPServer):
 
     def candidates(self):
         state = self.store.snapshot()
-        if state.get('native_mode'):
-            return state['revision'], []
-        selected = state['selected']
-        ids = list(state['accounts'])
-        if selected in ids:
-            ids.remove(selected)
-            ids.insert(0, selected)
-        now = time.time()
-        return state['revision'], [i for i in ids if not state['accounts'][i].get('native_owned') and state['accounts'][i].get('enabled', True)
-            and not state['accounts'][i].get('lapsed') and state['accounts'][i].get('cooldown_until', 0) <= now
-            and (state['mode'] == 'auto' or selected == i)]
+        return state['revision'], self.store.candidate_ids(state)
 
 
 class Handler(BaseHTTPRequestHandler):

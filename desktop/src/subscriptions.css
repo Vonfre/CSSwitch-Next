@@ -126,3 +126,92 @@ body[data-view="subscriptions"] #pageTitle svg { width:22px; height:22px; stroke
 .subscription-routing-state.is-confirmed { color:var(--success); }
 .subscription-routing p { color:var(--muted); font-size:11px; line-height:1.7; margin:10px 0 0; }
 @media (max-width:760px) { .subscription-routing { padding:14px 17px; } }
+
+.subscription-quota { margin-top:12px; max-width:550px; }
+.subscription-quota-windows { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 20px; }
+.subscription-quota-label { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:4px 8px; font-size:11px; }
+.subscription-quota-label > span { color:var(--muted); }
+.subscription-quota-label strong { font-weight:550; font-variant-numeric:tabular-nums; }
+.subscription-quota progress,.subscription-quota-track { appearance:none; display:block; border:0; border-radius:5px; width:100%; height:5px; margin:7px 0 5px; overflow:hidden; background:var(--surface); }
+.subscription-quota progress::-webkit-progress-bar { background:var(--surface); border-radius:5px; }
+.subscription-quota progress::-webkit-progress-value { background:var(--success); border-radius:5px; }
+.subscription-quota progress.is-low::-webkit-progress-value { background:var(--danger); }
+.subscription-quota .is-stale progress { opacity:.45; }
+.subscription-quota-reset,.subscription-quota-status { font-size:10px; color:var(--muted); line-height:1.6; }
+.subscription-quota-status { display:flex; flex-wrap:wrap; gap:3px 10px; margin-top:6px; }
+.subscription-quota-status time { margin-left:auto; font-variant-numeric:tabular-nums; }
+.subscription-quota-note { margin:7px 22px 0; font-size:10px; color:var(--muted); }
+#subscriptionUsageRefresh { min-height:25px; padding:3px 7px; font-size:10px; }
+@media (max-width:760px) { .subscription-account { flex-wrap:wrap; align-items:flex-start; } .subscription-account-actions { margin-left:auto; } }
+@media (max-width:520px) { .subscription-quota-windows { gap:12px; } .subscription-account-actions { margin-left:0; } }
+.subscription-panel .subscription-quota-login { padding:1px 6px; min-height:21px; font-size:10px; }
+
+/* AccountQuota.tsx column layout adapted from CC Switch (MIT); see THIRD_PARTY.md. */
+.subscription-compact .subscription-card { overflow:visible; }
+.subscription-compact .subscription-card-header { padding:18px 20px; }
+.subscription-compact .subscription-accounts { padding:0 20px; }
+.subscription-compact .subscription-account { display:grid; grid-template-columns:32px minmax(130px,1fr) minmax(300px,1.6fr) auto; gap:12px; padding:18px 0; align-items:center; }
+.subscription-compact .subscription-avatar { width:32px; height:32px; border:1px solid var(--line); background:var(--surface); color:var(--muted); }
+.subscription-compact .subscription-account.is-current .subscription-avatar { border-color:color-mix(in srgb,#0898ad 45%,var(--line)); color:#0898ad; }
+.subscription-compact .subscription-account-meta { gap:6px; font-size:11px; }
+.subscription-compact .subscription-quota { display:grid; grid-template-columns:minmax(0,1fr) 78px; align-items:center; column-gap:12px; max-width:none; margin:0; min-width:0; }
+.subscription-compact .subscription-quota-windows { display:grid; grid-template-columns:1fr; gap:6px; }
+.subscription-compact .subscription-quota-window { display:grid; grid-template-columns:42px minmax(28px,1fr) 66px 58px; gap:7px; align-items:center; }
+.subscription-compact .subscription-quota-label { display:block; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:11px; }
+.subscription-compact .subscription-quota-value { font-size:11px; font-weight:400; white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums; }
+.subscription-compact .subscription-quota progress,.subscription-compact .subscription-quota-track { margin:0; height:4px; background:var(--line); }
+.subscription-compact .subscription-quota progress::-webkit-progress-bar { background:var(--line); }
+.subscription-compact .subscription-quota progress::-webkit-progress-value { background:#0898ad; }
+.subscription-compact .subscription-quota progress.is-low::-webkit-progress-value { background:var(--danger); }
+.subscription-compact .subscription-quota-reset { display:flex; align-items:center; gap:3px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.subscription-quota-reset svg { width:11px; height:11px; flex-shrink:0; }
+.subscription-quota-refresh { display:flex; align-items:center; justify-content:flex-end; gap:3px; color:var(--muted); font-size:10px; white-space:nowrap; }
+.subscription-quota-refresh .icon-btn { width:24px; height:26px; padding:4px; flex-shrink:0; }
+.subscription-quota-refresh svg { width:14px; height:14px; }
+.subscription-compact .subscription-quota-status { grid-column:1/-1; margin:0; }
+.subscription-quota-status:empty { display:none; }
+.subscription-account-menu { position:relative; }
+.subscription-account-menu > summary { list-style:none; cursor:pointer; display:grid; place-items:center; width:27px; height:30px; border-radius:5px; color:var(--muted); }
+.subscription-account-menu > summary::-webkit-details-marker { display:none; }
+.subscription-account-menu > summary:hover { background:var(--surface); }
+.subscription-account-menu summary svg { width:17px; height:17px; }
+.subscription-menu-items { position:absolute; right:0; top:36px; z-index:20; width:168px; padding:5px; background:var(--card); border:1px solid var(--line); border-radius:10px; box-shadow:0 5px 18px #00000012; display:grid; gap:2px; }
+.subscription-menu-items > button { display:flex; align-items:center; gap:9px; width:100%; padding:9px 10px; border:0; border-radius:6px; background:transparent; color:var(--text); font:inherit; font-size:12px; text-align:left; cursor:pointer; }
+.subscription-menu-items > button svg { width:14px; height:14px; flex-shrink:0; color:var(--muted); }
+.subscription-menu-items > button:hover:not(:disabled),.subscription-menu-items > button:focus-visible { background:var(--surface); }
+.subscription-menu-items > button.is-danger:not(:disabled),.subscription-menu-items > button.is-danger:not(:disabled) svg { color:var(--danger); }
+.subscription-menu-items > button:disabled { opacity:.4; cursor:not-allowed; }
+.subscription-row-controls { display:flex; align-items:center; gap:14px; }
+.subscription-priority-control { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:11px; white-space:nowrap; }
+.subscription-priority-control .switch { width:32px; height:20px; padding:2px; border:0; border-radius:12px; cursor:pointer; }
+.subscription-priority-control .switch span { display:block; width:16px; height:16px; border-radius:50%; background:white; box-shadow:0 1px 3px #0002; transition:transform .15s; }
+.subscription-priority-control .switch[aria-checked="true"] { background:#0898ad; }
+.subscription-priority-control .switch[aria-checked="true"] span { transform:translateX(12px); }
+.subscription-priority-control .switch:disabled { opacity:.4; cursor:not-allowed; }
+.subscription-priority-control .switch:focus-visible,.subscription-account-menu summary:focus-visible { outline:2px solid #0898ad; outline-offset:3px; }
+@media (prefers-reduced-motion:reduce) { .subscription-priority-control .switch span { transition:none; } }
+.subscription-compact .subscription-policy { border-radius:0 0 12px 12px; }
+.subscription-compact .subscription-policy strong { font-size:12px; font-weight:550; }
+.subscription-compact .subscription-policy p { margin:4px 0 0; font-size:11px; color:var(--muted); }
+.subscription-compact .subscription-science > .subscription-help { padding:12px 20px; border-top:1px solid var(--line); }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+@media (prefers-reduced-motion:no-preference) { .subscription-quota-refresh .is-loading svg { animation:quota-spin 1s linear infinite; } }
+@keyframes quota-spin { to { transform:rotate(360deg); } }
+@media (max-width:1100px) {
+  .subscription-compact .subscription-account { grid-template-columns:32px minmax(110px,1fr) auto; }
+  .subscription-compact .subscription-quota { grid-column:2; grid-row:2; width:100%; }
+  .subscription-compact .subscription-row-controls,.subscription-compact .subscription-account-actions { grid-column:3; grid-row:1; }
+}
+@media (max-width:520px) {
+  .subscription-compact .subscription-account { grid-template-columns:30px minmax(0,1fr) auto; gap:10px; }
+  .subscription-compact .subscription-quota { grid-column:1/-1; grid-template-columns:minmax(0,1fr) 70px; column-gap:6px; }
+  .subscription-compact .subscription-quota-window { grid-template-columns:38px minmax(12px,1fr) 60px 48px; gap:5px; }
+  .subscription-compact .subscription-quota-reset { font-size:9px; }
+  .subscription-compact .subscription-quota-value { font-size:10px; }
+  .subscription-compact .subscription-account-name { flex-wrap:nowrap; }
+  .subscription-compact .subscription-account-actions { grid-column:2/-1; grid-row:3; flex-wrap:wrap; }
+}
+.subscription-login-identity { margin-top:14px; padding-top:12px; border-top:1px solid var(--line); }
+#subscriptionSyncLogin { margin-top:12px; max-width:100%; white-space:normal; overflow-wrap:anywhere; text-align:left; }
+
+@media (max-width:520px) { .subscription-row-controls { gap:5px; } .subscription-priority-control { flex-direction:column; gap:3px; font-size:10px; } }

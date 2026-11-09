@@ -1,5 +1,6 @@
 """Native handoff with real encrypted files/SQLite and a simulated daemon."""
 import base64
+import io
 from contextlib import closing
 import json
 import os
@@ -43,7 +44,7 @@ class NativeSwitchTests(unittest.TestCase):
         self.source = self.native / 'orgs' / self.orgs[0]
         self.source.mkdir(parents=True)
         with closing(sqlite3.connect(self.source / 'operon-cli.db')) as db, db:
-            db.executescript("CREATE TABLE frames(id TEXT PRIMARY KEY, status TEXT); CREATE TABLE projects(id TEXT); CREATE TABLE frame_messages(frame_id TEXT, idx INTEGER, msg_json TEXT); INSERT INTO frames VALUES('resume-frame','interrupted'); INSERT INTO projects VALUES('project'); INSERT INTO frame_messages VALUES('resume-frame',0,'{\"tool_result\":37}');")
+            db.executescript("CREATE TABLE frames(id TEXT PRIMARY KEY, status TEXT); CREATE TABLE projects(id TEXT PRIMARY KEY); CREATE TABLE frame_messages(frame_id TEXT, idx INTEGER, msg_json TEXT, PRIMARY KEY(frame_id,idx)); INSERT INTO frames VALUES('resume-frame','interrupted'); INSERT INTO projects VALUES('project'); INSERT INTO frame_messages VALUES('resume-frame',0,'{\"tool_result\":37}');")
         (self.source / 'tool-results').mkdir()
         (self.source / 'tool-results/result.txt').write_text('37')
         self.running = True
@@ -56,7 +57,7 @@ class NativeSwitchTests(unittest.TestCase):
                 self.running = False
                 output = ''
             elif args[0] == '-cRp':
-                shutil.copytree(args[1], args[2], copy_function=shutil.copy2)
+                shutil.copytree(args[1], args[2], copy_function=shutil.copy2, symlinks=True)
                 output = ''
             else:
                 output = ''
@@ -67,10 +68,72 @@ class NativeSwitchTests(unittest.TestCase):
         self.switcher = NativeSwitcher(self.manager)
         self.switcher.close_gui = Mock(return_value=False)
         self.switcher.verify_login = Mock(return_value=True)
-        def launch(gateway=False):
+        def launch(gateway=False, hot=False):
             self.running = True
             return self.manager.science_state()
         self.switcher.launch = Mock(side_effect=launch)
+
+    def enable_hot_fixture(self):
+        with self.store.locked():
+            state = self.store.read()
+            state.update(hot_mode=True, native_mode=True, mode='auto', preferred=self.ids[0])
+            self.store.write(state)
+        self.manager.owned = lambda state: bool(state.get('running'))
+
+    def test_sync_login_restarts_once_preserves_history_and_hot_routing(self):
+        self.enable_hot_fixture()
+        before = file_hash(self.source / 'operon-cli.db')
+        result = self.switcher.switch(self.ids[1], preserve_hot=True)
+        self.assertTrue(result['native_login_verified'])
+        state = self.store.snapshot()
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[1])
+        self.assertEqual(file_hash(self.native/'orgs'/self.orgs[1]/'operon-cli.db'), before)
+        self.assertTrue(state['hot_mode'])
+        self.assertEqual((state['mode'], state['preferred']), ('auto', self.ids[1]))
+        self.switcher.launch.assert_called_once_with(hot=True)
+        self.manager.ensure_gateway.assert_called_with(allow_native=True)
+        self.assertTrue((self.store.root/'science.json').is_file())
+
+    def test_sync_login_refuses_processing_tasks_before_stopping_or_mutating(self):
+        self.enable_hot_fixture()
+        with closing(sqlite3.connect(self.source/'operon-cli.db')) as db, db:
+            db.execute("UPDATE frames SET status='processing'")
+        before = (self.store.root/'accounts.enc').read_bytes()
+        with self.assertRaisesRegex(SubscriptionError, '仍有任务运行'):
+            self.switcher.switch(self.ids[1], preserve_hot=True)
+        self.assertEqual((self.store.root/'accounts.enc').read_bytes(), before)
+        self.switcher.close_gui.assert_not_called()
+        self.assertFalse(self.switcher.journal.exists())
+        with closing(sqlite3.connect(self.source/'operon-cli.db')) as db, db:
+            db.execute("UPDATE frames SET status='completed'")
+        self.manager.health = lambda: {'active_requests':1}
+        with self.assertRaisesRegex(SubscriptionError, '回复尚未结束'):
+            self.switcher.switch(self.ids[1], preserve_hot=True)
+        self.switcher.close_gui.assert_not_called()
+
+    def test_failed_hot_login_restores_native_identity_preference_and_connection(self):
+        self.enable_hot_fixture()
+        self.switcher.verify_login.side_effect = SubscriptionError('身份不匹配')
+        with self.assertRaisesRegex(SubscriptionError, '身份不匹配'):
+            self.switcher.switch(self.ids[1], preserve_hot=True)
+        state = self.store.snapshot()
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[0])
+        self.assertEqual((state['mode'],state['preferred'],state['hot_mode']), ('auto',self.ids[0],True))
+        self.assertEqual(self.switcher.launch.call_count,2)
+        self.assertTrue(all(c.kwargs == {'hot':True} for c in self.switcher.launch.call_args_list))
+        self.assertEqual(self.switcher.summary()['last_switch']['phase'], 'rolled_back')
+
+    def test_interrupted_hot_login_recovery_keeps_original_auto_preference(self):
+        self.enable_hot_fixture()
+        self.switcher.switch(self.ids[1], preserve_hot=True)
+        operation = json.loads(self.switcher.journal.read_text())
+        operation['phase'] = 'starting'
+        private_write(self.switcher.journal,json.dumps(operation).encode())
+        self.switcher.recover()
+        state=self.store.snapshot()
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[0])
+        self.assertEqual((state['mode'],state['preferred'],state['hot_mode']), ('auto',self.ids[0],True))
+        self.switcher.launch.assert_called_with(hot=True)
 
     def test_real_credentials_move_to_one_owner_and_resume_state_survives_roundtrip(self):
         before = file_hash(self.source / 'operon-cli.db')
@@ -101,22 +164,164 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertEqual(self.switcher.read_token(self.switcher.slots / self.account_ids[1] / 'token.enc')['refresh_token'], 'rotated-native')
         self.assertEqual(self.switcher.read_token(self.switcher.token_path(self.account_ids[0]))['access_token'], 'native-original')
 
+    @unittest.skipIf(os.name == 'nt', 'macOS app launch')
+    def test_native_launch_lets_app_create_its_browser_session(self):
+        self.switcher.open_gui = Mock()
+        self.manager.science_state = Mock(side_effect=[{'running': False}, {'running': True, 'pid': 123}])
+        opener = Mock()
+        opener.open.side_effect = lambda *a, **kw: io.BytesIO(b'{"authenticated":true}')
+        self.switcher.local_client = Mock(return_value=(opener, 'http://127.0.0.1:1'))
+        with patch('science_native_switch.time.sleep'):
+            result = NativeSwitcher.launch(self.switcher)
+        self.switcher.open_gui.assert_called_once_with()
+        self.assertEqual(result['pid'], 123)
+
+    @unittest.skipIf(os.name == 'nt', 'macOS app launch')
+    def test_native_launch_waits_for_browser_auth_routes(self):
+        import urllib.error
+        self.switcher.open_gui = Mock()
+        self.manager.science_state = Mock(return_value={'running': True, 'pid': 123})
+        opener = Mock()
+        opener.open.side_effect = lambda *a, **kw: io.BytesIO(b'{"authenticated":true}')
+        self.switcher.local_client = Mock(side_effect=[urllib.error.HTTPError('http://localhost', 503, 'starting', {}, None),
+                                                       (opener, 'http://127.0.0.1:1')])
+        with patch('science_native_switch.time.sleep'):
+            self.assertEqual(NativeSwitcher.launch(self.switcher)['pid'], 123)
+        self.assertEqual(self.switcher.local_client.call_count, 2)
+
+    def test_reauthorization_of_current_account_installs_new_login_and_can_roll_back(self):
+        with self.store.locked():
+            state = self.store.read()
+            state['native_mode'] = True
+            self.store.write(state)
+        before = file_hash(self.source / 'operon-cli.db')
+        self.switcher.verify_login.side_effect = SubscriptionError('official rejected')
+        with self.assertRaisesRegex(SubscriptionError, 'official rejected'):
+            self.switcher.switch(self.ids[0])
+        self.assertEqual(self.switcher.read_token(self.switcher.token_path(self.account_ids[0]))['access_token'], 'native-original')
+        self.assertEqual(file_hash(self.source / 'operon-cli.db'), before)
+
+    def test_authenticated_file_with_stale_oauth_is_not_success(self):
+        login = {**self.old, 'authenticated': True, 'email': '0@example.test', 'oauth_stale': True}
+        opener = Mock()
+        opener.open.side_effect = lambda *a, **kw: io.BytesIO(json.dumps(login).encode())
+        self.switcher.local_client = Mock(return_value=(opener, 'http://127.0.0.1:1'))
+        with self.assertRaisesRegex(SubscriptionError, '实际登录'):
+            NativeSwitcher.verify_login(self.switcher, self.store.snapshot()['accounts'][self.ids[0]])
+
+    def test_authenticated_file_requires_official_server_acceptance(self):
+        login = {**self.old, 'authenticated': True, 'email': '0@example.test'}
+        opener = Mock()
+        opener.open.side_effect = lambda *a, **kw: io.BytesIO(json.dumps(login).encode())
+        self.switcher.local_client = Mock(return_value=(opener, 'http://127.0.0.1:1'))
+        with patch('subscription_usage.request_json', side_effect=OSError('remote error')):
+            with self.assertRaisesRegex(SubscriptionError, '官方登录验证失败'):
+                NativeSwitcher.verify_login(self.switcher, self.store.snapshot()['accounts'][self.ids[0]])
+
+    def test_expired_native_token_refresh_passes_origin_and_csrf(self):
+        import urllib.request
+        token = self.switcher.read_token(self.switcher.token_path(self.account_ids[0]))
+        token['token_expires_at'] = '2000-01-01T00:00:00Z'
+        self.switcher.read_token = Mock(return_value=token)
+        expected = self.store.snapshot()['accounts'][self.ids[0]]
+        login = {**expected, 'authenticated': True}
+        origin = 'http://127.0.0.1:1'
+        opener = Mock()
+        cookie_handler = urllib.request.HTTPCookieProcessor()
+        cookie_handler.cookiejar = [SimpleNamespace(name='operon_csrf', value='synthetic-csrf')]
+        opener.handlers = [cookie_handler]
+        def response(req, **kwargs):
+            if isinstance(req, urllib.request.Request):
+                self.assertEqual(req.get_header('Origin'), origin)
+                if req.full_url.endswith('/refresh-tier'):
+                    self.assertEqual(req.get_header('X-operon-csrf'), 'synthetic-csrf')
+            return io.BytesIO(json.dumps(login).encode())
+        opener.open.side_effect = response
+        self.switcher.local_client = Mock(return_value=(opener, origin))
+        profile = {'account': {'uuid': expected['account_uuid'], 'email_address': expected['email']},
+                   'organization': {'uuid': expected['org_uuid']}}
+        with patch('subscription_usage.request_json', return_value=profile):
+            self.assertTrue(NativeSwitcher.verify_login(self.switcher, expected))
+        self.assertEqual(opener.open.call_count, 3)
+
+    def test_independent_messages_and_projects_are_shared_both_ways(self):
+        target = self.native / 'orgs' / self.orgs[1]
+        shutil.copytree(self.source, target)
+        with closing(sqlite3.connect(target / 'operon-cli.db')) as db, db:
+            db.execute("INSERT INTO frames VALUES ('other-frame','completed')")
+            db.execute("INSERT INTO projects VALUES ('other-project')")
+            db.execute("INSERT INTO frame_messages VALUES ('other-frame',0,'other account message')")
+        result = self.switcher.switch(self.ids[1])
+        self.assertTrue(result['history_transferred'])
+        self.assertEqual(result['counts'], {'frames': 2, 'projects': 2})
+        self.switcher.switch(self.ids[0])
+        with closing(sqlite3.connect(self.source / 'operon-cli.db')) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM frame_messages').fetchone()[0], 2)
+
+    def test_divergent_messages_fail_without_losing_either_history(self):
+        target = self.native / 'orgs' / self.orgs[1]
+        shutil.copytree(self.source, target)
+        with closing(sqlite3.connect(target / 'operon-cli.db')) as db, db:
+            db.execute("UPDATE frame_messages SET msg_json='different branch'")
+        before = file_hash(target / 'operon-cli.db')
+        with self.assertRaisesRegex(SubscriptionError, '不同的消息分支'):
+            self.switcher.switch(self.ids[1])
+        self.assertEqual(file_hash(target / 'operon-cli.db'), before)
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[0])
+
+    def test_native_divergent_transcript_is_archived_and_active_context_retained(self):
+        from science_history_merge import merge_database
+        target = self.native / 'orgs' / self.orgs[1]
+        shutil.copytree(self.source, target)
+        active_message = json.dumps({'role': 'assistant', 'content': 'active reply'})
+        old_message = json.dumps({'role': 'assistant', 'content': 'other account reply'})
+        for path, message, marker in ((self.source, active_message, 'active'), (target, old_message, 'other')):
+            with closing(sqlite3.connect(path / 'operon-cli.db')) as db, db:
+                fid = db.execute('SELECT id FROM frames').fetchone()[0]
+                db.execute('UPDATE frame_messages SET msg_json=?', (message,))
+                db.execute('CREATE TABLE frame_blobs (frame_id TEXT, kind TEXT, updated_at INTEGER, body TEXT, PRIMARY KEY(frame_id,kind))')
+                db.execute('CREATE TABLE frame_branch_archives (frame_id TEXT, branch_id TEXT, payload TEXT, updated_at INTEGER, PRIMARY KEY(frame_id,branch_id))')
+                context = {'marker': marker, '_branch_meta': {'active_branch_id': 'br_current', 'branches': {'br_current': {'parent_id': None}}}}
+                db.execute('INSERT INTO frame_blobs VALUES (?,?,?,?)', (fid, 'context', 1, json.dumps(context)))
+        for _ in range(2):
+            result = merge_database(target / 'operon-cli.db', self.source / 'operon-cli.db')
+            self.assertEqual(result['archived_branches'], 1)
+        with closing(sqlite3.connect(self.source / 'operon-cli.db')) as db:
+            self.assertEqual(db.execute('SELECT msg_json FROM frame_messages').fetchone()[0], active_message)
+            branches = db.execute('SELECT branch_id,payload FROM frame_branch_archives').fetchall()
+            self.assertEqual(len(branches), 1)
+            self.assertRegex(branches[0][0], r'^br_[0-9a-f]{8}$')
+            self.assertEqual(json.loads(branches[0][1]), [json.loads(old_message)])
+            context = json.loads(db.execute('SELECT body FROM frame_blobs').fetchone()[0])
+            self.assertEqual(context['marker'], 'active')
+            self.assertEqual(context['_branch_meta']['active_branch_id'], 'br_current')
+            self.assertIn(branches[0][0], context['_branch_meta']['branches'])
+        with closing(sqlite3.connect(target / 'operon-cli.db')) as db:
+            self.assertEqual(db.execute('SELECT msg_json FROM frame_messages').fetchone()[0], old_message)
+        with closing(sqlite3.connect(target / 'operon-cli.db')) as db, db:
+            db.execute('INSERT INTO frame_branch_archives VALUES (?,?,?,?)', (fid, branches[0][0], '[{"role":"user","content":"conflicting archive"}]', 2))
+        before = file_hash(self.source / 'operon-cli.db')
+        with self.assertRaisesRegex(SubscriptionError, '不同归档'):
+            merge_database(target / 'operon-cli.db', self.source / 'operon-cli.db')
+        self.assertEqual(file_hash(self.source / 'operon-cli.db'), before)
+
     def test_independent_target_history_is_not_overwritten(self):
         target = self.native / 'orgs' / self.orgs[1]
         target.mkdir()
         (target / 'work.txt').write_text('independent work')
-        with self.assertRaisesRegex(SubscriptionError, '独立'):
-            self.switcher.switch(self.ids[1])
+        result = self.switcher.switch(self.ids[1])
+        self.assertTrue(result['history_transferred'])
         self.assertEqual((target / 'work.txt').read_text(), 'independent work')
         self.assertTrue(self.running)
-        self.assertNotIn(['stop'], self.commands)
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[1])
+        self.assertTrue((self.source / 'operon-cli.db').exists())
 
-    def test_modified_inactive_history_blocks_return(self):
+    def test_modified_inactive_history_is_preserved_on_return(self):
         self.switcher.switch(self.ids[1])
         (self.source / 'external.txt').write_text('changed independently')
-        with self.assertRaisesRegex(SubscriptionError, '独立'):
-            self.switcher.switch(self.ids[0])
-        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[1])
+        self.assertTrue(self.switcher.switch(self.ids[0])['history_transferred'])
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[0])
+        self.assertEqual((self.source / 'external.txt').read_text(), 'changed independently')
 
     def test_native_verification_failure_rolls_back_and_preserves_backup(self):
         self.switcher.verify_login.side_effect = SubscriptionError('身份不匹配')
@@ -162,15 +367,65 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertTrue(self.running)
         self.assertNotIn(['stop'], self.commands)
 
-    def test_symlink_history_is_rejected(self):
+    def test_symlink_history_is_preserved_without_following_targets(self):
         try:
             (self.source / 'outside').symlink_to(self.home, target_is_directory=True)
         except OSError as error:
             if getattr(error, 'winerror', None) == 1314:
                 self.skipTest('Windows symlink privilege is unavailable')
             raise
-        with self.assertRaisesRegex(SubscriptionError, '链接'):
-            tree_stamp(self.source)
+        (self.source / 'missing').symlink_to('does-not-exist')
+        (self.source / 'relative').symlink_to('tool-results/result.txt')
+        before = tree_stamp(self.source)
+        self.switcher.switch(self.ids[1])
+        target = self.native / 'orgs' / self.orgs[1]
+        self.assertEqual(tree_stamp(target), before)
+        self.assertEqual(os.readlink(target / 'outside'), str(self.home))
+        self.assertEqual(os.readlink(target / 'missing'), 'does-not-exist')
+        self.assertEqual(os.readlink(target / 'relative'), 'tool-results/result.txt')
+        self.switcher.switch(self.ids[0])
+        self.assertTrue((self.source / 'outside').is_symlink())
+
+    def test_wal_symlink_is_rejected_before_stopping(self):
+        external = self.home / 'external-wal'
+        external.write_text('untouched')
+        try:
+            (self.source / 'operon-cli.db-wal').symlink_to(external)
+        except OSError:
+            self.skipTest('symlinks unavailable')
+        with self.assertRaisesRegex(SubscriptionError, 'WAL'):
+            self.switcher.switch(self.ids[1])
+        self.assertNotIn(['stop'], self.commands)
+        self.assertEqual(external.read_text(), 'untouched')
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS APFS clone')
+    def test_real_apfs_clone_preserves_symlinks_and_database(self):
+        (self.source / 'external').symlink_to(self.home, target_is_directory=True)
+        (self.source / 'dangling').symlink_to('missing')
+        before = tree_stamp(self.source)
+        self.manager.run = lambda exe, args, **kw: subprocess.run([exe, *args], check=True, capture_output=True, timeout=10)
+        destination = self.home / 'cloned'
+        self.switcher.clone(self.source, destination)
+        self.assertEqual(before, tree_stamp(destination))
+        self.assertEqual(os.readlink(destination / 'external'), str(self.home))
+        self.assertEqual(file_hash(self.source / 'operon-cli.db'), file_hash(destination / 'operon-cli.db'))
+
+    def test_independent_history_survives_failure_and_recovery(self):
+        target = self.native / 'orgs' / self.orgs[1]
+        target.mkdir()
+        (target / 'work.txt').write_text('independent')
+        self.switcher.verify_login.side_effect = SubscriptionError('身份不匹配')
+        with self.assertRaisesRegex(SubscriptionError, '身份不匹配'):
+            self.switcher.switch(self.ids[1])
+        self.assertEqual((target / 'work.txt').read_text(), 'independent')
+        self.switcher.verify_login.side_effect = None
+        self.switcher.switch(self.ids[1])
+        operation = json.loads(self.switcher.journal.read_text())
+        operation['phase'] = 'starting'
+        private_write(self.switcher.journal, json.dumps(operation).encode())
+        self.switcher.recover()
+        self.assertEqual((target / 'work.txt').read_text(), 'independent')
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[0])
 
     def test_missing_initial_login_preserves_history(self):
         (self.native / 'active-org.json').unlink()

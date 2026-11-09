@@ -4,13 +4,11 @@ use std::io::Write;
 use std::process::Stdio;
 
 pub fn manage(root: &std::path::Path, operation: &str, params: Value) -> Result<Value, String> {
-    if !["status", "auto", "select", "switch", "recover", "delete", "connect", "login", "start"].contains(&operation) {
+    if !["status", "usage", "auto", "priority", "select", "sync_login", "switch", "recover", "delete", "connect", "login", "start", "hot_enable", "hot_disable"].contains(&operation) {
         return Err("未知订阅管理操作。".into());
     }
-    let native_python = if cfg!(windows) { None } else { super::platform::home()
-        .map(|p| p.join(".claude-science/conda/envs/claude-science-mcp/bin/python3")) };
-    let python = native_python.filter(|p| p.is_file()).or_else(|| super::proc::find_exe("python3"))
-        .ok_or("订阅管理需要 Python 3 和 cryptography。")?;
+    let python = super::proc::find_exe("python3")
+        .ok_or("内置 Python 运行环境校验失败，请重新安装与此 Mac 芯片匹配的完整安装包。无需自行安装 Python。")?;
     let mut child = super::platform::command(python)
         .arg("-I").arg(root.join("scripts/science-subscriptions.py"))
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())

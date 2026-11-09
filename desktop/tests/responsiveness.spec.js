@@ -16,6 +16,7 @@ async function setup(page, mode = 'proxy', slowStatus = false) {
       if (cmd === 'check_update') return { available: false };
       if (cmd === 'app_version') return '0.8.18';
       if (cmd === 'subscription_manage') {
+        if (args.operation === 'usage') return { accounts: {} };
         if (args.operation !== 'status') return { message: '完成' };
         return { accounts: [{ id: 'test', user: 'test@example.test', plan: 'pro' }],
           ready_accounts: 1, installed: true, science: { running: true }, native: {} };
@@ -44,7 +45,10 @@ test('startup renders immediately while a status probe is pending', async ({ pag
 
 test('slow page reads allow navigation and share requests when revisited', async ({ page }) => {
   await setup(page);
-  await page.evaluate(() => { window.hold['subscription:status'] = true; });
+  // Startup now loads the accounts once for its quota read. Count only the
+  // pending page request when checking that repeated navigation coalesces it.
+  await expect.poll(() => page.evaluate(() => window.calls.includes('subscription:usage'))).toBe(true);
+  await page.evaluate(() => { window.calls = []; window.hold['subscription:status'] = true; });
   await navigate(page, 'subscriptions');
   await expect(page.locator('#content')).toHaveAttribute('aria-busy', 'true');
   await navigate(page, 'workbench');
@@ -75,7 +79,7 @@ test('subscription refresh does not reload unrelated config or runtime', async (
   await page.evaluate(() => { window.calls = []; });
   await page.locator('#refreshBtn').click();
   await expect(page.locator('.subscription-panel')).toBeVisible();
-  expect(await page.evaluate(() => window.calls)).toEqual(['subscription:status']);
+  expect(await page.evaluate(() => window.calls)).toEqual(['subscription:status', 'subscription:usage']);
 });
 
 test('concurrent probes are coalesced and unchanged status preserves DOM and focus', async ({ page }) => {

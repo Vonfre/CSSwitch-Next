@@ -22,6 +22,11 @@ async function setup(page, accounts = true) {
           window.subscriptionStatus.gateway = false;
           window.subscriptionStatus.connected = false;
         }
+        if (args.operation === 'delete') {
+          window.subscriptionStatus.accounts = window.subscriptionStatus.accounts.filter(a => a.id !== args.params.id);
+          window.subscriptionStatus.ready_accounts = window.subscriptionStatus.accounts.length;
+          return { message: '账号已删除。本地项目、会话和历史备份已保留。' };
+        }
         return { message: '已切换 Science 真实登录账号并验证成功。原会话请点击 Resume。' };
       }
       throw new Error(`Unexpected command: ${cmd}`);
@@ -57,6 +62,56 @@ test('empty accounts invite official authorization', async ({ page }) => {
   await page.locator('#subscriptionLogin').click();
   expect(await page.evaluate(() => window.subscriptionCalls.filter(c => c.operation !== 'status').map(c => c.operation)))
     .toEqual(['login']);
+});
+
+test('deletion requires confirmation, removes the row and protects the configured native account', async ({ page }) => {
+  await setup(page);
+  await expect(page.getByRole('button', { name: '删除账号 a@example.test', exact: true })).toBeDisabled();
+  const remove = page.getByRole('button', { name: '删除账号 b@example.test', exact: true });
+  await remove.click();
+  await expect(page.locator('#confirmBody')).toContainText('b@example.test');
+  await expect(page.locator('#confirmBody')).toContainText('不会取消官方订阅');
+  await page.locator('#confirmDialog').getByRole('button', { name: '取消', exact: true }).click();
+  expect(await page.evaluate(() => window.subscriptionCalls.some(c => c.operation === 'delete'))).toBe(false);
+  await expect(remove).toBeVisible();
+  await remove.click();
+  await page.locator('#confirmDialog').getByRole('button', { name: '确认', exact: true }).click();
+  await expect(remove).toHaveCount(0);
+  await expect(page.locator('.subscription-count')).toHaveText('1');
+  await expect(page.locator('#notice')).toContainText('账号已删除');
+  expect(await page.evaluate(() => window.subscriptionCalls.filter(c => c.operation === 'delete')))
+    .toEqual([{ operation: 'delete', params: { id: 'b@example.test' } }]);
+  await page.evaluate(() => { window.subscriptionStatus.science.running = false; });
+  await page.locator('#refreshBtn').click();
+  await expect(page.getByRole('button', { name: '删除账号 a@example.test', exact: true })).toBeDisabled();
+});
+
+test('deletion errors preserve accounts and unfinished switches disable deletion', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => { window.subscriptionFail = true; });
+  const remove = page.getByRole('button', { name: '删除账号 b@example.test', exact: true });
+  await remove.click();
+  await page.locator('#confirmDialog').getByRole('button', { name: '确认', exact: true }).click();
+  await expect(page.locator('#notice')).toContainText('未覆盖');
+  await expect(remove).toBeVisible();
+  await expect(page.locator('.subscription-count')).toHaveText('2');
+  await page.evaluate(() => { window.subscriptionStatus.native.last_switch = { phase: 'recovery_required' }; });
+  await page.locator('#refreshBtn').click();
+  await expect(remove).toBeDisabled();
+});
+
+test('deleting the last unconfigured account returns to the empty state', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => {
+    window.subscriptionStatus.native.account_id = null;
+    window.subscriptionStatus.accounts = window.subscriptionStatus.accounts.slice(1);
+    window.subscriptionStatus.ready_accounts = 1;
+  });
+  await page.locator('#refreshBtn').click();
+  await page.getByRole('button', { name: '删除账号 b@example.test', exact: true }).click();
+  await page.locator('#confirmDialog').getByRole('button', { name: '确认', exact: true }).click();
+  await expect(page.locator('.subscription-count')).toHaveText('0');
+  await expect(page.locator('.subscription-empty')).toBeVisible();
 });
 
 test('Windows shows detected Unicode data path and first login guidance without overflow', async ({ page }) => {

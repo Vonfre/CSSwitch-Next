@@ -151,6 +151,13 @@ class ManagerTests(unittest.TestCase):
         self.assertTrue(all(args[1] == 'status' for args in self.calls))
         self.assertEqual(self.manager.store.public()['mode'], 'auto')
 
+    def test_delete_dispatch_removes_only_requested_account_without_service_changes(self):
+        ident = self.manager.store.add({**account('removed'), 'account_uuid': '10000000-0000-4000-8000-000000000003'})
+        result = self.manager.manage('delete', {'id': ident})
+        self.assertIn('账号已删除', result['message'])
+        self.assertEqual({a['id'] for a in self.manager.store.public()['accounts']}, {self.a, self.b})
+        self.assertEqual(self.calls, [])
+
     def test_only_current_revision_inference_confirms_routing(self):
         revision = self.manager.store.snapshot()['revision']
         last = {'account_id': self.a, 'revision': revision, 'started_at': 1, 'completed_at': 2, 'secret': 'never-expose'}

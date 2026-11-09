@@ -6,7 +6,7 @@
 - 自动获取 API 可选模型，一次配置 Fable、Opus、Sonnet、Haiku 四个对话模型，每个独立选择连接方式并测试；同一档位的新旧版本共用设置。
 - 第三方模式的聊天框及默认、子代理、审阅选择器显示四个配置档位：「Fable / Opus / Sonnet / Haiku → API 模型」，兼容本机旧版 Science。
 - 在官方模式与第三方 API 之间切换，沿用本机对话记录。
-- macOS / Windows 原生订阅账号管理：官方授权、加密存储、切换真实登录账号；切换会重启 Science，保留本地会话并支持手动 Resume；[使用方式与验证边界](docs/SUBSCRIPTIONS.md)。
+- macOS / Windows 原生订阅账号管理：官方授权、加密存储、切换真实登录账号及删除非当前账号；切换会重启 Science，保留本地会话并支持手动 Resume；[使用方式与验证边界](docs/SUBSCRIPTIONS.md)。
 - 支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
 - 查看用量趋势、模型统计、缓存用量和预估费用，筛选与导出请求记录。
 - 按项目或时间浏览 Science 会话，进入全窗口阅读页查看提问、回复和执行过程，搜索内容、定位消息、导出完整记录。

@@ -165,7 +165,21 @@ jobs:
           test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo 'Updater signing secret is missing'; exit 1; }
           npm ci
           npm run prepare:assets
-          npm run tauri -- build --ci --target "$RUST_TARGET" --bundles app,dmg -- --locked
+          set -o pipefail
+          for attempt in 1 2 3; do
+            build_log="$RUNNER_TEMP/tauri-build-$attempt.log"
+            if npm run tauri -- build --ci --target "$RUST_TARGET" --bundles app,dmg -- --locked 2>&1 | tee "$build_log"; then
+              break
+            fi
+            # DMG creation can fail on an otherwise healthy hosted macOS runner.
+            # Retry that packaging failure locally, retaining the compiled app;
+            # compilation/signing failures still stop the release immediately.
+            if [ "$attempt" -eq 3 ] || ! grep -q 'error running bundle_dmg.sh' "$build_log"; then
+              exit 1
+            fi
+            echo "Retrying DMG packaging after runner failure (attempt $attempt)."
+            sleep 5
+          done
       - name: Verify and Package
         shell: bash
         run: |

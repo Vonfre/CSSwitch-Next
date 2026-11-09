@@ -33,6 +33,9 @@ body[data-view="subscriptions"] #pageTitle svg { width:22px; height:22px; stroke
 .subscription-account-state.is-current { color:var(--success); }
 .subscription-account-state.is-error { color:var(--danger); }
 .subscription-panel .subscription-account-action { flex-shrink:0; min-height:30px; font-size:11px; padding:5px 10px; }
+.subscription-account-actions { display:flex; align-items:center; gap:7px; flex-shrink:0; }
+.subscription-panel .subscription-account-delete { color:var(--muted); }
+.subscription-panel .subscription-account-delete:not(:disabled):hover { color:var(--danger); border-color:var(--danger); }
 .subscription-policy { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 22px; border-top:1px solid var(--line); background:var(--surface); }
 .subscription-policy-info { display:flex; gap:10px; align-items:center; min-width:0; }
 .subscription-policy-icon { display:grid; place-items:center; color:var(--muted); flex-shrink:0; }
@@ -104,7 +107,7 @@ body[data-view="subscriptions"] #pageTitle svg { width:22px; height:22px; stroke
   .subscription-avatar { width:30px; height:30px; font-size:12px; }
   .subscription-account-name { flex-wrap:wrap; gap:5px; }
   .subscription-account-name strong { max-width:100%; font-size:12px; }
-  .subscription-account-action { grid-column:2; justify-self:start; }
+  .subscription-account-actions { grid-column:2; justify-self:start; }
   .subscription-policy { flex-wrap:wrap; gap:12px; }
   .subscription-auto-control { margin-left:27px; width:calc(100% - 27px); justify-content:space-between; }
   .subscription-science-info h2 { font-size:14px; }

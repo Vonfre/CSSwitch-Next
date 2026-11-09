@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::Stdio;
 
 pub fn manage(root: &std::path::Path, operation: &str, params: Value) -> Result<Value, String> {
-    if !["status", "auto", "select", "switch", "recover", "connect", "login", "start"].contains(&operation) {
+    if !["status", "auto", "select", "switch", "recover", "delete", "connect", "login", "start"].contains(&operation) {
         return Err("未知订阅管理操作。".into());
     }
     let native_python = if cfg!(windows) { None } else { super::platform::home()

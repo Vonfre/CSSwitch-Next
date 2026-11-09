@@ -1,6 +1,6 @@
 # Claude Science 账号切换与 Resume
 
-CSSwitch Next 0.8.23 支持在 macOS 和 Windows 切换 Science 的真实登录账号。切换完成后核对 Science 返回的目标身份，模型请求由 Science 直接发送到官方服务。账号管理独立于其他软件。
+CSSwitch Next 0.8.24 支持在 macOS 和 Windows 切换 Science 的真实登录账号。切换完成后核对 Science 返回的目标身份，模型请求由 Science 直接发送到官方服务。账号管理独立于其他软件。
 
 ## 使用
 
@@ -11,6 +11,12 @@ CSSwitch Next 0.8.23 支持在 macOS 和 Windows 切换 Science 的真实登录�
 5. 打开原项目、原会话，点击 **Resume**。不会自动重跑用户的科研计算。
 
 macOS 适配 Science **0.1.72**，Windows 适配 **0.1.71 / 0.1.72** 的组织目录、Fernet / v2 OAuth 凭据布局；切换前检查实际凭据，未知版本或格式拒绝写入。Windows 支持配置中的自定义数据和认证目录。macOS 仍限默认目录。含符号链接、Windows junction 或特殊文件的会话目录不自动迁移；根目录单数据库可读取会话，但原生切换仍要求组织目录布局。
+
+## 删除账号（0.8.24 起）
+
+在账号右侧点击「删除」，确认后移除 CSSwitch 账号记录和用于切换的登录缓存；再次使用需要重新授权。当前 Science 已登录或已配置的账号需先切换到其他账号，再删除；有未完成的切换时需先恢复。尚未配置到 Science 的最后一个账号可以删除，列表恢复为空。
+
+删除不停止 Science、不取消官方订阅，也不删除项目、会话、历史切换备份或 Science 自身登录文件。历史备份可能仍包含当时的加密登录数据。删除旧推理网关当前选中的账号后，停止为后续请求选择该账号，不自动改用其他身份；已经发出的请求不强制中断。
 
 ## 数据与凭据
 
@@ -41,7 +47,7 @@ cd desktop
 npm run test:ui -- tests/subscriptions.spec.js tests/workbench.spec.js
 ```
 
-命令行入口：`science-subscriptions.py status`、`switch ACCOUNT_ID`、`recover`。不要同时手工修改原生登录文件。
+命令行入口：`science-subscriptions.py status`、`switch ACCOUNT_ID`、`recover`、`delete ACCOUNT_ID`。不要同时手工修改原生登录文件。
 
 ## 旧版行为
 

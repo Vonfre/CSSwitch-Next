@@ -195,6 +195,9 @@ class Manager:
         if operation == 'recover':
             from science_native_switch import NativeSwitcher
             return NativeSwitcher(self).recover()
+        if operation == 'delete':
+            from science_native_switch import NativeSwitcher
+            return NativeSwitcher(self).remove(params.get('id'))
         if operation == 'auto':
             return self.route()
         if operation == 'select':
@@ -226,7 +229,7 @@ class Manager:
 def main():
     if len(sys.argv) > 1:
         parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument('operation', choices=['status', 'auto', 'select', 'switch', 'recover', 'connect', 'login', 'start'])
+        parser.add_argument('operation', choices=['status', 'auto', 'select', 'switch', 'recover', 'delete', 'connect', 'login', 'start'])
         parser.add_argument('id', nargs='?')
         args = parser.parse_args()
         request = {'operation': args.operation, 'params': {'id': args.id}}

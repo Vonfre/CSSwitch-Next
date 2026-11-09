@@ -191,7 +191,9 @@ class Gateway(ThreadingHTTPServer):
             lock = self.refresh_locks.setdefault(ident, threading.Lock())
         with lock:
             state = self.store.snapshot()
-            account = state['accounts'][ident]
+            account = state['accounts'].get(ident)
+            if account is None:
+                raise SubscriptionError('账号已删除，请重新选择账号。')
             if account.get('expires_at', 0) > time.time() + 60:
                 return account['access_token']
             if not account.get('refresh_token'):

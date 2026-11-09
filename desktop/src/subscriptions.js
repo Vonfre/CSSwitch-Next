@@ -13,6 +13,12 @@ async function subscriptionAction(operation, params = {}) {
   });
 }
 
+async function deleteSubscription(account) {
+  if (state.busy) return;
+  if (!await confirmAction('删除订阅账号？', `将删除 ${account.user} 在 CSSwitch 中的账号记录和登录缓存，再次使用需重新授权。Science 项目、会话和历史备份保留，不会取消官方订阅。`)) return;
+  await subscriptionAction('delete', { id: account.id });
+}
+
 function renderSubscriptions() {
   if (!subscriptions) return;
   const s = subscriptions;
@@ -25,12 +31,14 @@ function renderSubscriptions() {
   const accountRow = a => {
     const selected = a.id === native.account_id;
     const label = selected ? (running ? 'Science 已登录' : 'Science 已配置') : a.lapsed ? '需要重新登录' : '可切换';
+    const deleteReason = issue ? '请先恢复未完成的账号切换，再删除。' : selected ? '请先切换到其他账号，再删除当前 Science 账号。' : '删除账号';
     return `<article class="subscription-account ${selected ? 'is-current' : ''}">
       <div class="subscription-avatar" aria-hidden="true">${esc((a.user || '?').slice(0, 1).toUpperCase())}</div>
       <div class="subscription-account-info"><div class="subscription-account-name"><strong title="${esc(a.user)}">${esc(a.user)}</strong><span class="subscription-plan">${esc(planName(a.plan))}</span></div>
         <div class="subscription-account-meta"><span class="subscription-account-state ${selected ? 'is-current' : ''} ${a.lapsed ? 'is-error' : ''}">${icon(a.lapsed ? 'circle-alert' : selected ? 'circle-check' : 'circle')}${label}</span></div>
       </div>
-      <button class="btn subscription-account-action" ${a.lapsed ? 'data-subscription-login' : `data-subscription-id="${esc(a.id)}"`} ${selected && running || issue ? 'disabled' : ''}>${icon(selected && running ? 'check' : a.lapsed ? 'log-in' : 'arrow-right-left')}${a.lapsed ? '重新登录' : selected && running ? '已登录' : '切换登录'}</button>
+      <div class="subscription-account-actions"><button class="btn subscription-account-action" ${a.lapsed ? 'data-subscription-login' : `data-subscription-id="${esc(a.id)}"`} ${selected && running || issue ? 'disabled' : ''}>${icon(selected && running ? 'check' : a.lapsed ? 'log-in' : 'arrow-right-left')}${a.lapsed ? '重新登录' : selected && running ? '已登录' : '切换登录'}</button>
+      <span title="${deleteReason}"><button class="btn subscription-account-action subscription-account-delete" data-subscription-delete="${esc(a.id)}" aria-label="删除账号 ${esc(a.user)}" ${selected || issue ? 'disabled' : ''}>${icon('trash-2')}删除</button></span></div>
     </article>`;
   };
   $('#pageTitle').innerHTML = `${icon('users-round')}订阅账号`;
@@ -61,6 +69,9 @@ function renderSubscriptions() {
   });
   document.querySelectorAll('[data-subscription-login]').forEach(b => {
     b.onclick = () => subscriptionAction('login');
+  });
+  document.querySelectorAll('[data-subscription-delete]').forEach(b => {
+    b.onclick = () => deleteSubscription(s.accounts.find(a => a.id === b.dataset.subscriptionDelete));
   });
   icons();
 }

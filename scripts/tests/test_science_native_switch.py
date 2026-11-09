@@ -12,7 +12,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cryptography.fernet import Fernet
@@ -247,6 +247,79 @@ class NativeSwitchTests(unittest.TestCase):
                 private_write(self.native / 'encryption.key', b'OAUTH_ENCRYPTION_KEY=' + encode(raw_key) + b'\n')
                 self.assertEqual(self.switcher.read_token(path), token)
                 self.assertEqual(path.read_bytes(), encrypted)
+
+    def test_delete_inactive_native_account_preserves_live_login_history_and_backups(self):
+        self.switcher.switch(self.ids[1])
+        self.switcher.switch(self.ids[0])
+        slot = self.switcher.slots / self.account_ids[1]
+        private_write(slot / 'refresh-journal', b'synthetic-refresh-journal')
+        history = tree_stamp(self.native / 'orgs')
+        backups = tree_stamp(self.switcher.backups)
+        live = file_hash(self.switcher.token_path(self.account_ids[0]))
+        active = self.switcher.active()
+        revision = self.store.snapshot()['revision']
+        self.commands.clear()
+        result = self.switcher.remove(self.ids[1])
+        self.assertIn('账号已删除', result['message'])
+        self.assertFalse(slot.exists())
+        self.assertEqual(self.switcher.active(), active)
+        self.assertEqual(file_hash(self.switcher.token_path(self.account_ids[0])), live)
+        self.assertEqual(tree_stamp(self.native / 'orgs'), history)
+        self.assertEqual(tree_stamp(self.switcher.backups), backups)
+        self.assertEqual(self.commands, [])
+        state = self.store.snapshot()
+        self.assertNotIn(self.ids[1], state['accounts'])
+        self.assertEqual(state['selected'], self.ids[0])
+        self.assertEqual(state['revision'], revision + 1)
+        self.store.note(self.ids[1], revision, 200)
+        self.assertNotIn(self.ids[1], self.store.snapshot()['accounts'])
+
+    def test_delete_rejects_current_account_even_when_stopped_and_pending_switch(self):
+        before = (self.store.root / 'accounts.enc').read_bytes()
+        for running in (True, False):
+            self.running = running
+            with self.assertRaisesRegex(SubscriptionError, '当前 Science 账号'):
+                self.switcher.remove(self.ids[0])
+        private_write(self.switcher.journal, json.dumps({'phase': 'recovery_required'}).encode())
+        with self.assertRaisesRegex(SubscriptionError, '先恢复'):
+            self.switcher.remove(self.ids[1])
+        self.assertEqual((self.store.root / 'accounts.enc').read_bytes(), before)
+        self.assertEqual(self.commands, [])
+
+    def test_delete_write_failure_restores_cached_credentials(self):
+        slot = self.switcher.prepare_target(self.store.snapshot()['accounts'][self.ids[1]])
+        before = {p.name: p.read_bytes() for p in slot.iterdir()}
+        encrypted = (self.store.root / 'accounts.enc').read_bytes()
+        with patch.object(self.store, 'write', side_effect=OSError('synthetic disk failure')):
+            with self.assertRaises(OSError):
+                self.switcher.remove(self.ids[1])
+        self.assertEqual({p.name: p.read_bytes() for p in slot.iterdir()}, before)
+        self.assertEqual((self.store.root / 'accounts.enc').read_bytes(), encrypted)
+
+    def test_delete_selected_legacy_and_last_unconfigured_account_clears_selection(self):
+        self.store.route(self.ids[1])
+        self.switcher.remove(self.ids[1])
+        state = self.store.snapshot()
+        self.assertEqual((state['selected'], state['mode']), ('', 'manual'))
+        # A final saved account can be removed when Science has no configured identity.
+        (self.native / 'active-org.json').unlink()
+        history = tree_stamp(self.native / 'orgs')
+        self.switcher.remove(self.ids[0])
+        self.assertEqual(self.store.public()['accounts'], [])
+        self.assertEqual(self.store.public()['ready_accounts'], 0)
+        self.assertEqual(tree_stamp(self.native / 'orgs'), history)
+        for ident in (None, [], '../native', self.ids[0]):
+            with self.assertRaises(SubscriptionError):
+                self.switcher.remove(ident)
+
+    def test_delete_rejects_unknown_cache_files_without_partial_changes(self):
+        slot = self.switcher.prepare_target(self.store.snapshot()['accounts'][self.ids[1]])
+        private_write(slot / 'unexpected.txt', b'keep')
+        before = {p.name: p.read_bytes() for p in slot.iterdir()}
+        with self.assertRaisesRegex(SubscriptionError, '未知文件'):
+            self.switcher.remove(self.ids[1])
+        self.assertEqual({p.name: p.read_bytes() for p in slot.iterdir()}, before)
+        self.assertIn(self.ids[1], self.store.snapshot()['accounts'])
 
 
 if __name__ == '__main__':

@@ -94,6 +94,27 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(len(self.upstream.calls), 3)
         self.assertEqual(self.upstream.calls[-1][0], 'Bearer synthetic-B')
 
+    def test_deleted_account_is_not_restored_by_a_late_refresh(self):
+        ident = self.ids[0]
+        with self.store.locked():
+            state = self.store.read()
+            state['accounts'][ident]['expires_at'] = 0
+            self.store.write(state)
+        def refresh(*args, **kwargs):
+            with self.store.locked():
+                state = self.store.read()
+                del state['accounts'][ident]
+                state.update(selected='', mode='manual', revision=state['revision'] + 1)
+                self.store.write(state)
+            return {'access_token': 'late-refresh', 'expires_in': 3600}
+        with patch.object(module, 'request_json', side_effect=refresh):
+            with self.assertRaisesRegex(SubscriptionError, '已移除'):
+                self.gateway.token(ident)
+        with self.assertRaisesRegex(SubscriptionError, '已删除'):
+            self.gateway.token(ident)
+        self.assertNotIn(ident, self.store.snapshot()['accounts'])
+        self.assertEqual(self.gateway.candidates()[1], [])
+
     def test_hot_switch_preserves_inflight_request_and_local_computation(self):
         started, release = threading.Event(), threading.Event()
         def behavior(h):

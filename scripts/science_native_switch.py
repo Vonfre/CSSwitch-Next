@@ -146,6 +146,50 @@ class NativeSwitcher:
             (slot / 'refresh-journal').unlink(missing_ok=True)
         return slot
 
+    def remove(self, ident):
+        """Forget an inactive account and its switch cache, never Science history."""
+        if not isinstance(ident, str) or not ident:
+            raise SubscriptionError('请选择要删除的账号。')
+        pending = self.json_file(self.journal, {})
+        if pending.get('phase') not in (None, 'complete', 'rolled_back'):
+            raise SubscriptionError('账号切换尚未完成，请先恢复原账号，再删除。')
+        with self.store.locked():
+            state = self.store.read()
+            account = state['accounts'].get(ident)
+            if account is None:
+                raise SubscriptionError('账号不存在或已删除，请刷新列表。')
+            account_uuid = checked_uuid(account['account_uuid'])
+            if self.active().get('account_uuid') == account_uuid:
+                raise SubscriptionError('请先切换到其他账号，再删除当前 Science 账号。')
+            slot = self.slots / account_uuid
+            if linked(slot):
+                raise SubscriptionError('账号登录缓存包含链接，未删除。')
+            saved = {}
+            if slot.exists():
+                for path in slot.iterdir():
+                    if path.name not in ('token.enc', 'active.json', 'refresh-journal') or not path.is_file() or linked(path):
+                        raise SubscriptionError('账号登录缓存包含未知文件，未删除。')
+                    saved[path.name] = private_read(path)
+            had_slot = slot.exists()
+            try:
+                for name in saved:
+                    (slot / name).unlink()
+                if had_slot:
+                    slot.rmdir()
+                del state['accounts'][ident]
+                if state['selected'] == ident or not state['accounts']:
+                    # Do not silently switch the legacy inference gateway to another identity.
+                    state.update(selected='', mode='manual')
+                state['revision'] += 1
+                self.store.write(state)
+            except Exception:
+                if had_slot:
+                    private_dir(slot)
+                    for name, data in saved.items():
+                        private_write(slot / name, data)
+                raise
+        return {'message': '账号已删除。本地项目、会话和历史备份已保留；再次使用需重新添加账号。'}
+
     def prepare_target(self, account):
         ident = checked_uuid(account['account_uuid'])
         slot = self.slots / ident

@@ -105,6 +105,12 @@ try:
    assert ('/v1/responses', 'fixture-gpt') in hits, 'GPT conversation did not reach Responses endpoint'
    assert ('/v1/messages', 'fixture-claude') in hits, 'Claude conversation did not reach Messages endpoint'
    assert ('/v1/responses', 'updated-quality') in hits, 'Existing conversation did not follow the updated desktop mapping'
+   for i, model in enumerate(read_catalog(binary)):
+    endpoint = ['/v1/responses', '/v1/messages', '/v1/chat/completions'][i % 3]
+    assert (endpoint, 'fixture-native-'+str(i)) in hits, 'Independent native mapping did not reach its configured endpoint: '+model['id']
+   for endpoint, model in [('/v1/responses', 'fixture-fable'), ('/v1/chat/completions', 'fixture-opus'),
+                           ('/v1/responses', 'fixture-sonnet'), ('/v1/messages', 'fixture-haiku')]:
+    assert (endpoint, model) in hits, 'Configured slot did not reach its upstream: '+model
   print(result.stdout,flush=True)
   if result.returncode: print(__import__('re').sub(r'nonce=[^\s&]+', 'nonce=[REDACTED]', result.stderr[:1800]));raise RuntimeError('Native browser test failed')
  finally:

@@ -30,7 +30,7 @@ import urllib.error
 from contextvars import ContextVar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from routing import load_profile, profile_from_config, select_model_route
-from science_models import family, configure
+from science_models import family, configure, canonical
 from responses_adapter import from_chat, to_anthropic as responses_to_anthropic
 from stream_bridge import Bridge, events
 from usage import AnthropicMeter, record
@@ -146,7 +146,6 @@ def upstream_error(status, detail):
     return code, {'type': 'error', 'error': {'type': kind, 'message': upstream_error_message(status, detail)}}
 
 
-_DATE_SUFFIX = re.compile(r"-\d{8}$")
 
 # ---------- #3: targeted fast-fail（沙箱「Switching organization」卡死修复） ----------
 # 沙箱 Science 启动时会对 claude.ai/api/oauth/profile 发【阻塞式】请求解析组织；
@@ -226,12 +225,12 @@ def resolve_model(name):
     ids.update(mm.values())
     if name in ids:         # provider 原生 id（如 qwen-max）直接用
         return name
+    stripped = canonical(name)
+    if stripped in mm:
+        return mm[stripped]
     kind = family(name)
     if kind and kind in prov().get("family_map", {}):
         return prov()["family_map"][kind]
-    stripped = _DATE_SUFFIX.sub("", name)
-    if stripped in mm:
-        return mm[stripped]
     for k, v in mm.items():
         if name.startswith(k) or stripped.startswith(k):
             return v
@@ -836,7 +835,8 @@ if __name__ == "__main__":
     ap.add_argument("--usage-file", default=None)
     ap.add_argument("--probe", action="store_true")
     ap.add_argument("--probe-stdin", action="store_true")
-    ap.add_argument("--probe-role", choices=("default", "quality", "fast"), default="default")
+    ap.add_argument("--probe-role", choices=("default", "quality", "fast", "fable", "opus", "sonnet", "haiku"), default="default")
+    ap.add_argument("--probe-model", default="")
     args = ap.parse_args()
     PROV_NAME = args.provider
     CONFIG_PATH, USAGE_PATH, PROBE = args.config, args.usage_file, args.probe or args.probe_stdin
@@ -875,8 +875,14 @@ if __name__ == "__main__":
         sys.exit(1)
     if PROBE:
         started = time.monotonic()
-        alias = {'default': 'claude-sonnet-4-6', 'quality': 'claude-opus-4-8', 'fast': 'claude-haiku-4-5'}[args.probe_role]
-        CURRENT_ROUTE.set(select_model_route(route(), alias, resolve_model(alias)))
+        kind = {'default': 'sonnet', 'quality': 'opus', 'fast': 'haiku'}.get(args.probe_role, args.probe_role)
+        alias = args.probe_model or {'sonnet': 'claude-sonnet-4-6', 'opus': 'claude-opus-4-8', 'haiku': 'claude-haiku-4-5', 'fable': 'claude-fable-5-1'}[kind]
+        fallback_route = prov().get('model_routes', {}).get(kind)
+        if not args.probe_model and fallback_route:
+            CURRENT_ROUTE.set({**route(), 'prov': {**prov(), 'mode': fallback_route['mode'],
+                'url': fallback_route['url'], 'resolved_model': fallback_route['model']}})
+        else:
+            CURRENT_ROUTE.set(select_model_route(route(), alias, resolve_model(alias)))
         PROV = prov()
         req = {"model": alias, "max_tokens": 16, "messages": [{"role": "user", "content": "Reply OK."}]}
         try:

@@ -30,3 +30,20 @@ test('retired Haiku preferences use the native default family', async ({ page })
   await page.addScriptTag({ content: script });
   expect(await page.evaluate(() => localStorage.getItem('operon-default-model'))).toBe('claude-sonnet-5');
 });
+
+test('four-slot mode normalizes old version preferences while keeping Haiku independent', async ({ page }) => {
+  const script = readFileSync(new URL('../../scripts/science-model-compat.js', import.meta.url), 'utf8')
+    .replace('__CSSWITCH_NATIVE_IDS__', JSON.stringify({ _four_slots: true,
+      fable: 'claude-opus-99-01-20990101', opus: 'claude-opus-5', sonnet: 'claude-sonnet-5', haiku: 'claude-haiku-4-5' }));
+  await page.goto('/');
+  await page.evaluate(() => {
+    localStorage.setItem('operon-default-model', 'claude-sonnet-4-6');
+    localStorage.setItem('operon-subagent-model', 'claude-haiku-5-5');
+  });
+  await page.addScriptTag({ content: script });
+  expect(await page.evaluate(() => localStorage.getItem('operon-default-model'))).toBe('claude-sonnet-5');
+  expect(await page.evaluate(() => localStorage.getItem('operon-subagent-model'))).toBe('claude-haiku-4-5');
+  await page.evaluate(() => localStorage.setItem('operon-default-model', 'claude-opus-99-01-20990101'));
+  await page.addScriptTag({ content: script });
+  expect(await page.evaluate(() => localStorage.getItem('operon-default-model'))).toBe('claude-opus-99-01-20990101');
+});

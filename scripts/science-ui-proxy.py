@@ -208,7 +208,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 cfg = json.loads(self.server.config.read_text())
                 if cfg.get('mode', 'proxy') == 'proxy':
-                    models = load_profile(str(self.server.config), PROVIDERS)['prov']['native_models']
+                    prov = load_profile(str(self.server.config), PROVIDERS)['prov']
+                    models = prov['native_models']
+                    if prov.get('four_slots'):
+                        choices['_four_slots'] = True
                     for model in sorted(models, key=lambda m: bool(m.get('overflow'))):
                         choices.setdefault(model['family'], model['id'])
             except (OSError, ValueError, KeyError, TypeError):

@@ -1,4 +1,38 @@
-const modelLabels = { model: '默认模型', quality_model: '质量模型' };
+const modelSlots = [
+  { family: 'fable', field: 'fable_model', label: 'Fable', hint: '最强推理' },
+  { family: 'opus', field: 'quality_model', label: 'Opus', hint: '复杂任务' },
+  { family: 'sonnet', field: 'model', label: 'Sonnet', hint: '日常使用' },
+  { family: 'haiku', field: 'haiku_model', label: 'Haiku', hint: '快速响应' },
+];
+const modelLabels = Object.fromEntries(modelSlots.map(slot => [slot.field, slot.label]));
+const protocolField = field => field === 'model' ? 'model_protocol' : field.replace('_model', '_protocol');
+function familyProfiles(p) {
+  const defaults = { sonnet: { model: p.model || '', protocol: p.protocol },
+    opus: { model: p.quality_model || p.model || '', protocol: (p.quality_model && p.quality_protocol) || p.protocol } };
+  const result = {};
+  for (const family of ['sonnet', 'opus', 'fable', 'haiku']) {
+    const previous = Object.entries(p.model_mappings || {})
+      .filter(([id, mapping]) => id.startsWith(`claude-${family}-`) && mapping.model?.trim())
+      .sort(([a], [b]) => b.localeCompare(a, 'en', { numeric: true }))[0]?.[1];
+    const saved = p.family_mappings?.[family];
+    result[family] = saved ? { model: saved.model || '', protocol: saved.protocol || p.protocol }
+      : previous ? { model: previous.model, protocol: previous.protocol || p.protocol }
+      : { ...(defaults[family] || result[family === 'fable' ? 'opus' : 'sonnet']) };
+  }
+  return result;
+}
+function readFamilyMappings() {
+  return Object.fromEntries(modelSlots.map(slot => [slot.family, {
+    model: $('#' + slot.field).value.trim(), protocol: $('#' + protocolField(slot.field)).value,
+  }]));
+}
+function renderModelSlots(p) {
+  const profiles = familyProfiles(p);
+  return `<div class="model-slots-head" aria-hidden="true"><span>对话模型</span><span>API 模型</span><span>连接方式</span></div><div class="model-slots">${modelSlots.map(slot => {
+    const mapping = profiles[slot.family];
+    return `<div class="model-slot" data-family="${slot.family}"><label class="model-slot-label" for="${slot.field}"><strong>${slot.label}</strong><span>${slot.hint}</span></label>${modelControl(slot.field, mapping.model, slot.family === 'sonnet', '使用 Sonnet 模型')}${modelProtocolControl(slot.field, { ...p, [protocolField(slot.field)]: mapping.protocol })}</div>`;
+  }).join('')}</div>`;
+}
 
 function renderList() {
   const node = $('#connectionItems');
@@ -105,8 +139,8 @@ function renderEditor() {
     ${isNew ? `<div class="preset-bar">${icon('blocks')}<span id="presetName">${esc(templates[state.preset]?.name || '自定义 API')}</span><button type="button" class="icon-btn" id="changePreset" title="更换服务商模板" aria-label="更换服务商模板">${icon('arrow-right-left')}</button></div>` : ''}
     <form id="connectionForm"><div class="editor-body provider-sections">
       <section id="pane-connection" class="provider-section" aria-labelledby="connectionHeading"><div class="form-section-heading"><h3 id="connectionHeading">${icon('plug')}连接信息</h3><span class="section-caption">API 访问配置</span></div><div class="form-grid"><div class="field"><label for="name">连接名称</label><input id="name" name="name" value="${esc(p.name)}" required maxlength="80" placeholder="我的 API" /></div><div class="field"><label for="protocol">API 协议</label><select id="protocol" name="protocol">${Object.entries(protocolNames).map(([v, n]) => `<option value="${v}" ${v === p.protocol ? 'selected' : ''}>${n}</option>`).join('')}</select></div><div class="field wide"><label for="base_url">API 地址</label><input type="url" id="base_url" name="base_url" value="${esc(p.base_url)}" required placeholder="https://api.example.com/v1" spellcheck="false" /></div><div class="field wide"><div class="model-heading"><label for="key">API Key</label>${p.has_key ? '<span class="key-state">'+icon('shield-check')+'已保存</span>' : ''}</div><div class="secret-input"><input id="key" name="key" type="password" placeholder="${p.has_key ? '保留已保存的密钥' : '填写 API Key'}" autocomplete="off" spellcheck="false" /><button type="button" class="icon-btn" id="showKeyBtn" title="显示或隐藏输入的密钥" aria-label="显示或隐藏输入的密钥">${icon('eye')}</button></div></div></div></section>
-      <section id="pane-models" class="provider-section" aria-labelledby="modelsHeading"><div class="form-section-heading"><h3 id="modelsHeading">${icon('cpu')}模型映射 ${help('自动模型映射', '自动读取 Science 的原生模型名称：Sonnet 对应默认模型，Opus 对应质量模型。实际 API 模型和协议统一在此设置，保存后后续请求立即生效。Science 保留原生模型选择；以前在网页中单独选择的模型也跟随这里的映射。')}</h3><button type="button" class="btn" id="fetchModelsBtn" title="获取模型列表" aria-label="获取模型列表">${icon('refresh-cw')}获取模型</button></div><div id="catalogStatus" class="catalog-status" role="status"></div><div class="model-routing">${Object.entries(modelLabels).map(([id, label], i) => `<div class="route-field"><div><label for="${id}">${label}</label><span class="route-alias">${['Sonnet', 'Opus'][i]}</span>${id === 'model' ? '' : modelProtocolControl(id, p)}</div>${modelControl(id, p[id], id === 'model')}</div>`).join('')}</div><div class="field token-field"><label for="max_tokens">最大输出 Tokens</label><input type="number" id="max_tokens" name="max_tokens" min="1" max="1000000" value="${p.max_tokens || 8192}" required /></div></section>
-      <section id="pane-test" class="provider-section provider-test" aria-labelledby="testHeading"><div class="form-section-heading"><h3 id="testHeading">${icon('activity')}连接测试</h3><div class="test-role-field"><label for="test_role">测试档位</label><select id="test_role" name="test_role"><option value="default">默认模型 · Sonnet</option><option value="quality">质量模型 · Opus</option></select></div></div><div class="test-layout"><div class="test-target"><span>测试地址</span><code id="testEndpoint"></code><span>测试模型</span><code id="testModel"></code><span>API 协议</span><code id="testProtocol"></code></div><div class="test-result"><div class="verification" id="verification" role="status"></div><div class="test-footer"><button type="button" class="btn" id="verifyBtn">${icon('activity')}测试连接</button><span class="subtle">最小请求 · 可能产生少量 API 费用</span></div></div></div></section>
+      <section id="pane-models" class="provider-section" aria-labelledby="modelsHeading"><div class="form-section-heading"><h3 id="modelsHeading">${icon('cpu')}对话模型</h3><button type="button" class="btn" id="fetchModelsBtn" title="获取模型列表" aria-label="获取模型列表">${icon('refresh-cw')}获取模型</button></div><div id="catalogStatus" class="catalog-status" role="status"></div>${renderModelSlots(p)}<div class="model-slots-footer"><span>四个模型独立配置连接方式；模型留空时使用 Sonnet。</span><div class="token-field"><label for="max_tokens">输出上限</label><input type="number" id="max_tokens" name="max_tokens" min="1" max="1000000" value="${p.max_tokens || 8192}" required /><span>Tokens</span></div></div></section>
+      <section id="pane-test" class="provider-section provider-test" aria-labelledby="testHeading"><div class="form-section-heading"><h3 id="testHeading">${icon('activity')}连接测试</h3><div class="test-role-field"><label for="test_role">测试模型</label><select id="test_role" name="test_role">${modelSlots.map(slot => `<option value="${slot.family}" ${slot.family === 'sonnet' ? 'selected' : ''}>${slot.label}</option>`).join('')}</select></div></div><div class="test-layout"><div class="test-target"><span>测试地址</span><code id="testEndpoint"></code><span>测试模型</span><code id="testModel"></code><span>API 协议</span><code id="testProtocol"></code></div><div class="test-result"><div class="verification" id="verification" role="status"></div><div class="test-footer"><button type="button" class="btn" id="verifyBtn">${icon('activity')}测试连接</button><span class="subtle">最小请求 · 可能产生少量 API 费用</span></div></div></div></section>
     </div><div class="editor-actions"><div class="actions">${!isNew ? `<button type="button" class="icon-btn danger" id="clearKeyBtn" title="清除密钥" aria-label="清除密钥" ${p.has_key ? '' : 'disabled'}>${icon('key-round')}</button>` : ''}<button type="button" class="btn" id="cancelEditor">取消</button></div><div class="actions"><button type="button" class="btn" id="saveUseBtn">${icon('arrow-right-left')}保存并使用</button><button class="btn primary" type="submit">${icon('save')}保存连接</button></div></div></form>`;
   $('#closeEditor').onclick = closeEditor; $('#cancelEditor').onclick = closeEditor;
   $('#connectionForm').noValidate = true;
@@ -117,9 +151,6 @@ function renderEditor() {
     if (e.target.id === 'test_role') { state.draftTest = null; showVerification(); updateTestTarget(); return; }
     state.dirty = true; state.draftTest = null; $('#draftBadge').hidden = false;
     if (['base_url', 'protocol', 'key'].includes(e.target.id)) invalidateCatalog();
-    for (const field of ['quality']) {
-      $('#' + field + '_protocol').disabled = !$('#' + field + '_model').value.trim();
-    }
     showVerification(); updateTestTarget();
   };
   if ($('#changePreset')) $('#changePreset').onclick = async () => { if (state.dirty && !await confirmAction('更换服务商模板？', '当前未保存的配置将被重置。')) return; state.dirty = false; state.catalogRequest++; state.catalogBusy = false; openPresets(); };
@@ -140,15 +171,15 @@ function renderEditor() {
 
 function updateTestTarget() {
   const role = $('#test_role').value;
-  const field = role === 'default' ? 'model' : role + '_model';
+  const field = modelSlots.find(slot => slot.family === role)?.field || 'model';
   $('#testEndpoint').textContent = $('#base_url').value || '未填写';
-  $('#testModel').textContent = $('#' + field).value || $('#model').value || '未选择';
+  $('#testModel').textContent = $('#' + field).value.trim() || $('#model').value || '未选择';
   $('#testProtocol').textContent = protocolNames[effectiveModelProtocol(field)];
 }
 
 function showVerification() {
   const node = $('#verification'); if (!node) return;
-  const v = (state.draftTest?.signature === testSignature(readDraft()) && state.draftTest.result) || (!state.dirty && $('#test_role')?.value === 'default' && state.verified[state.selected]);
+  const v = (state.draftTest?.signature === testSignature(readDraft()) && state.draftTest.result) || (!state.dirty && $('#test_role')?.value === 'sonnet' && state.verified[state.selected]);
   const testing = state.testing === state.selected;
   node.className = `verification ${v ? v.ok ? 'ok' : 'err' : ''}`;
   node.innerHTML = testing ? `${icon('loader-circle')}<strong>正在测试模型调用...</strong>` : v ? `${icon(v.ok ? 'circle-check' : 'circle-x')}<div><strong>${v.ok ? '测试通过' : '测试失败'}${v.latency_ms != null ? `<span>${fmt(v.latency_ms)} ms</span>` : ''}</strong><span>${esc(v.hint)}</span></div>` : `${icon('circle-dashed')}<span>${state.dirty ? '当前草稿尚未测试' : '尚未测试此连接'}</span>`;
@@ -163,7 +194,7 @@ async function testDraft() {
   try {
     const result = await call('test_connection', { input });
     state.draftTest = { signature: testSignature(input), result };
-    if (!state.dirty && input.test_role === 'default') { state.verified[id] = result; renderList(); renderRuntime(); }
+    if (!state.dirty && input.test_role === 'sonnet' && !input.test_model) { state.verified[id] = result; renderList(); renderRuntime(); }
   } finally { state.testing = null; showVerification(); }
 }
 
@@ -172,7 +203,7 @@ async function saveEditor(use = false) {
   const input = readDraft(); const verdict = state.draftTest?.signature === testSignature(input) ? state.draftTest.result : !state.dirty ? state.verified[input.id] : null;
   await call('save_connection', { input });
   state.dirty = false; state.draft = null;
-  if (verdict && input.test_role === 'default') state.verified[input.id] = verdict; else delete state.verified[input.id];
+  if (verdict && input.test_role === 'sonnet' && !input.test_model) state.verified[input.id] = verdict; else delete state.verified[input.id];
   await loadConfig();
   // A saved configuration must remain saved even if activation subsequently fails.
   if (use) {
@@ -183,18 +214,18 @@ async function saveEditor(use = false) {
   renderRuntime(); renderList(); notice((use ? `已保存并使用 ${input.name}。` : '连接已保存。') + (state.runtime.proxy === 'green' && state.config.provider === input.id ? ' 模型映射已更新，Science 中的后续请求将使用新配置。' : ''));
 }
 
-function modelControl(id, value, required) {
-  return `<div class="model-control"><input id="${id}" name="${id}" value="${esc(value)}" placeholder="${required ? '选择或输入模型 ID' : '继承默认模型'}" spellcheck="false" ${required ? 'required' : ''} /><button type="button" class="icon-btn outlined" data-model="${id}" title="选择${modelLabels[id]}" aria-label="选择${modelLabels[id]}">${icon('list-filter')}</button></div>`;
+function modelControl(id, value, required, placeholder = '继承默认模型') {
+  return `<div class="model-control"><input id="${id}" name="${id}" value="${esc(value)}" placeholder="${required ? '选择或输入模型 ID' : placeholder}" spellcheck="false" ${required ? 'required' : ''} /><button type="button" class="icon-btn outlined" data-model="${id}" title="选择${esc(modelLabels[id])}" aria-label="选择${esc(modelLabels[id])}">${icon('list-filter')}</button></div>`;
 }
 
 
 function modelProtocolControl(id, p) {
-  const field = id.replace('_model', '_protocol');
-  return `<span class="route-protocol"><select aria-label="${modelLabels[id]} API 协议" title="${modelLabels[id]} API 协议" id="${field}" name="${field}" ${p[id] ? '' : 'disabled'}><option value="">跟随连接</option>${Object.entries(protocolNames).map(([value, label]) => `<option value="${value}" ${p[field] === value ? 'selected' : ''}>${label}</option>`).join('')}</select></span>`;
+  const field = protocolField(id);
+  return `<span class="route-protocol"><select aria-label="${esc(modelLabels[id])} 连接方式" title="${esc(modelLabels[id])} 连接方式" id="${field}" name="${field}" >${Object.entries(protocolNames).map(([value, label]) => `<option value="${value}" ${p[field] === value ? 'selected' : ''}>${label}</option>`).join('')}</select></span>`;
 }
 
 function effectiveModelProtocol(field = state.modelTarget || 'model') {
-  return (field !== 'model' && $('#' + field)?.value.trim() && $('#' + field.replace('_model', '_protocol'))?.value) || $('#protocol')?.value;
+  return $('#' + protocolField(field))?.value || $('#protocol')?.value;
 }
 
 function catalogSignature() { return `${$('#protocol')?.value}|${$('#base_url')?.value.trim().replace(/\/+$/, '')}|${effectiveModelProtocol()}`; }
@@ -221,7 +252,7 @@ function updateModelOptions() {
   $('#modelCount').textContent = `${all.length} 个可用模型`;
   $('#pickerStatus').textContent = $('#catalogStatus').textContent;
   $('#pickerRefresh').disabled = state.catalogBusy; $('#pickerRefresh').classList.toggle('spin', state.catalogBusy);
-  $('#modelOptions').innerHTML = (state.modelTarget !== 'model' && !query ? `<button type="button" role="option" aria-selected="${!current}" data-model-value=""><span>${icon('corner-down-right')}继承默认模型</span>${!current ? icon('check') : ''}</button>` : '') + models.map((m) => `<button type="button" role="option" aria-selected="${m.id === current}" data-model-value="${esc(m.id)}"><span><strong>${esc(m.name || m.id)}</strong>${m.name && m.name !== m.id ? `<small>${esc(m.id)}</small>` : ''}${m.custom ? '<small>自定义模型</small>' : ''}</span>${m.id === current ? icon('check') : ''}</button>`).join('') + (!models.length ? `<div class="empty">${icon('search-x')}${query ? '没有匹配的模型' : state.catalogBusy ? '正在获取模型...' : '尚无模型目录'}</div>` : '');
+  $('#modelOptions').innerHTML = (state.modelTarget !== 'model' && !query ? `<button type="button" role="option" aria-selected="${!current}" data-model-value=""><span>${icon('corner-down-right')}使用 Sonnet 模型</span>${!current ? icon('check') : ''}</button>` : '') + models.map((m) => `<button type="button" role="option" aria-selected="${m.id === current}" data-model-value="${esc(m.id)}"><span><strong>${esc(m.name || m.id)}</strong>${m.name && m.name !== m.id ? `<small>${esc(m.id)}</small>` : ''}${m.custom ? '<small>自定义模型</small>' : ''}</span>${m.id === current ? icon('check') : ''}</button>`).join('') + (!models.length ? `<div class="empty">${icon('search-x')}${query ? '没有匹配的模型' : state.catalogBusy ? '正在获取模型...' : '尚无模型目录'}</div>` : '');
   $('#modelOptions').querySelectorAll('[data-model-value]').forEach((b) => b.onclick = () => {
     const field = $('#' + state.modelTarget); const changed = field.value !== b.dataset.modelValue;
     field.value = b.dataset.modelValue; if (changed) field.dispatchEvent(new Event('input', { bubbles: true }));

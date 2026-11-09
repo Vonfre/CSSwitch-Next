@@ -1,4 +1,4 @@
-"""Normalize retired web-picker IDs without adding selectable model entries."""
+"""Normalize model selection metadata while preserving conversation content."""
 import re
 from science_models import family
 
@@ -11,10 +11,16 @@ def is_binding(model):
 
 
 def native_id(model, models):
-    if not is_binding(model):
+    slots = any(m.get('csswitch_family_slot') for m in models)
+    if slots and any(m['id'] == model for m in models):
         return model
-    kind = 'sonnet' if family(model) == 'haiku' else family(model)
-    candidates = [m for m in models if family(m.get('id')) == kind and not is_binding(m.get('id'))]
+    if not slots and not is_binding(model):
+        return model
+    kind = 'sonnet' if not slots and family(model) == 'haiku' else family(model)
+    if not kind:
+        return model
+    candidates = [m for m in models if (m.get('family') or family(m.get('id'))) == kind
+                  and (slots or not is_binding(m.get('id')))]
     primary = [m for m in candidates if not m.get('overflow')]
     return (primary or candidates)[0]['id'] if candidates else model
 

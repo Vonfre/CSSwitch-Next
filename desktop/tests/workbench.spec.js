@@ -13,6 +13,17 @@ async function fixture(page) {
     window.__TAURI__ = { core: { invoke: async (cmd, args = {}) => {
       window.testCalls.push({ cmd, args });
       if (cmd === 'get_config') return structuredClone(config);
+      if (cmd === 'list_native_models') {
+        if (window.nativeCatalogDelay) await new Promise(resolve => setTimeout(resolve, window.nativeCatalogDelay));
+        if (window.nativeCatalogFail) throw new Error('模型目录读取失败');
+        return { source: 'installed', models: [
+          { id: 'claude-fable-5-1', name: 'Claude Fable 5.1' },
+          { id: 'claude-opus-5-5', name: 'Claude Opus 5.5' },
+          { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
+          { id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5' },
+          { id: 'claude-opus-5', name: 'Claude Opus 5', overflow: true },
+        ] };
+      }
       if (cmd === 'status') return runtime;
       if (cmd === 'save_connection') {
         const i = config.connections.findIndex((p) => p.id === args.input.id);
@@ -71,8 +82,8 @@ test('add from preset, pick models, test an unsaved draft, save and activate', a
 
   await page.getByRole('button', { name: '获取模型列表', exact: true }).click();
   await expect(page.locator('#catalogStatus')).toContainText('3 个可选模型');
-  await chooseModel(page, '默认模型', 'GPT', 'gpt-6.1-sol');
-  await chooseModel(page, '质量模型', 'Sonnet', 'claude-sonnet');
+  await chooseModel(page, 'Sonnet', 'GPT', 'gpt-6.1-sol');
+  await chooseModel(page, 'Opus', 'Sonnet', 'claude-sonnet');
   await page.locator('#quality_model').fill('custom-quality');
 
   await page.getByRole('button', { name: '测试连接', exact: true }).click();
@@ -173,13 +184,13 @@ test('catalog failures, stale queries, endpoint changes and custom models keep t
   await expect(page.locator('#catalogStatus')).not.toContainText('已获取');
   await expect(page.locator('#model')).toHaveValue('deepseek-v4-pro');
   await page.getByRole('button', { name: '获取模型列表', exact: true }).click(); await expect(page.locator('#catalogStatus')).toContainText('已获取');
-  await page.getByRole('button', { name: '选择默认模型', exact: true }).click();
+  await page.getByRole('button', { name: '选择Sonnet', exact: true }).click();
   await page.locator('#modelSearch').fill('GPT'); await page.locator('#modelSearch').press('Enter');
   expect(await page.evaluate(() => window.testCalls.filter((c) => c.cmd === 'save_connection').length)).toBe(0);
   await page.locator('#modelSearch').press('ArrowDown'); await page.keyboard.press('Enter');
   await expect(page.locator('#model')).toHaveValue('gpt-6.1-sol');
-  await chooseModel(page, '质量模型', 'Sonnet', 'claude-sonnet');
-  await chooseModel(page, '质量模型', '', ''); await expect(page.locator('#quality_model')).toHaveValue('');
+  await chooseModel(page, 'Opus', 'Sonnet', 'claude-sonnet');
+  await chooseModel(page, 'Opus', '', ''); await expect(page.locator('#quality_model')).toHaveValue('');
   await page.locator('#quality_model').fill('my-custom-quality-model');
   await page.getByRole('button', { name: '保存连接', exact: true }).click();
   const saved = await page.evaluate(() => window.testCalls.findLast((c) => c.cmd === 'save_connection').args.input);
@@ -190,7 +201,7 @@ test('catalog failures, stale queries, endpoint changes and custom models keep t
 test('saved credentials auto-fetch once and model picker handles empty search safely', async ({ page }) => {
   await fixture(page); await page.goto('/'); await edit(page, 'GPT');
   await expect(page.locator('#catalogStatus')).toContainText('3 个可选模型');
-  await page.getByRole('button', { name: '选择默认模型', exact: true }).click();
+  await page.getByRole('button', { name: '选择Sonnet', exact: true }).click();
   await page.locator('#modelSearch').fill('no-match'); await expect(page.locator('#modelOptions')).toContainText('没有匹配');
   await page.keyboard.press('Escape'); await expect(page.locator('#modelDialog')).not.toBeVisible();
   await expect(page.locator('#providerDialog')).toBeVisible();
@@ -248,7 +259,7 @@ test('overview, forms and picker fit desktop and mobile, with dark mode and visi
     await page.screenshot({ path: `../artifacts/screenshots/provider-editor-${width}.png`, animations: 'disabled' });
     expect(await page.locator('.provider-sections').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
     await expect(page.getByRole('button', { name: '保存连接', exact: true })).toBeInViewport();
-    await page.getByRole('button', { name: '选择默认模型', exact: true }).click();
+    await page.getByRole('button', { name: '选择Sonnet', exact: true }).click();
     await page.locator('#modelSearch').fill('vendor');
     const boxes = await page.locator('#modelDialog, #modelOptions button').evaluateAll((es) => es.map((e) => ({ left: e.getBoundingClientRect().left, right: e.getBoundingClientRect().right, top: e.getBoundingClientRect().top, bottom: e.getBoundingClientRect().bottom })));
     expect(boxes.every((b) => b.left >= 0 && b.right <= width && b.top >= 0 && b.bottom <= height)).toBe(true);
@@ -304,40 +315,68 @@ test('active connection deletion is protected only while the gateway runs', asyn
 });
 
 
-test('two mappings support mixed protocols and inherit the default when empty', async ({ page }) => {
+test('four fixed slots each save and test independent protocols without native catalog controls', async ({ page }) => {
   await fixture(page); await page.goto('/'); await edit(page, 'GPT');
-
-  await expect(page.locator('#fast_model, #fast_protocol')).toHaveCount(0);
-  await expect(page.locator('.route-field')).toHaveCount(2);
-  await expect(page.locator('#quality_protocol')).toBeDisabled();
-  await page.locator('#quality_model').fill('claude-sonnet-5-5');
-  await page.locator('#quality_protocol').selectOption('anthropic');
-  await page.getByRole('button', { name: '选择质量模型', exact: true }).click();
+  await expect(page.locator('.model-slot')).toHaveCount(4);
+  await expect(page.locator('#nativeMappings, #nativeModelId, .mapping-defaults')).toHaveCount(0);
+  await expect(page.locator('#test_role option')).toHaveCount(4);
+  const mappings = [
+    ['fable', 'fable-target', 'responses'], ['opus', 'opus-target', 'anthropic'],
+    ['sonnet', 'sonnet-target', 'openai'], ['haiku', 'haiku-target', 'anthropic'],
+  ];
+  for (const [family, model, protocol] of mappings) {
+    const row = page.locator(`[data-family="${family}"]`);
+    await expect(row.locator('select')).toBeEnabled();
+    await row.locator('input').fill(model);
+    await row.locator('select').selectOption(protocol);
+    await page.locator('#test_role').selectOption(family);
+    await expect(page.locator('#testModel')).toHaveText(model);
+    await page.getByRole('button', { name: '测试连接', exact: true }).click();
+    await expect(page.locator('#verification')).toContainText('测试通过');
+    const probe = await page.evaluate(() => window.testCalls.filter(c => c.cmd === 'test_connection').at(-1).args.input);
+    expect(probe.test_role).toBe(family);
+    expect(probe.family_mappings[family]).toEqual({ model, protocol });
+  }
+  await page.getByRole('button', { name: '选择Haiku', exact: true }).click();
   await expect.poll(async () => (await page.evaluate(() => window.testCalls.filter(c => c.cmd === 'list_models').at(-1)))?.args.query.model_protocol).toBe('anthropic');
   await page.locator('#closeModels').click();
-
-  await expect(page.locator('#test_role option')).toHaveCount(2);
-  await page.locator('#test_role').selectOption('quality');
-  await expect(page.locator('#testModel')).toHaveText('claude-sonnet-5-5');
-  await expect(page.locator('#testProtocol')).toHaveText('Anthropic Messages');
-  await page.getByRole('button', { name: '测试连接', exact: true }).click();
-  await expect(page.locator('#verification')).toContainText('测试通过');
-  const probe = await page.evaluate(() => window.testCalls.filter(c => c.cmd === 'test_connection').at(-1).args.input);
-  expect(probe.test_role).toBe('quality'); expect(probe.quality_protocol).toBe('anthropic');
-  expect(probe).not.toHaveProperty('fast_model'); expect(probe).not.toHaveProperty('fast_protocol');
-  expect(probe.key).toBeNull();
-  await page.locator('#test_role').selectOption('default');
-  await expect(page.locator('#testProtocol')).toHaveText('OpenAI Responses');
-  await expect(page.locator('#verification')).not.toContainText('测试通过');
   await page.getByRole('button', { name: '保存连接', exact: true }).click();
   await edit(page, 'GPT');
-  await expect(page.locator('#quality_protocol')).toHaveValue('anthropic');
-  await page.locator('#quality_model').fill('');
-  await expect(page.locator('#quality_protocol')).toBeDisabled();
-  await page.locator('#test_role').selectOption('quality');
-  await expect(page.locator('#testModel')).toHaveText('gpt-6.1-sol');
+  for (const [family, model, protocol] of mappings) {
+    const row = page.locator(`[data-family="${family}"]`);
+    await expect(row.locator('input')).toHaveValue(model);
+    await expect(row.locator('select')).toHaveValue(protocol);
+  }
+  await page.locator('#haiku_model').fill('');
+  await page.locator('#haiku_protocol').selectOption('responses');
+  await page.locator('#test_role').selectOption('haiku');
+  await expect(page.locator('#testModel')).toHaveText('sonnet-target');
   await expect(page.locator('#testProtocol')).toHaveText('OpenAI Responses');
-  await page.locator('#quality_model').fill('claude-sonnet-5-5');
+  await page.locator('#haiku_model').fill('haiku-target');
+  await page.locator('#pane-models').scrollIntoViewIfNeeded();
   mkdirSync('../artifacts', { recursive: true });
-  await page.screenshot({ path: '../artifacts/two-model-mappings.png' });
+  await page.screenshot({ path: '../artifacts/four-model-slots.png' });
+});
+
+test('legacy per-version settings prefill the four slots without changing configuration on open', async ({ page }) => {
+  await fixture(page);
+  await page.addInitScript(() => {
+    const invoke = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (cmd, args) => {
+      const result = await invoke(cmd, args);
+      if (cmd === 'get_config') result.connections.find(p => p.id === 'gpt').model_mappings = {
+        'claude-opus-5': { model: 'old-opus', protocol: 'openai' },
+        'claude-opus-5-5': { model: 'latest-opus', protocol: 'anthropic' },
+        'claude-sonnet-5': { model: 'saved-sonnet', protocol: 'responses' },
+      };
+      return result;
+    };
+  });
+  await page.goto('/'); await edit(page, 'GPT');
+  await expect(page.locator('#model')).toHaveValue('saved-sonnet');
+  await expect(page.locator('#quality_model')).toHaveValue('latest-opus');
+  await expect(page.locator('#fable_model')).toHaveValue('latest-opus');
+  await expect(page.locator('#haiku_model')).toHaveValue('saved-sonnet');
+  await expect(page.locator('#quality_protocol')).toHaveValue('anthropic');
+  expect(await page.evaluate(() => window.testCalls.some(c => c.cmd === 'save_connection' || c.cmd === 'list_native_models'))).toBe(false);
 });

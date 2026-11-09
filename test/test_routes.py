@@ -321,6 +321,64 @@ class GatewayIntegration(unittest.TestCase):
             time.sleep(.01)
         self.assertEqual(entries[-1]['protocol'], 'responses')
 
+    def test_independent_native_models_use_exact_protocols_and_hot_reload(self):
+        entries = [
+            ('claude-fable-5-1', 'fable-target', 'responses', '/responses'),
+            ('claude-opus-5-5', 'opus-target', 'anthropic', '/messages'),
+            ('claude-sonnet-5-5', 'sonnet-target', 'openai', '/chat/completions'),
+            ('claude-haiku-5-5', 'haiku-target', 'anthropic', '/messages'),
+            ('claude-opus-5', 'old-opus-target', 'openai', '/chat/completions'),
+        ]
+        mappings = {mid: {'model': target, 'protocol': protocol} for mid, target, protocol, _ in entries}
+        self.write_config('chat', {'model_mappings': mappings})
+        for stream in (False, True):
+            for mid, target, protocol, suffix in entries:
+                self.assertIn('message_stop' if stream else 'OK', self.request(stream=stream, model=mid))
+                path, body, headers = self.hits[-1]
+                self.assertEqual((path, body['model']), ('/chat/v1' + suffix, target))
+                self.assertEqual(headers.get('X-Api-Key') if protocol == 'anthropic' else headers.get('Authorization'),
+                                 'test-key-chat' if protocol == 'anthropic' else 'Bearer test-key-chat')
+        self.request(model='claude-haiku-5-5-20261101')
+        self.assertEqual(self.hits[-1][0], '/chat/v1/messages')
+        self.assertEqual(self.hits[-1][1]['model'], 'haiku-target')
+        mappings['claude-haiku-5-5'] = {'model': 'updated-haiku', 'protocol': 'responses'}
+        self.write_config('chat', {'model_mappings': mappings})
+        self.request(model='claude-haiku-5-5')
+        self.assertEqual(self.hits[-1][0], '/chat/v1/responses')
+        self.assertEqual(self.hits[-1][1]['model'], 'updated-haiku')
+        mappings['claude-haiku-5-5']['model'] = ''
+        self.write_config('chat', {'model_mappings': mappings})
+        self.request(model='claude-haiku-5-5')
+        self.assertEqual(self.hits[-1][0], '/chat/v1/chat/completions')
+        self.assertEqual(self.hits[-1][1]['model'], 'model-chat')
+
+    def test_four_family_slots_override_legacy_versions_and_probe_each_protocol(self):
+        slots = {'fable': {'model': 'fable-slot', 'protocol': 'responses'},
+                 'opus': {'model': 'opus-slot', 'protocol': 'anthropic'},
+                 'sonnet': {'model': 'sonnet-slot', 'protocol': 'openai'},
+                 'haiku': {'model': 'haiku-slot', 'protocol': 'responses'}}
+        self.write_config('chat', {'family_mappings': slots,
+            'model_mappings': {'claude-opus-5': {'model': 'retired-exact', 'protocol': 'openai'}}})
+        for stream in (False, True):
+            for family, suffix in [('fable', '/responses'), ('opus', '/messages'), ('sonnet', '/chat/completions'), ('haiku', '/responses')]:
+                for version in ('5', '5-5', '6-20261109'):
+                    result = self.request(stream=stream, model=f'claude-{family}-{version}')
+                    self.assertIn('message_stop' if stream else 'OK', result)
+                    self.assertEqual(self.hits[-1][0], '/chat/v1' + suffix)
+                    self.assertEqual(self.hits[-1][1]['model'], family + '-slot')
+        cfg = json.loads(self.config.read_text())
+        script = str(pathlib.Path(__file__).resolve().parents[1] / 'proxy/csswitch_proxy.py')
+        for family in slots:
+            out = subprocess.run([sys.executable, script, '--probe-stdin', '--probe-role', family],
+                                 input=json.dumps(cfg).encode(), capture_output=True, timeout=30)
+            self.assertTrue(json.loads(out.stdout)['ok'], out.stdout)
+            self.assertEqual(self.hits[-1][1]['model'], family + '-slot')
+        slots['haiku'] = {'model': '', 'protocol': 'anthropic'}
+        self.write_config('chat', {'family_mappings': slots})
+        self.request(model='claude-haiku-5-5')
+        self.assertEqual(self.hits[-1][0], '/chat/v1/messages')
+        self.assertEqual(self.hits[-1][1]['model'], 'sonnet-slot')
+
     def test_concurrent_mixed_requests_and_hot_edits_keep_inflight_protocol(self):
         self.write_config('hold', {'quality_protocol': 'responses', 'fast_protocol': 'anthropic'})
         self.entered.clear()
@@ -360,6 +418,21 @@ class GatewayIntegration(unittest.TestCase):
             self.assertEqual(self.hits[-1][1]['model'], model)
             self.assertNotIn(b'probe-private-key', out.stdout + out.stderr)
         self.assertEqual(self.config.read_bytes(), before)
+
+    def test_probe_individual_native_model_and_default_setting_are_distinct(self):
+        cfg = {'provider': 'draft', 'providers': {'draft': {
+            'protocol': 'responses', 'base_url': self.base + '/draft/v1/responses',
+            'model': 'gpt-default', 'key': 'probe-private-key', 'model_mappings': {
+                'claude-sonnet-4-6': {'model': 'independent-sonnet', 'protocol': 'anthropic'}}}}}
+        script = str(pathlib.Path(__file__).resolve().parents[1] / 'proxy/csswitch_proxy.py')
+        for extra, model, suffix in [([], 'gpt-default', '/responses'),
+                (['--probe-model', 'claude-sonnet-4-6'], 'independent-sonnet', '/messages')]:
+            out = subprocess.run([sys.executable, script, '--probe-stdin', *extra],
+                                 input=json.dumps(cfg).encode(), capture_output=True, timeout=30)
+            self.assertTrue(json.loads(out.stdout)['ok'], out.stdout)
+            self.assertEqual(self.hits[-1][0], '/draft/v1' + suffix)
+            self.assertEqual(self.hits[-1][1]['model'], model)
+            self.assertNotIn(b'probe-private-key', out.stdout + out.stderr)
 
     def test_science_family_routes_change_without_restarting_gateway(self):
         for active in ('chat', 'responses', 'native'):

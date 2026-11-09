@@ -372,6 +372,8 @@ fn public_config(cfg: &config::Config) -> serde_json::Value {
         "id": id, "name": p.name, "protocol": p.protocol, "base_url": p.base_url,
         "model": p.model, "quality_model": p.quality_model,
         "quality_protocol": p.quality_protocol,
+        "model_mappings": p.model_mappings,
+        "family_mappings": p.family_mappings,
         "max_tokens": p.max_tokens, "key_masked": config::mask(&p.key), "has_key": !p.key.is_empty()
     }))).collect();
     json!({
@@ -511,7 +513,13 @@ struct ConnectionInput {
     #[serde(default)]
     quality_protocol: String,
     #[serde(default)]
+    model_mappings: std::collections::BTreeMap<String, config::ModelMapping>,
+    #[serde(default)]
+    family_mappings: std::collections::BTreeMap<String, config::ModelMapping>,
+    #[serde(default)]
     test_role: String,
+    #[serde(default)]
+    test_model: String,
     max_tokens: u32,
     key: Option<String>,
 }
@@ -534,6 +542,8 @@ fn save_connection(input: ConnectionInput) -> Result<(), String> {
         model: input.model.trim().into(),
         quality_model: input.quality_model.trim().into(),
         quality_protocol: input.quality_protocol,
+        model_mappings: input.model_mappings,
+        family_mappings: input.family_mappings,
         max_tokens: input.max_tokens,
         ..Default::default()
     };
@@ -627,6 +637,8 @@ fn probe_profile(input: ConnectionInput, cfg: &config::Config) -> Result<config:
     profile.quality_model = input.quality_model.trim().into();
     profile.fast_model.clear();
     profile.quality_protocol = input.quality_protocol;
+    profile.model_mappings = input.model_mappings;
+    profile.family_mappings = input.family_mappings;
     profile.fast_protocol.clear();
     profile.max_tokens = input.max_tokens;
     profile.validate()?;
@@ -638,8 +650,12 @@ async fn test_connection(app: tauri::AppHandle, input: ConnectionInput) -> Resul
     tauri::async_runtime::spawn_blocking(move || {
         let cfg = config::load_from(&config::default_dir()).map_err(|e| e.to_string())?;
         let role = if input.test_role.is_empty() { "default".to_owned() } else { input.test_role.clone() };
-        if !["default", "quality", "fast"].contains(&role.as_str()) {
+        if !["default", "quality", "fast", "fable", "opus", "sonnet", "haiku"].contains(&role.as_str()) {
             return Err("测试模型档位无效。".into());
+        }
+        let model = input.test_model.clone();
+        if !model.is_empty() && !config::valid_native_model(&model) {
+            return Err("测试模型 ID 无效。".into());
         }
         let profile = probe_profile(input, &cfg)?;
         let root = asset_root(&app).ok_or("找不到代理资源。")?;
@@ -648,6 +664,7 @@ async fn test_connection(app: tauri::AppHandle, input: ConnectionInput) -> Resul
         let mut child = crate::platform::command(py).arg("-B")
             .arg(root.join("proxy/csswitch_proxy.py")).arg("--probe-stdin")
             .arg("--probe-role").arg(role)
+            .arg("--probe-model").arg(model)
             .env_remove("CSSWITCH_UPSTREAM_URL")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
             .spawn().map_err(|_| "无法启动连接测试。")?;
@@ -709,6 +726,18 @@ fn catalog_profile(query: ModelQuery, cfg: &config::Config) -> Result<config::Pr
         profile.validate()?;
     }
     Ok(profile)
+}
+
+#[tauri::command]
+async fn list_native_models(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = asset_root(&app).ok_or("找不到模型目录资源。")?;
+        let py = proc::find_exe("python3").ok_or("未找到 python3。")?;
+        let out = crate::platform::command(py).arg("-B").arg(root.join("proxy/science_models.py"))
+            .env("CSSWITCH_SCIENCE_BIN", science_bin())
+            .output().map_err(|_| "无法读取 Science 模型目录。")?;
+        serde_json::from_slice(&out.stdout).map_err(|_| "Science 模型目录无效。".into())
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1158,6 +1187,7 @@ pub fn run() {
             verify_connection,
             test_connection,
             list_models,
+            list_native_models,
             read_usage,
             read_logs,
             diagnostics,
@@ -1310,6 +1340,48 @@ mod tests {
     }
 
     #[test]
+    fn native_model_mappings_survive_probe_save_and_public_config() {
+        let input: super::ConnectionInput = serde_json::from_value(serde_json::json!({
+            "id": "multi", "name": "Multi", "protocol": "responses",
+            "base_url": "https://example.com/v1", "model": "default-model", "quality_model": "quality-model",
+            "key": "private-test-key", "max_tokens": 8192, "test_model": "claude-fable-5-1",
+            "family_mappings": {
+                "fable": {"model": "fable-slot", "protocol": "responses"},
+                "opus": {"model": "opus-slot", "protocol": "anthropic"},
+                "sonnet": {"model": "sonnet-slot", "protocol": "openai"},
+                "haiku": {"model": "haiku-slot", "protocol": "responses"}
+            },
+            "model_mappings": {
+                "claude-fable-5-1": {"model": "fable-target", "protocol": "responses"},
+                "claude-opus-5-5": {"model": "opus-target", "protocol": "anthropic"},
+                "claude-sonnet-5-5": {"model": "sonnet-target", "protocol": "openai"},
+                "claude-haiku-5-5": {"model": "haiku-target", "protocol": "anthropic"},
+                "claude-opus-5": {"model": "old-opus-target", "protocol": ""}
+            }
+        })).unwrap();
+        let mut cfg = super::config::Config::default();
+        let profile = super::probe_profile(input, &cfg).unwrap();
+        assert_eq!(profile.model_mappings.len(), 5);
+        cfg.providers.insert("multi".into(), profile.clone());
+        let restored: super::config::Config = serde_json::from_slice(&serde_json::to_vec(&cfg).unwrap()).unwrap();
+        assert_eq!(restored.providers["multi"].model_mappings, profile.model_mappings);
+        assert_eq!(restored.providers["multi"].family_mappings, profile.family_mappings);
+        let public = super::public_config(&restored);
+        assert_eq!(public["connections"][0]["model_mappings"]["claude-haiku-5-5"]["model"], "haiku-target");
+        assert!(!public.to_string().contains("private-test-key"));
+        assert_eq!(public["connections"][0]["family_mappings"]["sonnet"]["protocol"], "openai");
+        let mut invalid = profile.clone();
+        invalid.family_mappings.get_mut("sonnet").unwrap().protocol = "invalid".into();
+        assert!(invalid.validate().is_err());
+        let mut invalid = profile.clone();
+        invalid.model_mappings.get_mut("claude-fable-5-1").unwrap().protocol = "invalid".into();
+        assert!(invalid.validate().is_err());
+        let mut invalid = profile;
+        invalid.model_mappings.insert("unrelated-model".into(), Default::default());
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
     fn draft_probe_keeps_saved_config_and_restricts_key_reuse() {
         let mut cfg = super::config::Config::default();
         cfg.providers.insert("test".into(), super::config::ProviderCfg {
@@ -1321,6 +1393,7 @@ mod tests {
             id: "test".into(), name: "Draft".into(), protocol: "responses".into(),
             base_url: url.into(), model: "draft-model".into(), quality_model: "".into(),
             quality_protocol: "".into(),
+            model_mappings: Default::default(), family_mappings: Default::default(), test_model: "".into(),
             test_role: "".into(), max_tokens: 8192, key: key.map(str::to_owned)
         };
         let p = super::probe_profile(input("https://example.com/v1", None), &cfg).unwrap();

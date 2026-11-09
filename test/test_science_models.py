@@ -38,6 +38,81 @@ class ModelMapping(unittest.TestCase):
         for mid in ['my-opus-6', 'claude-opus-5-malicious', 'claude-unknown-5', 'gpt-6-astra']:
             self.assertIsNone(models.family(mid))
 
+    def test_four_family_catalog_and_overflow_have_independent_targets(self):
+        with tempfile.TemporaryDirectory() as root:
+            binary = Path(root) / 'science'
+            binary.write_bytes(b'catalog=[{id:"claude-fable-5-1",name:"Fable 5.1"},'
+                b'{id:"claude-opus-5-5",name:"Claude Opus 5.5"},'
+                b'{id:"claude-sonnet-5-5",name:"Claude Sonnet 5.5"},'
+                b'{id:"claude-haiku-5-5",name:"Claude Haiku 5.5"},'
+                b'{id:"claude-opus-5",name:"Claude Opus 5",overflow:!0}]')
+            catalog = models.discover(binary)
+        self.assertEqual([m['family'] for m in catalog['models']], ['fable', 'opus', 'sonnet', 'haiku', 'opus'])
+        mappings = {m['id']: {'model': 'target-' + str(i), 'protocol': 'openai'}
+                    for i, m in enumerate(catalog['models'])}
+        with patch.object(models, 'discover', return_value=catalog):
+            route = profile_from_config(self.config(model_mappings=mappings), proxy.PROVIDERS)
+        token = proxy.CURRENT_ROUTE.set(route)
+        try:
+            for mid, mapping in mappings.items():
+                self.assertEqual(proxy.resolve_model(mid), mapping['model'])
+                self.assertEqual(proxy.resolve_model(mid + '-20261101'), mapping['model'])
+                self.assertEqual(proxy.resolve_model(mid + '-latest'), mapping['model'])
+            self.assertEqual(proxy.resolve_model('claude-fable-6'), 'gpt-6-astra')
+        finally:
+            proxy.CURRENT_ROUTE.reset(token)
+        payload = {'models': {'anthropic': catalog['models']}}
+        updated = models.adapt_model_response(payload, route['prov'])['models']['anthropic']
+        self.assertEqual([m['id'] for m in updated], list(mappings))
+        self.assertEqual([m['overflow'] for m in updated], [False, False, False, False, True])
+        self.assertEqual([m['name'].split(' → ')[1] for m in updated], ['target-' + str(i) for i in range(5)])
+
+    def test_invalid_mappings_fail_and_empty_mapping_inherits(self):
+        for mapping in [[], {'gpt-model': {}}, {'claude-haiku-5-5': {'protocol': 'invalid'}},
+                        {'claude-fable-5-1': {'model': 123}}]:
+            with self.assertRaises(ValueError):
+                profile_from_config(self.config(model_mappings=mapping), proxy.PROVIDERS)
+        route = profile_from_config(self.config(model_mappings={'claude-fable-5-1': {'model': '', 'protocol': 'openai'}}), proxy.PROVIDERS)
+        self.assertEqual(route['prov']['native_routes'], {})
+        self.assertEqual(route['prov']['model_routes']['fable']['model'], 'gpt-6-astra')
+
+    def test_configured_slots_replace_old_catalog_and_normalize_old_selections(self):
+        from conversation_models import normalize_response
+        native = {'models': [{'id': 'claude-opus-5', 'name': 'Claude Opus 5', 'family': 'opus'},
+                  {'id': 'claude-sonnet-5', 'name': 'Claude Sonnet 5', 'family': 'sonnet'},
+                  {'id': 'claude-sonnet-4-6', 'name': 'Claude Sonnet 4.6', 'family': 'sonnet', 'overflow': True}]}
+        slots = {kind: {'model': kind + '-target', 'protocol': 'responses'} for kind in models.FAMILIES}
+        with patch.object(models, 'discover', return_value=native):
+            prov = profile_from_config(self.config(family_mappings=slots), proxy.PROVIDERS)['prov']
+        self.assertEqual([m['family'] for m in prov['native_models']], list(models.FAMILIES))
+        payload = {'models': {'anthropic': native['models']}, 'default_model_id': 'claude-sonnet-4-6'}
+        result = models.adapt_model_response(payload, prov)
+        self.assertEqual([m['name'] for m in result['models']['anthropic']],
+                         [models.SLOT_LABELS[k] + ' → ' + k + '-target' for k in models.FAMILIES])
+        self.assertTrue(all(not m['overflow'] for m in result['models']['anthropic']))
+        self.assertEqual(result['default_model_id'], 'claude-sonnet-5')
+        self.assertNotIn('csswitch_family_slot', json.dumps(result))
+        from routing import select_model_route
+        token = proxy.CURRENT_ROUTE.set({'prov': prov})
+        try:
+            for kind, entry in zip(models.FAMILIES, result['models']['anthropic']):
+                target = proxy.resolve_model(entry['id'])
+                self.assertEqual(target, kind + '-target')
+                self.assertEqual(select_model_route({'prov': prov}, entry['id'], target)['prov']['resolved_model'], target)
+        finally:
+            proxy.CURRENT_ROUTE.reset(token)
+        frame = {'model': 'claude-sonnet-4-6', 'context_data': {'_model': 'claude-haiku-5-5'},
+                 'input_data': {'model': 'claude-sonnet-4-6'}}
+        normalized = normalize_response(frame, '/api/frames/f1', prov['native_models'])
+        self.assertEqual(normalized['model'], 'claude-sonnet-5')
+        self.assertEqual(normalized['context_data']['_model'], 'claude-haiku-4-5')
+        self.assertEqual(normalized['input_data'], frame['input_data'])
+        fable_id = result['models']['anthropic'][0]['id']
+        self.assertEqual(normalize_response({'model': fable_id}, '/api/frames/f1', prov['native_models'])['model'], fable_id)
+        for flag in ['first_party_catalog', 'auth_error', 'fetch_error']:
+            protected = {**payload, flag: True}
+            self.assertIs(models.adapt_model_response(protected, prov), protected)
+
     def test_current_future_and_old_session_ids_use_configured_roles(self):
         route = profile_from_config(self.config(fast_model='obsolete', fast_protocol='invalid'), proxy.PROVIDERS)
         token = proxy.CURRENT_ROUTE.set(route)

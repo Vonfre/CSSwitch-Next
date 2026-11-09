@@ -33,7 +33,23 @@ fn default_mode() -> String {
 fn default_local_mcp() -> bool { true }
 fn default_translation_engine() -> String { "edge".to_string() }
 
-/// 单个 provider 的配置。目前只有 key（明文存盘）。
+#[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
+pub struct ModelMapping {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub protocol: String,
+}
+
+pub fn valid_native_model(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix("claude-") else { return false };
+    let Some((family, version)) = rest.split_once('-') else { return false };
+    ["fable", "opus", "sonnet", "haiku"].contains(&family)
+        && !version.is_empty() && version.len() <= 64
+        && version.split('-').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// 单个提供商的连接和原生模型映射配置。
 #[derive(Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
 pub struct ProviderCfg {
     #[serde(default)]
@@ -53,6 +69,10 @@ pub struct ProviderCfg {
     pub fast_model: String,
     #[serde(default)]
     pub quality_protocol: String,
+    #[serde(default)]
+    pub model_mappings: BTreeMap<String, ModelMapping>,
+    #[serde(default)]
+    pub family_mappings: BTreeMap<String, ModelMapping>,
     #[serde(default, skip_serializing)]
     pub fast_protocol: String,
     #[serde(default = "default_max_tokens")]
@@ -100,6 +120,24 @@ impl ProviderCfg {
         for protocol in [&self.quality_protocol] {
             if !["", "anthropic", "openai", "responses"].contains(&protocol.as_str()) {
                 return Err("模型协议必须跟随连接，或选择 Anthropic Messages、OpenAI Chat、OpenAI Responses。".into());
+            }
+        }
+        if self.model_mappings.len() > 256 {
+            return Err("最多配置 256 个模型映射。".into());
+        }
+        for (id, mapping) in &self.model_mappings {
+            if !valid_native_model(id) || mapping.model.len() > 512 || mapping.model.chars().any(char::is_control) {
+                return Err("原生模型 ID 或映射模型无效。".into());
+            }
+            if !["", "anthropic", "openai", "responses"].contains(&mapping.protocol.as_str()) {
+                return Err("模型映射的 API 协议无效。".into());
+            }
+        }
+        for (family, mapping) in &self.family_mappings {
+            if !["fable", "opus", "sonnet", "haiku"].contains(&family.as_str())
+                || mapping.model.len() > 512 || mapping.model.chars().any(char::is_control)
+                || !["", "anthropic", "openai", "responses"].contains(&mapping.protocol.as_str()) {
+                return Err("模型或连接方式无效。".into());
             }
         }
         let url = url::Url::parse(&self.base_url).map_err(|_| "API 地址不是有效 URL。")?;

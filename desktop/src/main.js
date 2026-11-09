@@ -109,7 +109,8 @@ function readDraft() {
   const form = $('#connectionForm');
   if (!form) return null;
   const data = Object.fromEntries(new FormData(form));
-  return { ...data, id: state.selected, max_tokens: Number(data.max_tokens), key: data.key || null };
+  return { ...data, family_mappings: readFamilyMappings(), model_mappings: selected()?.model_mappings || {},
+    test_model: '', id: state.selected, max_tokens: Number(data.max_tokens), key: data.key || null };
 }
 
 function host(url) { try { return new URL(url).host; } catch { return url || ''; } }
@@ -118,7 +119,7 @@ function mark(p) {
   return `<span class="provider-mark ${esc(p.protocol)}">${icon(templateIcons[match?.[0] || 'custom'])}</span>`;
 }
 function testSignature(input) {
-  return JSON.stringify([input.protocol, input.base_url.trim().replace(/\/+$/, ''), input.model, input.quality_model || '', input.quality_protocol || '', input.test_role || 'default', Number(input.max_tokens)]);
+  return JSON.stringify([input.protocol, input.base_url.trim().replace(/\/+$/, ''), input.model, input.quality_model || '', input.quality_protocol || '', input.family_mappings || {}, input.model_mappings || {}, input.test_model || '', input.test_role || 'default', Number(input.max_tokens)]);
 }
 
 function renderRuntime() {

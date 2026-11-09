@@ -10,12 +10,19 @@ import os
 from pathlib import Path
 import re
 
-FAMILIES = ('opus', 'sonnet', 'haiku')
-ROLES = {'opus': '质量', 'sonnet': '默认', 'haiku': '快速'}
+FAMILIES = ('fable', 'opus', 'sonnet', 'haiku')
+ROLES = {'fable': '最强', 'opus': '质量', 'sonnet': '默认', 'haiku': '快速'}
 FALLBACK = {'opus': 'claude-opus-5', 'sonnet': 'claude-sonnet-5'}
-PUBLIC_RECORD = re.compile(rb'\{id:"(claude-(?:opus|sonnet|haiku)-\d{1,2}(?:-\d{1,2})*)",name:"(Claude (?:Opus|Sonnet|Haiku) [0-9.]+)"([^}]{0,80})\}')
-PUBLIC_LITERAL = re.compile(rb'=\s*["\'](claude-(?:opus|sonnet|haiku)-\d{1,2}(?:-\d{1,2})*(?:-20\d{6})?)["\']')
-FAMILY_ID = re.compile(r'^claude-(?:(opus|sonnet|haiku)-\d{1,2}(?:-\d{1,2})*|\d{1,2}(?:-\d{1,2})*-(opus|sonnet|haiku))(?:-20\d{6}|-latest)?$', re.I)
+# Local gateway routing IDs for slots absent from an older Science catalog.
+# These are not advertised as upstream Claude versions; the label is the slot name.
+# Older Science validates only Opus/Sonnet/Haiku-shaped IDs. Reserve an Opus-shaped
+# local alias for the Fable slot so its choice survives native request validation.
+SLOT_IDS = {'fable': 'claude-opus-99-01-20990101', 'opus': 'claude-opus-5',
+            'sonnet': 'claude-sonnet-5', 'haiku': 'claude-haiku-4-5'}
+SLOT_LABELS = {'fable': 'Fable', 'opus': 'Opus', 'sonnet': 'Sonnet', 'haiku': 'Haiku'}
+PUBLIC_RECORD = re.compile(rb'\{id:"(claude-(?:fable|opus|sonnet|haiku)-\d{1,2}(?:-\d{1,2})*)",name:"((?:Claude )?(?:Fable|Opus|Sonnet|Haiku) [0-9.]+)"([^}]{0,256})\}')
+PUBLIC_LITERAL = re.compile(rb'=\s*["\'](claude-(?:fable|opus|sonnet|haiku)-\d{1,2}(?:-\d{1,2})*(?:-20\d{6})?)["\']')
+FAMILY_ID = re.compile(r'^claude-(?:(fable|opus|sonnet|haiku)-\d{1,2}(?:-\d{1,2})*|\d{1,2}(?:-\d{1,2})*-(fable|opus|sonnet|haiku))(?:-20\d{6}|-latest)?$', re.I)
 
 
 def family(model):
@@ -51,7 +58,7 @@ def read_catalog(binary):
             unique.setdefault(mid, {'id': mid, 'name': name, 'family': family(mid), 'overflow': overflow})
         return list(unique.values())
     models = []
-    for kind in FALLBACK:
+    for kind in FAMILIES:
         ids = [mid for mid in literals if family(mid) == kind]
         if ids:
             mid = max(ids, key=rank)
@@ -87,20 +94,33 @@ def discover(binary=None):
 
 
 def mapped_name(name, model, prov):
-    target = prov['family_map'].get(family(model))
+    target = prov.get('model_map', {}).get(model) or prov['family_map'].get(family(model))
     return name.split(' → ', 1)[0] + (' → ' + target if target else '')
 
 
 def configure(prov):
+    prov['family_map'].setdefault('fable', prov['family_map']['opus'])
     models = discover()['models']
+    if prov.get('four_slots'):
+        slots = []
+        for kind in FAMILIES:
+            candidates = [m for m in models if m['family'] == kind]
+            primary = [m for m in candidates if not m.get('overflow')]
+            mid = (primary or candidates)[0]['id'] if candidates else SLOT_IDS[kind]
+            slots.append({'id': mid, 'name': SLOT_LABELS[kind], 'family': kind,
+                          'description': '', 'overflow': False, 'csswitch_family_slot': True})
+            prov['model_map'][mid] = prov['family_map'][kind]
+            prov.setdefault('native_routes', {})[mid] = dict(prov['model_routes'][kind])
+        models = slots
     prov['native_models'] = models
+    for m in models:
+        prov['model_map'].setdefault(m['id'], prov['family_map'][m['family']])
     prov['models'] = [(m['id'], mapped_name(m['name'], m['id'], prov)) for m in models]
-    prov['model_map'].update({m['id']: prov['family_map'][m['family']] for m in models})
     return prov
 
 
 def adapt_model_response(payload, prov):
-    """Show exactly the native catalog, with each model's current mapped target."""
+    """Expose the four configured slots, or retain legacy native-catalog behavior."""
     if not isinstance(payload, dict) or payload.get('first_party_catalog') or payload.get('model_list_source') == 'selector':
         return payload
     if payload.get('auth_error') or payload.get('fetch_error'):
@@ -114,14 +134,15 @@ def adapt_model_response(payload, prov):
         ' → ' in str(m.get('name', '')) or str(m.get('description', '')).startswith(('CSSwitch ', '由 CSSwitch'))
         for m in original)
     originals = {m.get('id'): m for m in original if not is_binding(m.get('id'))}
-    native = prov['native_models'] if generated else original
+    native = prov['native_models'] if generated or prov.get('four_slots') else original
     models = []
     for model in native:
-        if is_binding(model.get('id')):
+        if is_binding(model.get('id')) and not prov.get('four_slots'):
             continue
         item = {**originals.get(model['id'], {}), **model}
         item.pop('csswitch_binding', None)
         item.pop('family', None)
+        item.pop('csswitch_family_slot', None)
         if str(item.get('description', '')).startswith(('CSSwitch ', '由 CSSwitch')):
             item['description'] = ''
         item['name'] = mapped_name(model['name'], model['id'], prov)
@@ -130,3 +151,8 @@ def adapt_model_response(payload, prov):
     if 'default_model_id' in result:
         result['default_model_id'] = native_id(result['default_model_id'], native)
     return result
+
+
+if __name__ == '__main__':
+    import json
+    print(json.dumps(discover()))

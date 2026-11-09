@@ -1,6 +1,6 @@
 # 更新记录
 
-## 0.8.22
+## 0.8.23
 
 - 合并 macOS 的四档模型功能与 v0.8.20 的 Windows 路径、订阅修复；同时发布 macOS Apple Silicon / Intel 和 Windows x64 安装包及便携包。
 - 提供商配置固定显示 Fable、Opus、Sonnet、Haiku 四行，每档独立设置 API 模型与 Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses 连接方式，并可单独测试。

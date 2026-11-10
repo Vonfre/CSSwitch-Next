@@ -156,8 +156,8 @@ body[data-view="subscriptions"] #pageTitle svg { width:22px; height:22px; stroke
 .subscription-compact .subscription-account-meta { gap:6px; font-size:11px; }
 .subscription-compact .subscription-quota { display:grid; grid-template-columns:minmax(0,1fr) 78px; align-items:center; column-gap:12px; max-width:none; margin:0; min-width:0; }
 .subscription-compact .subscription-quota-windows { display:grid; grid-template-columns:1fr; gap:6px; }
-.subscription-compact .subscription-quota-window { display:grid; grid-template-columns:42px minmax(28px,1fr) 66px 58px; gap:7px; align-items:center; }
-.subscription-compact .subscription-quota-label { display:block; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:11px; }
+.subscription-compact .subscription-quota-window { display:grid; grid-template-columns:104px minmax(28px,1fr) 66px 58px; gap:7px; align-items:center; }
+.subscription-compact .subscription-quota-label { display:block; color:var(--muted); white-space:normal; overflow-wrap:anywhere; line-height:1.45; font-size:11px; }
 .subscription-compact .subscription-quota-value { font-size:11px; font-weight:400; white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums; }
 .subscription-compact .subscription-quota progress,.subscription-compact .subscription-quota-track { margin:0; height:4px; background:var(--line); }
 .subscription-compact .subscription-quota progress::-webkit-progress-bar { background:var(--line); }
@@ -205,7 +205,7 @@ body[data-view="subscriptions"] #pageTitle svg { width:22px; height:22px; stroke
 @media (max-width:520px) {
   .subscription-compact .subscription-account { grid-template-columns:30px minmax(0,1fr) auto; gap:10px; }
   .subscription-compact .subscription-quota { grid-column:1/-1; grid-template-columns:minmax(0,1fr) 70px; column-gap:6px; }
-  .subscription-compact .subscription-quota-window { grid-template-columns:38px minmax(12px,1fr) 60px 48px; gap:5px; }
+  .subscription-compact .subscription-quota-window { grid-template-columns:96px minmax(12px,1fr) 60px 48px; gap:5px; }
   .subscription-compact .subscription-quota-reset { font-size:9px; }
   .subscription-compact .subscription-quota-value { font-size:10px; }
   .subscription-compact .subscription-account-name { flex-wrap:nowrap; }

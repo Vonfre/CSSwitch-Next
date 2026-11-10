@@ -217,6 +217,18 @@ test('shows remaining official limits, reset times and stale or missing values h
   await expect(first).toContainText('重置');
   await expect(second.locator('progress.is-low')).toHaveAttribute('value', '8');
   await page.evaluate(() => {
+    window.subscriptionUsageResult.accounts['a@example.test'].windows.push({ key:'seven_day_fable', label:'一周 Fable', remaining_percent:100 });
+  });
+  await page.locator('#subscriptionUsageRefresh').click();
+  await expect(first.getByText('每周总额度', {exact:true})).toBeVisible();
+  await expect(first.getByText('Fable 每周额度', {exact:true})).toBeVisible();
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({width, height:900});
+    expect(await first.locator('.subscription-quota-label').evaluateAll(nodes => nodes.every(n => n.scrollWidth <= n.clientWidth && n.scrollHeight <= n.clientHeight))).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  await page.screenshot({path:'../artifacts/subscriptions-scoped-quota-mobile.png',fullPage:true});
+  await page.evaluate(() => {
     window.subscriptionUsageResult.accounts['a@example.test'].status = 'rate_limited';
     window.subscriptionUsageResult.accounts['a@example.test'].stale = true;
     window.subscriptionUsageResult.accounts['a@example.test'].message = '官方查询限频，稍后自动重试。';

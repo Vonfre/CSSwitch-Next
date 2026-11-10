@@ -32,13 +32,19 @@ function subscriptionQuotaMarkup(id) {
   const stale = usage?.stale || usage?.status !== 'ok';
   const windows = usage?.windows?.length ? usage.windows : [{ key: 'five_hour', label: '5 小时' }, { key: 'seven_day', label: '一周' }];
   const rows = windows.map(w => {
+    // Use stable keys so older cached readings also get unambiguous labels.
+    const label = ({ five_hour: '5 小时', seven_day: '每周总额度',
+      seven_day_fable: 'Fable 每周额度', seven_day_opus: 'Opus 每周额度',
+      seven_day_sonnet: 'Sonnet 每周额度' })[w.key] || w.label;
+    const scope = w.key === 'seven_day' ? '官方返回的整体周额度' :
+      w.key.startsWith('seven_day_') ? '官方单独返回的模型专属周额度' : '官方返回的 5 小时额度';
     const known = Number.isFinite(w.remaining_percent);
     const remaining = known ? quotaBarPercent(w.remaining_percent) : null;
     const countdown = quotaCountdown(w.resets_at);
     const resetText = countdown ? `${countdown} 后重置` : w.resets_at ? '已到重置时间，等待更新' : '重置时间未提供';
     return `<div class="subscription-quota-window ${stale ? 'is-stale' : ''}" title="${esc(resetText)}">
-      <span class="subscription-quota-label">${esc(w.label)}</span>
-      ${known ? `<progress max="100" value="${remaining}" aria-label="${esc(w.label)}剩余额度" class="${remaining < 20 ? 'is-low' : ''}"></progress>` : '<div class="subscription-quota-track"></div>'}
+      <span class="subscription-quota-label" title="${esc(label)} · ${esc(scope)}">${esc(label)}</span>
+      ${known ? `<progress max="100" value="${remaining}" aria-label="${esc(label)}剩余额度" class="${remaining < 20 ? 'is-low' : ''}"></progress>` : '<div class="subscription-quota-track"></div>'}
       <strong class="subscription-quota-value">${known ? `${remaining.toLocaleString('zh-CN', { maximumFractionDigits: 1 })}% 剩余` : '暂无数据'}</strong>
       <span class="subscription-quota-reset" aria-label="${esc(resetText)}">${icon('clock-3')}${countdown || '—'}<span class="sr-only">后重置</span></span></div>`;
   }).join('');

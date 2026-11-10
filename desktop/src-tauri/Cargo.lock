@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.8.31"
+version = "0.9.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",

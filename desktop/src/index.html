@@ -9,12 +9,14 @@
     <link rel="stylesheet" href="./styles.css" />
     <link rel="stylesheet" href="./workspace.css" />
     <link rel="stylesheet" href="./subscriptions.css" />
+    <link rel="stylesheet" href="./environment.css" />
     <script src="./assets/lucide.min.js" defer></script>
     <script src="./assets/marked.min.js" defer></script>
     <script src="./assets/purify.min.js" defer></script>
     <script src="./reader.js" defer></script>
     <script src="./providers.js" defer></script>
     <script src="./subscriptions.js" defer></script>
+    <script src="./environment.js" defer></script>
     <script src="./mcp.js" defer></script>
     <script src="./updater.js" defer></script>
     <script src="./agent-skills.js" defer></script>
@@ -34,6 +36,7 @@
           <div class="sidebar-section">工作空间</div>
           <button class="nav-item active" data-view="workbench"><i data-lucide="plug-zap"></i>提供商</button>
           <button class="nav-item" data-view="subscriptions"><i data-lucide="users-round"></i>订阅账号</button>
+          <button class="nav-item" data-view="environment"><i data-lucide="shield-check"></i>环境检测</button>
           <div class="nav-separator" role="separator"></div>
           <button class="nav-item" data-view="mcp"><i data-lucide="network"></i>MCP 管理</button>
           <button class="nav-item" data-view="skills"><i data-lucide="book-open"></i>Skills 管理</button>
@@ -45,8 +48,9 @@
         <div class="sidebar-bottom"><div class="local-label"><span class="dot"></span>本地工作空间</div><div class="sidebar-actions"><span>CSSwitch Next</span><button class="icon-btn" id="quitBtn" title="退出应用" aria-label="退出应用"><i data-lucide="log-out"></i></button></div></div>
       </aside>
       <main>
-        <header class="topbar"><div><div class="eyebrow">CLAUDE SCIENCE</div><h1 id="pageTitle">提供商</h1></div><div class="top-actions"><button class="btn" id="updateBadge" hidden></button><span id="previewLabel" class="badge" hidden>浏览器预览</span><button class="icon-btn" id="themeBtn" title="切换深浅主题" aria-label="切换深浅主题"><i data-lucide="sun-moon"></i></button><button class="icon-btn" id="refreshBtn" title="刷新状态" aria-label="刷新状态"><i data-lucide="refresh-cw"></i></button></div></header>
+        <header class="topbar"><div><div class="eyebrow">CLAUDE SCIENCE</div><h1 id="pageTitle">提供商</h1></div><div class="top-actions"><button class="btn" id="environmentBadge" hidden></button><button class="btn" id="updateBadge" hidden></button><span id="previewLabel" class="badge" hidden>浏览器预览</span><button class="icon-btn" id="themeBtn" title="切换深浅主题" aria-label="切换深浅主题"><i data-lucide="sun-moon"></i></button><button class="icon-btn" id="refreshBtn" title="刷新状态" aria-label="刷新状态"><i data-lucide="refresh-cw"></i></button></div></header>
         <div id="notice" class="notice" role="status" hidden></div>
+        <div id="environmentAlert" class="environment-alert" role="status" hidden><span></span><button class="btn quiet">查看检测</button></div>
         <div id="launchProgress" class="launch-progress" hidden><i data-lucide="loader-circle" class="spin"></i><div><strong id="launchPhase" role="status"></strong><p id="launchElapsed"></p></div></div>
         <div id="launchHelp" class="actions launch-help" hidden><button class="btn" id="launchDiagnostics">检查兼容性</button><button class="btn" id="launchLogs">查看运行日志</button></div>
         <div id="content" aria-busy="true"><div class="empty">正在读取本地配置...</div></div>

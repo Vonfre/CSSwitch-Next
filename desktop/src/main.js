@@ -171,6 +171,7 @@ function loadView(view, refresh = false) {
   if (viewReads.has(view)) return viewReads.get(view);
   const pending = (async () => {
     if (view === 'subscriptions') await loadSubscriptions();
+    else if (view === 'environment') await loadEnvironment(refresh);
     else if (['mcp', 'skills', 'sessions'].includes(view)) await ({ mcp: loadMcp, skills: loadSkills, sessions: loadSessions })[view](refresh);
     else if (native()) {
       if (view === 'workbench' && refresh) { await loadConfig(); await refreshRuntime(true); }
@@ -193,7 +194,7 @@ async function readView(view, refresh = false) {
     await loadView(view, refresh);
     // A late response from a page we left must never replace the current page.
     if (request !== viewRequest || state.view !== view) return;
-    ({ workbench: renderWorkbench, subscriptions: renderSubscriptions, mcp: renderMcp, skills: renderSkills,
+    ({ workbench: renderWorkbench, subscriptions: renderSubscriptions, environment: renderEnvironment, mcp: renderMcp, skills: renderSkills,
        sessions: renderSessions, usage: renderUsage, logs: renderLogs, settings: renderSettings })[view]();
     if (view === 'subscriptions') { if (refresh) refreshSubscriptionUsage(); else initializeSubscriptionUsage(); }
   } catch (e) {
@@ -218,6 +219,7 @@ async function showView(view) {
   }
   closeHelp(); notice('');
   state.view = view;
+  updateEnvironmentIndicators();
   $('#launchHelp').hidden = true;
   document.body.dataset.view = view;
   document.body.classList.remove('session-detail');
@@ -225,7 +227,7 @@ async function showView(view) {
     b.classList.toggle('active', b.dataset.view === view);
     if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
-  $('#pageTitle').textContent = { workbench: '提供商', subscriptions: '订阅账号', mcp: 'MCP 管理', skills: 'Skills 管理', sessions: '会话管理', usage: '用量统计', logs: '运行日志', settings: '设置' }[view];
+  $('#pageTitle').textContent = { workbench: '提供商', subscriptions: '订阅账号', environment: '环境检测', mcp: 'MCP 管理', skills: 'Skills 管理', sessions: '会话管理', usage: '用量统计', logs: '运行日志', settings: '设置' }[view];
   await readView(view);
 }
 
@@ -271,6 +273,7 @@ async function init() {
     $('#content').setAttribute('aria-busy', 'false'); renderWorkbench();
     if (native() && state.config.mode !== 'official') refreshRuntime().catch(() => {});
     initUpdater();
+    initEnvironment();
     if (native()) initializeSubscriptionUsage();
   } catch (e) { $('#content').innerHTML = '<div class="empty">无法读取配置，请检查本地配置文件。</div>'; notice(String(e), true); }
 }

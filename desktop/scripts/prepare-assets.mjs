@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const root = new URL('../', import.meta.url);
 const assets = new URL('src/assets/', root);
@@ -10,8 +10,10 @@ for (const [source, target] of [
   ['node_modules/marked/LICENSE.md', 'marked-LICENSE.txt'],
   ['node_modules/dompurify/dist/purify.min.js', 'purify.min.js'],
   ['node_modules/dompurify/LICENSE', 'dompurify-LICENSE.txt'],
+  ['node_modules/flag-icons/LICENSE', 'flag-icons-LICENSE.txt'],
   ['src-tauri/icons/128x128.png', 'app-icon.png'],
 ]) copyFileSync(fileURLToPath(new URL(source, root)), fileURLToPath(new URL(target, assets)));
+cpSync(fileURLToPath(new URL('node_modules/flag-icons/flags/4x3/', root)), fileURLToPath(new URL('flags/', assets)), {recursive:true});
 
 await import('./build-mcp.mjs');
 

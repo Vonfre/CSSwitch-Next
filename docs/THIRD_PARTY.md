@@ -1,5 +1,19 @@
 # CC Switch source attribution
 
+## Net.Coffee environment dashboard (0.9.0)
+
+The environment page visually follows the card arrangement requested by the user
+from https://ip.net.coffee/claude/. Its HTML, CSS, JavaScript and native detection
+implementation are written for this repository. No upstream JavaScript bundle,
+analytics, session reporting, fingerprint upload or private scoring algorithm is embedded.
+Public IP risk/geo responses are attributed to their source; scores are explicitly
+third-party reputation data, not Anthropic account status. See ENVIRONMENT.md for
+endpoints, caching, privacy and availability limits.
+
+Country flags use the locally bundled `flag-icons` 7.6.0 assets (MIT, Lipis),
+https://github.com/lipis/flag-icons. The license is included in
+desktop/src/assets/flag-icons-LICENSE.txt. No runtime image CDN requests are made.
+
 CSSwitch Next 0.8.27 adapts the countdownStr, barPercent and formatRelativeTime functions from
 [CC Switch quotaRules.ts](https://github.com/farion1231/cc-switch/blob/cdca0984231021c4eb7e8978af8670cd29c6e415/src/components/quota/quotaRules.ts).
 The compact account quota columns follow AccountQuota.tsx in the same revision.

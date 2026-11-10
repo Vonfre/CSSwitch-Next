@@ -14,6 +14,7 @@ mod mcp;
 mod updater;
 mod workspace;
 mod subscriptions;
+mod environment;
 
 use std::path::{Path, PathBuf};
 use std::io::Write;
@@ -1187,6 +1188,8 @@ pub fn run() {
         .manage(updater::UpdateState::default())
         .manage(Mutex::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
+            environment::environment_manage,
+            environment::environment_open_source,
             subscription_manage,
             workspace_manage,
             updater::check_update,

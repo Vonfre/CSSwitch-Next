@@ -46,6 +46,32 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(rows[0]['project_name'], '研究项目')
         self.assertEqual(rows[0]['title'], '论文分析')
 
+    def test_shared_history_lists_once_and_old_keys_survive_handoff(self):
+        anchor = '20000000-0000-4000-8000-000000000001'
+        active = '20000000-0000-4000-8000-000000000002'
+        original = self.dbpath.parent
+        owner = original.with_name(active)
+        original.rename(owner)
+        self.dbpath = owner / 'operon-cli.db'
+        alias = owner.with_name(anchor)
+        try:
+            alias.symlink_to(active, target_is_directory=True)
+        except OSError as error:
+            if getattr(error, 'winerror', None) == 1314:
+                self.skipTest('Windows symlink privilege is unavailable')
+            raise
+        w.write_json(self.data / '.csswitch-history.json',
+                     {'version': 1, 'owner': active, 'anchor': anchor, 'orgs': [anchor, active]})
+        rows = self.work.sessions()['sessions']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['key'], anchor + ':root1')
+        self.assertEqual(self.work.session_path(anchor + ':root1')[0], self.dbpath)
+        self.assertEqual(self.work.session_path(active + ':root1')[0], self.dbpath)
+        alias.unlink()
+        alias.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(w.WorkspaceError):
+            self.work.session_path(anchor + ':root1')
+
     def test_pagination_and_tool_content_are_preserved(self):
         first = self.work.run('session_messages', {'key': 'org-fixture:root1'})
         self.assertEqual(len(first['messages']), 100)

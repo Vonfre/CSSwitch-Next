@@ -155,7 +155,7 @@ function renderSubscriptions() {
     return `<article class="subscription-account ${selected ? 'is-current' : ''}">
       <div class="subscription-avatar" aria-hidden="true">${esc((a.user || '?').slice(0, 1).toUpperCase())}</div>
       <div class="subscription-account-info"><div class="subscription-account-name"><strong title="${esc(a.user)}">${esc(a.user)}</strong><span class="subscription-plan">${esc(planName(a.plan))}</span></div>
-        <div class="subscription-account-meta"><span class="subscription-account-state ${selected ? 'is-current' : ''} ${a.lapsed ? 'is-error' : ''}">${icon(a.lapsed ? 'circle-alert' : selected ? 'circle-check' : 'circle')}${label}</span></div>
+        <div class="subscription-account-meta"><span class="subscription-account-state ${selected ? 'is-current' : ''} ${a.lapsed ? 'is-error' : ''}">${icon(a.lapsed ? 'circle-alert' : selected ? 'circle-check' : 'circle')}${label}</span></div>${pauseSwitchButton(a, s)}
       </div><div class="subscription-quota" data-subscription-quota="${esc(a.id)}">${subscriptionQuotaMarkup(a.id)}</div>
       <div class="subscription-account-actions"><button class="btn subscription-account-action" ${a.lapsed || (selected && running && !authenticated) ? 'data-subscription-login' : `data-subscription-id="${esc(a.id)}"`} ${selected && authenticated || issue ? 'disabled' : ''}>${icon(selected && authenticated ? 'check' : a.lapsed ? 'log-in' : 'arrow-right-left')}${a.lapsed || (selected && running && !authenticated) ? '重新登录' : selected && authenticated ? '已登录' : '切换登录'}</button>
       <span title="${deleteReason}"><button class="btn subscription-account-action subscription-account-delete" data-subscription-delete="${esc(a.id)}" aria-label="删除账号 ${esc(a.user)}" ${selected || issue ? 'disabled' : ''}>${icon('trash-2')}删除</button></span></div>
@@ -175,13 +175,13 @@ function renderSubscriptions() {
       <div class="subscription-science-main"><span class="subscription-science-mark" aria-hidden="true">${icon('flask-conical')}</span><div class="subscription-science-info"><div class="subscription-title-line"><h2 id="subscriptionScienceTitle">Claude Science</h2><span class="subscription-connection ${running ? 'is-connected' : ''}"><span class="dot ${running ? 'green' : 'amber'}"></span>${running ? '运行中' : s.installed ? '未启动' : '未安装'}</span></div><p>${nativeMode ? '使用所选账号的真实官方登录，模型请求直接访问官方服务。' : '添加官方订阅账号后，可切换 Science 原生登录。'}</p></div></div>
       <div class="subscription-routing" aria-label="Science 实际登录">
         <div><span>${running ? '当前登录' : '已配置账号'}</span><strong>${esc(current?.user || '尚未识别到已添加的账号')}</strong></div>
-        <div><span>会话接续</span><strong>${issue ? '切换未完成，需恢复' : native.last_switch?.phase === 'complete' ? (native.last_switch.history_transferred === false ? '旧版切换未共享会话，请重新切换' : '本地会话已保留') : '切换前自动备份'}</strong>${native.last_switch?.phase === 'complete' ? `<time>${esc(new Date(native.last_switch.at * 1000).toLocaleString('zh-CN'))}</time>` : ''}</div>
-        <p>${issue ? `原数据已保留。备份目录：${esc(native.backup_dir || '订阅目录 native/backups')}` : native.initial_login_required ? '请先在官方 Science 完成一次登录并打开原会话，然后在这里添加订阅账号、切换登录。现有对话不会被清空。' : native.last_switch?.history_transferred === false ? '上次为旧版切换，未共享会话。使用修复版再次切换后，会合并并校验两侧历史。' : '保留原会话 ID、历史消息和工具结果。Resume 由你在 Science 中触发，避免自动重跑计算。'}</p>${issue ? '<button class="btn" id="subscriptionRecover">恢复原账号</button>' : ''}
+        <div><span>会话接续</span><strong>${issue ? '切换未完成，需恢复' : native.last_switch?.phase === 'complete' ? (native.last_switch.history_shared ? '账号共用一份本地会话' : native.last_switch.history_transferred === false ? '旧版切换未共享会话，请重新切换' : '本地会话已保留') : '共享会话，切换前保存登录'}</strong>${native.last_switch?.phase === 'complete' ? `<time>${esc(new Date(native.last_switch.at * 1000).toLocaleString('zh-CN'))}</time>` : ''}</div>
+        <p>${issue ? `原数据已保留。备份目录：${esc(native.backup_dir || '订阅目录 native/backups')}` : native.initial_login_required ? '请先在官方 Science 完成一次登录并打开原会话，然后在这里添加订阅账号、切换登录。现有对话不会被清空。' : !native.last_switch?.history_shared && native.last_switch?.history_transferred === false ? '上次为旧版切换，未共享会话。使用修复版再次切换后，会合并并校验两侧历史。' : '保留原会话 ID、历史消息和工具结果。Resume 由你在 Science 中触发，避免自动重跑计算。'}</p>${issue ? '<button class="btn" id="subscriptionRecover">恢复原账号</button>' : ''}
         ${s.data_dir ? `<div><span>本机对话目录</span><strong style="overflow-wrap:anywhere">${esc(s.data_dir)}</strong><span>${s.history_found ? '已发现本地会话库' : '尚未发现会话库，请在 Science 中确认数据目录'}</span></div>` : ''}
       </div>
       <div class="subscription-service-bar"><span><span class="dot ${nativeMode ? 'green' : 'amber'}"></span>${nativeMode ? 'Science 管理登录凭据' : '等待配置原生订阅'}</span><span>${nativeMode ? '订阅网关不参与推理' : '点击账号的「切换登录」完成配置'}</span></div>
     </section>
-    <details class="subscription-help"><summary>${icon('circle-help')}切换与 Resume 说明${icon('chevron-down')}</summary><div><p>切换先停止 Science 并备份登录及两侧会话，将目标账号已有历史合入当前会话副本，校验完整消息后切换。保留 Python 环境中的符号链接。启动后同时核对 Science 的登录状态及官方账号接口；失效授权不会显示为切换成功。</p><p>支持本机 Science ${esc(native.supported_versions || '0.1.72')}，切换前还会检查实际凭据和数据格式。Resume 保留对话上下文；内存中的 Python/R 对象、仍运行的本地进程、远程任务或账号专属云端资源能否恢复，取决于 Science 自身能力。</p></div></details>
+    <details class="subscription-help"><summary>${icon('circle-help')}切换与 Resume 说明${icon('chevron-down')}</summary><div><p>账号共用一份本地会话。首次加入已有独立历史的账号时合并、校验并保留旧目录；之后切换只交接同一份工作区、保存登录，不再重复克隆会话。原有项目和环境路径继续可用。启动后同时核对 Science 的登录状态及官方账号接口；失效授权不会显示为切换成功。</p><p>支持本机 Science ${esc(native.supported_versions || '0.1.72')}，切换前还会检查实际凭据和数据格式。Resume 保留对话上下文；内存中的 Python/R 对象、仍运行的本地进程、远程任务或账号专属云端资源能否恢复，取决于 Science 自身能力。</p></div></details>
   </section>`;
   $('#subscriptionLogin').onclick = () => subscriptionAction('login');
   if (s.hot_supported !== false && s.accounts.length >= 2) {
@@ -202,6 +202,7 @@ function renderSubscriptions() {
   document.querySelectorAll('[data-subscription-delete]').forEach(b => {
     b.onclick = () => deleteSubscription(s.accounts.find(a => a.id === b.dataset.subscriptionDelete));
   });
+  bindPauseSwitchButtons();
   updateSubscriptionQuotas();
   icons();
 }
@@ -209,8 +210,26 @@ function renderSubscriptions() {
 async function syncScienceLogin(id) {
   const account = subscriptions?.accounts.find(a => a.id === id);
   if (!account || state.busy) return;
-  if (!await confirmAction('同步 Science 登录邮箱？', `将真实登录切换为 ${account.user}，Science 需要重启一次，完成后保留免重启推理切换。项目与会话会先备份并校验；有任务运行时不会执行。`)) return;
+  if (!await confirmAction('同步 Science 登录邮箱？', `将真实登录切换为 ${account.user}，Science 需要重启一次，完成后保留免重启推理切换。账号共用本地项目与会话；首次合入独立历史会保留旧目录。有任务运行时不会执行。`)) return;
   await subscriptionAction('sync_login', { id });
+}
+
+async function pauseAndSwitch(id) {
+  const account = subscriptions?.accounts.find(a => a.id === id);
+  if (!account || state.busy) return;
+  if (!await confirmAction('暂停并切换账号？', `暂停正在进行的 Science 会话及其子任务，保留已保存的消息，并改用 ${account.user} 的额度。正在运行的工具可能被中断；尚未接入时会重启 Science 一次。已有暂停状态会保留，完成后在原会话点击 Resume，不会自动重发请求。`)) return;
+  await subscriptionAction('pause_switch', { id });
+}
+
+function pauseSwitchButton(account, status) {
+  if (status.hot_supported === false || status.accounts.length < 2) return '';
+  return `<button class="btn subscription-pause-switch" data-pause-switch="${esc(account.id)}" aria-label="暂停并切换到 ${esc(account.user)}" ${account.lapsed || account.cooldown_until > Date.now()/1000 ? 'disabled' : ''}>${icon('pause')}暂停并切换</button>`;
+}
+
+function bindPauseSwitchButtons() {
+  document.querySelectorAll('[data-pause-switch]').forEach(button => {
+    button.onclick = () => pauseAndSwitch(button.dataset.pauseSwitch);
+  });
 }
 
 function renderHotSubscriptions(s) {
@@ -231,7 +250,7 @@ function renderHotSubscriptions(s) {
       <div class="subscription-accounts">${s.accounts.map(a => `<article class="subscription-account ${a.current ? 'is-current' : ''}">
         <div class="subscription-avatar" aria-hidden="true">${esc(a.user.slice(0,1).toUpperCase())}</div>
         <div class="subscription-account-info"><div class="subscription-account-name"><strong title="${esc(a.user)}">${esc(a.user)}</strong></div>
-          <div class="subscription-account-meta"><span class="subscription-plan">${esc(({pro:'Pro',max:'Max',team:'Team'})[a.plan] || a.plan || '订阅')}</span><span>${a.lapsed ? '需要重新授权' : '已保存'}${a.cooldown_until > Date.now()/1000 ? ' · 冷却中' : ''}</span></div></div>
+          <div class="subscription-account-meta"><span class="subscription-plan">${esc(({pro:'Pro',max:'Max',team:'Team'})[a.plan] || a.plan || '订阅')}</span><span>${a.lapsed ? '需要重新授权' : '已保存'}${a.cooldown_until > Date.now()/1000 ? ' · 冷却中' : ''}</span></div>${pauseSwitchButton(a, s)}</div>
         <div class="subscription-quota" data-subscription-quota="${esc(a.id)}">${subscriptionQuotaMarkup(a.id)}</div>
         <div class="subscription-row-controls"><label class="subscription-priority-control"><span>优先消耗</span><button type="button" class="switch" role="switch" aria-checked="${a.id === preferred}" aria-label="优先消耗 ${esc(a.user)}" data-hot-priority="${esc(a.id)}" ${!connected || (a.lapsed && a.id !== preferred) ? 'disabled' : ''}><span></span></button></label>
         <details class="subscription-account-menu"><summary aria-label="管理账号 ${esc(a.user)}" title="管理账号">${icon('ellipsis')}</summary><div class="subscription-menu-items" aria-label="账号操作">
@@ -249,7 +268,7 @@ function renderHotSubscriptions(s) {
       <p>${loginDiffers ? '优先消耗决定回复使用哪个账号的额度。Science 的登录邮箱不会自动改变；同步邮箱需要重启一次。' : preferredAccount ? '登录邮箱与优先账号一致。使用备用账号时，可在「最近回复使用」查看。' : '可在账号旁开启优先消耗。更改使用的额度不会自动更改 Science 登录邮箱。'}</p>
       ${loginDiffers ? `<button class="btn" id="subscriptionSyncLogin" ${!connected ? 'disabled' : ''}>${icon('arrow-right-left')}同步 Science 登录为 ${esc(preferredAccount.user)}</button>` : ''}</div>
       ${!connected ? '<button class="btn primary" id="subscriptionHotReconnect">连接免重启模式</button>' : ''}
-      <details class="subscription-help"><summary>接入方式</summary><p>首次启用或恢复接入会重启一次；手动切换与自动接管不重启。再次打开 Science 时请从 CSSwitch 打开，以保留路由连接。恢复官方直连也会重启一次。</p><button class="btn" id="subscriptionHotDisable">恢复官方直连</button></details>
+      <details class="subscription-help"><summary>接入方式</summary><p>首次启用或恢复接入会重启一次；手动切换与自动接管不重启。额度耗尽或回复卡住时，可在备用账号旁点击「暂停并切换」，然后回原会话 Resume。再次打开 Science 时请从 CSSwitch 打开，以保留路由连接。恢复官方直连也会重启一次。</p><button class="btn" id="subscriptionHotDisable">恢复官方直连</button></details>
     </section></section>`;
   $('#subscriptionLogin').onclick = () => subscriptionAction('login');
   $('#subscriptionUsageRefresh').onclick = () => refreshSubscriptionUsage();
@@ -261,6 +280,7 @@ function renderHotSubscriptions(s) {
   document.querySelectorAll('.subscription-account-menu').forEach(menu => { menu.addEventListener('toggle', () => { if (menu.open) closeSubscriptionMenus(menu); }); menu.addEventListener('click', event => { if (event.target.closest('button:not(:disabled)')) menu.open = false; }); });
   $('#subscriptionHotDisable').onclick = () => subscriptionAction('hot_disable');
   if ($('#subscriptionHotReconnect')) $('#subscriptionHotReconnect').onclick = () => subscriptionAction('hot_enable');
+  bindPauseSwitchButtons();
   updateSubscriptionQuotas(); icons();
 }
 

@@ -258,6 +258,148 @@ class NativeSwitchTests(unittest.TestCase):
         with closing(sqlite3.connect(self.source / 'operon-cli.db')) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM frame_messages').fetchone()[0], 2)
 
+    def test_repeated_switches_share_one_database_without_history_clones(self):
+        target = self.native / 'orgs' / self.orgs[1]
+        original_inode = (self.source / 'operon-cli.db').stat().st_ino
+        clone = self.switcher.clone
+        self.switcher.clone = Mock(wraps=clone)
+        self.switcher.switch(self.ids[1])
+        self.assertTrue(target.samefile(self.source))
+        with closing(sqlite3.connect(target / 'operon-cli.db')) as db, db:
+            db.execute("INSERT INTO frame_messages VALUES('resume-frame',1,'shared reply')")
+        for index in [0, 1, 0, 1]:
+            result = self.switcher.switch(self.ids[index])
+            self.assertTrue(result['history_shared'])
+            self.assertFalse(result['history_transferred'])
+            self.assertEqual((target / 'operon-cli.db').stat().st_ino, original_inode)
+        self.assertTrue(all(call.args[1].name == 'original-login' for call in self.switcher.clone.call_args_list))
+        self.assertFalse(list(self.switcher.backups.glob('*/history-*')))
+        with closing(sqlite3.connect(self.source / 'operon-cli.db')) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM frame_messages').fetchone()[0], 2)
+
+    def test_independent_workspace_is_merged_only_once(self):
+        target = self.native / 'orgs' / self.orgs[1]
+        shutil.copytree(self.source, target)
+        (target / 'unique-result.txt').write_text('keep me')
+        with closing(sqlite3.connect(target / 'operon-cli.db')) as db, db:
+            db.execute("INSERT INTO frame_messages VALUES('resume-frame',1,'old independent reply')")
+        self.switcher.switch(self.ids[1])
+        archives = sorted(self.switcher.backups.glob('*/history-before-*'))
+        self.assertEqual(len(archives), 2)
+        self.assertTrue(target.samefile(self.source))
+        self.assertEqual((self.source / 'unique-result.txt').read_text(), 'keep me')
+        self.switcher.switch(self.ids[0])
+        self.switcher.switch(self.ids[1])
+        self.assertEqual(sorted(self.switcher.backups.glob('*/history-before-*')), archives)
+        self.assertFalse(list(self.switcher.backups.glob('*/history-next')))
+
+    def test_third_account_enrollment_keeps_all_aliases_and_absolute_paths(self):
+        self.switcher.switch(self.ids[1])
+        third_org = '20000000-0000-4000-8000-000000000003'
+        third_id = self.store.add({'account_uuid': '10000000-0000-4000-8000-000000000003',
+                                  'org_uuid': third_org, 'email': 'third@example.test',
+                                  'access_token': 'synthetic-third', 'refresh_token': 'third-refresh',
+                                  'expires_at': time.time()+3600, 'scopes': 'user:inference user:profile'})
+        third = self.native / 'orgs' / third_org
+        third.mkdir()
+        (third / 'third.txt').write_text('third independent workspace')
+        self.switcher.switch(third_id)
+        self.assertFalse(third.is_symlink())
+        self.assertTrue(self.source.samefile(third))
+        self.assertTrue((self.native / 'orgs' / self.orgs[1]).samefile(third))
+        # Previously stored absolute project/environment paths remain usable.
+        self.assertEqual((self.source / 'tool-results/result.txt').read_text(), '37')
+        self.switcher.switch(self.ids[0])
+        self.assertFalse(self.source.is_symlink())
+        self.assertEqual((third / 'third.txt').read_text(), 'third independent workspace')
+
+    def test_interrupted_shared_rename_recovers_without_history_snapshot(self):
+        self.switcher.switch(self.ids[1])
+        target = self.native / 'orgs' / self.orgs[1]
+        real_rename = Path.rename
+        def rename(path, destination):
+            result = real_rename(path, destination)
+            if path == target:
+                raise KeyboardInterrupt('crash after metadata handoff')
+            return result
+        with patch.object(Path, 'rename', rename), self.assertRaises(KeyboardInterrupt):
+            self.switcher.switch(self.ids[0])
+        self.switcher.recover()
+        self.assertFalse(target.is_symlink())
+        self.assertTrue(self.source.samefile(target))
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[1])
+        self.assertFalse(list(self.switcher.backups.glob('*/history-*')))
+
+    def test_shared_login_failure_keeps_new_messages_and_existing_aliases(self):
+        self.switcher.switch(self.ids[1])
+        target = self.native / 'orgs' / self.orgs[1]
+        def fail(expected):
+            with closing(sqlite3.connect(target / 'operon-cli.db')) as db, db:
+                db.execute("INSERT INTO frame_messages VALUES('resume-frame',1,'arrived before verification failed')")
+            raise SubscriptionError('身份不匹配')
+        self.switcher.verify_login.side_effect = fail
+        with self.assertRaisesRegex(SubscriptionError, '身份不匹配'):
+            self.switcher.switch(self.ids[0])
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[1])
+        self.assertTrue(target.samefile(self.source))
+        with closing(sqlite3.connect(target / 'operon-cli.db')) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM frame_messages').fetchone()[0], 2)
+        self.assertFalse(list(self.switcher.backups.glob('*/history-*')))
+
+    def test_publication_crashes_recover_all_originals_and_can_retry(self):
+        from science_history_shared import SharedHistory
+        target = self.native / 'orgs' / self.orgs[1]
+        shutil.copytree(self.source, target)
+        (target / 'unique.txt').write_text('original target')
+        source_hash = file_hash(self.source / 'operon-cli.db')
+        # Interrupt after each of the two archive renames and the publication
+        # rename. Recovery uses the durable plan, not in-memory completion flags.
+        real_rename = Path.rename
+        for boundary in (1, 2, 3):
+            count = 0
+            def rename(path, destination):
+                nonlocal count
+                result = real_rename(path, destination)
+                if path in (self.source, target) or path.name == 'history-next':
+                    count += 1
+                    if count == boundary:
+                        raise KeyboardInterrupt('simulated crash')
+                return result
+            with patch.object(Path, 'rename', rename), self.assertRaises(KeyboardInterrupt):
+                self.switcher.switch(self.ids[1])
+            self.switcher.recover()
+            self.assertFalse(target.is_symlink())
+            self.assertEqual((target / 'unique.txt').read_text(), 'original target')
+            self.assertEqual(file_hash(self.source / 'operon-cli.db'), source_hash)
+            self.assertIsNone(SharedHistory(self.native).layout)
+        self.switcher.switch(self.ids[1])
+        self.assertTrue(target.samefile(self.source))
+
+    def test_alias_creation_crash_recovers_without_copying_history(self):
+        from science_history_shared import create_alias
+        def crash(target, path):
+            create_alias(target, path)
+            raise KeyboardInterrupt('simulated crash')
+        with patch('science_history_shared.create_alias', crash), self.assertRaises(KeyboardInterrupt):
+            self.switcher.switch(self.ids[1])
+        self.switcher.recover()
+        self.assertFalse((self.native / 'orgs' / self.orgs[1]).exists())
+        self.assertTrue((self.source / 'operon-cli.db').is_file())
+        self.assertFalse(list(self.switcher.backups.glob('*/history-*')))
+
+    def test_replaced_shared_alias_fails_before_stopping(self):
+        from science_history_shared import remove_alias, create_alias
+        self.switcher.switch(self.ids[1])
+        target = self.source
+        remove_alias(target)
+        outside = self.home / 'outside'
+        outside.mkdir()
+        create_alias(outside, target)
+        self.switcher.close_gui.reset_mock()
+        with self.assertRaisesRegex(SubscriptionError, '链接被修改'):
+            self.switcher.switch(self.ids[0])
+        self.switcher.close_gui.assert_not_called()
+
     def test_divergent_messages_fail_without_losing_either_history(self):
         target = self.native / 'orgs' / self.orgs[1]
         shutil.copytree(self.source, target)
@@ -319,7 +461,7 @@ class NativeSwitchTests(unittest.TestCase):
     def test_modified_inactive_history_is_preserved_on_return(self):
         self.switcher.switch(self.ids[1])
         (self.source / 'external.txt').write_text('changed independently')
-        self.assertTrue(self.switcher.switch(self.ids[0])['history_transferred'])
+        self.assertFalse(self.switcher.switch(self.ids[0])['history_transferred'])
         self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[0])
         self.assertEqual((self.source / 'external.txt').read_text(), 'changed independently')
 
@@ -332,7 +474,9 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertEqual(self.switcher.summary()['last_switch']['phase'], 'rolled_back')
         self.assertEqual((self.source / 'tool-results/result.txt').read_text(), '37')
         self.assertFalse((self.native / 'orgs' / self.orgs[1]).exists())
-        self.assertTrue(list(self.switcher.backups.glob('*/history-failed')))
+        # Enrolling an empty account only adds an alias; rollback keeps the
+        # original live workspace, without a redundant history snapshot.
+        self.assertFalse(list(self.switcher.backups.glob('*/history-*')))
 
     def test_failed_clone_keeps_original_login_and_history(self):
         self.switcher.clone = Mock(side_effect=OSError('simulated full disk'))
@@ -360,6 +504,27 @@ class NativeSwitchTests(unittest.TestCase):
         self.assertTrue(self.store.snapshot()['native_mode'])
         self.assertEqual(self.switcher.summary()['last_switch']['phase'], 'rolled_back')
 
+    def test_legacy_snapshot_journal_is_recoverable_after_upgrade(self):
+        backup = private_dir(private_dir(self.switcher.backups) / 'legacy-operation')
+        private_write(backup / 'accounts.enc', (self.store.root / 'accounts.enc').read_bytes())
+        private_write(backup / 'active.json', (self.native / 'active-org.json').read_bytes())
+        self.switcher.clone(self.switcher.save_slot(self.old), backup / 'original-login')
+        self.switcher.clone(self.source, backup / 'history-source')
+        target = self.native / 'orgs' / self.orgs[1]
+        self.switcher.clone(self.source, target)
+        prior = backup / 'history-target-before'
+        prior.mkdir()
+        (prior / 'independent.txt').write_text('legacy original target')
+        account = self.store.snapshot()['accounts'][self.ids[1]]
+        self.switcher.install_slot(account['account_uuid'], self.switcher.prepare_target(account))
+        operation = {'phase': 'starting', 'backup': str(backup),
+                     'from': self.account_ids[0], 'to': self.account_ids[1], 'history_transferred': True}
+        private_write(self.switcher.journal, json.dumps(operation).encode())
+        self.switcher.recover()
+        self.assertEqual((target / 'independent.txt').read_text(), 'legacy original target')
+        self.assertTrue(list(backup.glob('history-recovered-*')))
+        self.assertEqual(self.switcher.active()['account_uuid'], self.account_ids[0])
+
     def test_missing_source_database_fails_before_stop(self):
         (self.source / 'operon-cli.db').unlink()
         with self.assertRaisesRegex(SubscriptionError, '原会话'):
@@ -379,7 +544,7 @@ class NativeSwitchTests(unittest.TestCase):
         before = tree_stamp(self.source)
         self.switcher.switch(self.ids[1])
         target = self.native / 'orgs' / self.orgs[1]
-        self.assertEqual(tree_stamp(target), before)
+        self.assertEqual(tree_stamp(target.resolve()), before)
         self.assertEqual(os.readlink(target / 'outside'), str(self.home))
         self.assertEqual(os.readlink(target / 'missing'), 'does-not-exist')
         self.assertEqual(os.readlink(target / 'relative'), 'tool-results/result.txt')

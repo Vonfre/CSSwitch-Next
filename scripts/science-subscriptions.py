@@ -164,7 +164,7 @@ class Manager:
         before = self.science_state()
         if state.get('hot_mode') and (not self.owned(before) or not self.health()):
             raise SubscriptionError('免重启路由尚未连接，请点击「连接免重启模式」。')
-        if prefer:
+        if prefer and not self.health():
             self.ensure_gateway(allow_native=bool(state.get('hot_mode')))
         self.store.route(ident, prefer=prefer)
         after = self.science_state()
@@ -213,6 +213,9 @@ class Manager:
         if operation == 'sync_login':
             from science_native_switch import NativeSwitcher
             return NativeSwitcher(self).switch(params.get('id'), preserve_hot=True)
+        if operation == 'pause_switch':
+            from science_pause_switch import switch
+            return switch(self, params.get('id'))
         if operation == 'switch':
             from science_native_switch import NativeSwitcher
             return NativeSwitcher(self).switch(params.get('id'))
@@ -261,7 +264,7 @@ class Manager:
 def main():
     if len(sys.argv) > 1:
         parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument('operation', choices=['status', 'usage', 'auto', 'priority', 'select', 'sync_login', 'switch', 'recover', 'delete', 'connect', 'login', 'start', 'hot_enable', 'hot_disable'])
+        parser.add_argument('operation', choices=['status', 'usage', 'auto', 'priority', 'select', 'sync_login', 'pause_switch', 'switch', 'recover', 'delete', 'connect', 'login', 'start', 'hot_enable', 'hot_disable'])
         parser.add_argument('id', nargs='?')
         args = parser.parse_args()
         request = {'operation': args.operation, 'params': {'id': args.id}}

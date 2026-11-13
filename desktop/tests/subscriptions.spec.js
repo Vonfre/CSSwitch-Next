@@ -31,6 +31,10 @@ async function setup(page, accounts = true) {
         if (args.operation === 'status') return window.subscriptionStatus;
         if (args.operation === 'sync_login') window.subscriptionStatus.native.account_id = args.params.id;
         if (args.operation === 'hot_enable') { window.subscriptionStatus.hot_mode = true; window.subscriptionStatus.mode = 'auto'; }
+        if (args.operation === 'pause_switch') {
+          Object.assign(window.subscriptionStatus, { hot_mode: true, connected: true, mode: 'auto', preferred_id: args.params.id, next_account_id: args.params.id });
+          return { message: '已保留会话状态，请回到原会话点击 Resume；没有自动重发请求。', resume_required: true };
+        }
         if (args.operation === 'select') {
           window.subscriptionStatus.accounts.forEach(a => { a.current = a.id === args.params.id; });
           window.subscriptionStatus.mode = 'manual';
@@ -88,6 +92,39 @@ test('disconnected hot mode does not claim routing is live', async ({ page }) =>
   await expect(page.getByRole('button', {name:'连接免重启模式'})).toBeVisible();
   await expect(page.locator('[data-hot-priority="b@example.test"]')).toBeDisabled();
   await expect(page.locator('.subscription-routing')).toContainText('暂无回复记录');
+});
+
+test('pause handoff works with a disconnected busy gateway and requires an explicit action', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => Object.assign(window.subscriptionStatus, { hot_mode: true, connected: false, active_requests: 1 }));
+  await page.locator('#refreshBtn').click();
+  const button = page.getByRole('button', { name: '暂停并切换到 b@example.test', exact: true });
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect(page.locator('#confirmBody')).toContainText('工具可能被中断');
+  await expect(page.locator('#confirmBody')).toContainText('不会自动重发请求');
+  await page.locator('#confirmDialog').getByRole('button', { name: '取消', exact: true }).click();
+  expect(await page.evaluate(() => window.subscriptionCalls.some(c => c.operation === 'pause_switch'))).toBe(false);
+  await button.click();
+  await page.locator('#confirmDialog').getByRole('button', { name: '确认', exact: true }).click();
+  await expect(page.locator('#notice')).toContainText('Resume');
+  await expect(page.locator('.subscription-login-identity')).toContainText('a@example.test');
+  await expect(page.getByRole('switch', { name: '优先消耗 b@example.test' })).toBeChecked();
+  expect(await page.evaluate(() => window.subscriptionCalls.filter(c => c.operation !== 'status')))
+    .toEqual([{ operation: 'pause_switch', params: { id: 'b@example.test' } }]);
+});
+
+test('pause handoff rejects unavailable targets and fits a narrow screen', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => {
+    window.subscriptionStatus.accounts[0].cooldown_until = Date.now()/1000 + 3600;
+    window.subscriptionStatus.accounts[1].lapsed = true;
+  });
+  await page.locator('#refreshBtn').click();
+  await expect(page.getByRole('button', { name: '暂停并切换到 a@example.test', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '暂停并切换到 b@example.test', exact: true })).toBeDisabled();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
 });
 
 test('switches real login, shows resume handoff and permits switching back', async ({ page }) => {
@@ -266,6 +303,10 @@ test('manual quota failure preserves cached values without locking account actio
   await page.evaluate(() => { window.subscriptionStatus.native.last_switch = { phase: 'complete', history_transferred: false }; });
   await page.locator('#refreshBtn').click();
   await expect(page.locator('.subscription-routing')).toContainText('旧版切换未共享会话，请重新切换');
+  await page.evaluate(() => { window.subscriptionStatus.native.last_switch = { phase: 'complete', history_transferred: false, history_shared: true }; });
+  await page.locator('#refreshBtn').click();
+  await expect(page.locator('.subscription-routing')).toContainText('账号共用一份本地会话');
+  await expect(page.locator('.subscription-routing')).not.toContainText('旧版切换');
 });
 
 test('a running daemon with stale OAuth is configured but never shown as signed in', async ({ page }) => {

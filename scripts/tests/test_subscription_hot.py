@@ -22,6 +22,10 @@ class Upstream(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers['Content-Length']))
         token = self.headers['Authorization']
         self.server.seen.append((token, body, self.headers.get('x-api-key')))
+        if getattr(self.server, 'error_body', None):
+            raw = json.dumps(self.server.error_body).encode()
+            self.send_response(400); self.send_header('Content-Length', str(len(raw)))
+            self.send_header('request-id', 'req_fixture'); self.end_headers(); self.wfile.write(raw); return
         if token in self.server.reject:
             self.send_response(429); self.send_header('Content-Length','0'); self.send_header('Retry-After','60'); self.end_headers(); return
         self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.end_headers()
@@ -120,6 +124,50 @@ class HotRoutingTests(unittest.TestCase):
         self.assertIn(b'not replayed',self.request())
         self.assertEqual(len(self.up.seen),1)
         self.assertIsNone(self.gateway.last_inference)
+
+    def test_history_rejection_is_classified_without_replay_or_content_disclosure(self):
+        self.store.route()
+        self.up.error_body={'error': {'type': 'invalid_request_error', 'message': 'Invalid signature in thinking block: PRIVATE_ECHO'}}
+        with self.assertRaises(urllib.error.HTTPError) as caught: self.request()
+        result=caught.exception.read().decode()
+        self.assertIn('历史消息的签名',result)
+        self.assertNotIn('PRIVATE_ECHO',result)
+        self.assertEqual(len(self.up.seen),1)
+        self.assertEqual(self.up.seen[0][1],self.body)
+        self.assertEqual(self.gateway.last_failure['kind'],'history_signature')
+        self.assertEqual(self.gateway.last_failure['request_id'],'req_fixture')
+        self.assertNotIn('PRIVATE_ECHO',json.dumps(self.gateway.last_failure))
+
+    def test_safeguards_rejection_is_never_switched_or_replayed(self):
+        self.store.route()
+        self.up.error_body={'error': {'type': 'invalid_request_error', 'message': 'safeguards: reasoning_extraction'}}
+        with self.assertRaises(urllib.error.HTTPError) as caught: self.request()
+        self.assertIn('安全策略',caught.exception.read().decode())
+        self.assertEqual(self.gateway.last_failure['kind'],'safeguards_refusal')
+        self.assertEqual(len(self.up.seen),1)
+
+    def test_unknown_validation_error_keeps_redacted_field_explanation(self):
+        self.up.error_body={'error': {'type': 'invalid_request_error', 'message': 'messages.4.content.0: unsupported field. sk-secret-token user@example.test'}}
+        with self.assertRaises(urllib.error.HTTPError) as caught: self.request()
+        result=caught.exception.read().decode()
+        self.assertIn('messages.4.content.0: unsupported field',result)
+        self.assertNotIn('sk-secret-token',result)
+        self.assertNotIn('user@example.test',result)
+        self.assertEqual(len(self.up.seen),1)
+
+    def test_encrypted_search_result_error_preserves_science_recovery_signal(self):
+        self.store.route(self.ids[1], prefer=True)
+        self.up.error_body={'error': {'type': 'invalid_request_error', 'message': 'messages.3.content.0: Invalid `encrypted_content` in `search_result` block'}}
+        with self.assertRaises(urllib.error.HTTPError) as caught: self.request()
+        self.assertEqual(caught.exception.code,400)
+        result=json.loads(caught.exception.read())
+        # Science 0.1.72 uses this exact error marker for its native one-shot
+        # server-tool-result recovery; a translated generic error breaks Resume.
+        self.assertIn('encrypted_content',result['error']['message'])
+        self.assertIn('search_result',result['error']['message'])
+        self.assertEqual(len(self.up.seen),1)
+        self.assertEqual(self.up.seen[0][0],'Bearer B')
+        self.assertEqual(self.up.seen[0][1],self.body)
 
     def test_native_slots_are_available_only_in_explicit_hot_mode(self):
         with self.store.locked():

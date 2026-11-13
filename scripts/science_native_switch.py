@@ -1,7 +1,7 @@
 """Offline native account handoff for supported Science credential layouts.
 
 Credentials have one refresh owner: Science. Each switch checkpoints the stopped
-instance, carries the complete local workspace, and verifies native /auth/status.
+instance, reuses a shared local workspace, and verifies native /auth/status.
 No login labels, account UUIDs, or organization identities are fabricated.
 """
 import base64
@@ -30,6 +30,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from subscription_store import SubscriptionError, private_dir, private_read, private_write
 from subscription_platform import WINDOWS, linked, close_science_windows
+from science_history_shared import SharedHistory
 
 
 def checked_uuid(value):
@@ -146,7 +147,7 @@ class NativeSwitcher:
                 'initial_login_required': not bool(active.get('account_uuid')),
                 'supported_versions': '0.1.71 / 0.1.72（Windows）' if WINDOWS else '0.1.72（macOS）',
                 'backup_dir': str(self.backups),
-                'last_switch': {k: journal[k] for k in ('phase', 'at', 'counts', 'history_transferred') if k in journal}}
+                'last_switch': {k: journal[k] for k in ('phase', 'at', 'counts', 'history_transferred', 'history_shared') if k in journal}}
 
     def save_slot(self, active):
         account = checked_uuid(active['account_uuid'])
@@ -421,6 +422,9 @@ class NativeSwitcher:
         self.install_slot(old['account_uuid'], slot)
         target_account = next(a for a in original['accounts'].values() if a['account_uuid'] == operation['to'])
         target = self.data / 'orgs' / checked_uuid(target_account['org_uuid'])
+        if operation.get('shared_history'):
+            SharedHistory(self.data).rollback(operation['shared_history'], backup)
+        # Legacy journals remain recoverable after upgrading.
         # A published workspace has no history-next left in staging.
         if not (backup / 'history-next').exists() and (backup / 'history-source').exists() and target.exists():
             target.rename(backup / ('history-recovered-' + uuid.uuid4().hex[:8]))
@@ -453,7 +457,7 @@ class NativeSwitcher:
         operation['phase'] = 'rolled_back'
         private_write(self.journal, json.dumps(operation).encode())
         self.open_gui()
-        return {'message': '已恢复原 Science 登录。切换前后会话快照均已保留。'}
+        return {'message': '已恢复原 Science 登录与会话工作区。已有恢复数据均已保留。'}
 
     def ensure_login_switch_idle(self):
         health = self.manager.health()
@@ -462,7 +466,7 @@ class NativeSwitcher:
         active = self.active()
         if not active.get('org_uuid'):
             return
-        path = self.data / 'orgs' / checked_uuid(active['org_uuid']) / 'operon-cli.db'
+        path = SharedHistory(self.data).resolve(checked_uuid(active['org_uuid'])) / 'operon-cli.db'
         if path.is_file():
             with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
                 busy = db.execute("SELECT 1 FROM frames WHERE status IN ('processing','running','pending','queued') LIMIT 1").fetchone()
@@ -511,25 +515,22 @@ class NativeSwitcher:
             cfg = tomllib.loads(config.read_text())
             if cfg.get('data_dir_from') or Path(cfg.get('data_dir', str(self.native))).expanduser() != self.native or Path(cfg.get('paths', {}).get('auth_dir', str(self.native))).expanduser() != self.native:
                 raise SubscriptionError('自定义 Science 数据或认证目录尚不支持原生切换。')
-        source = self.data / 'orgs' / current['org_uuid']
-        target = self.data / 'orgs' / account['org_uuid']
+        shared = SharedHistory(self.data)
+        shared.validate()
+        source = shared.resolve(current['org_uuid'])
+        target = shared.resolve(account['org_uuid'])
         if any(linked(p) for p in (self.native, self.data, *self.data.parents)) or not (source / 'operon-cli.db').is_file() or linked(source / 'operon-cli.db'):
             raise SubscriptionError('Science 原会话目录无效，未修改登录。')
-        for path in (source, target, self.native / '.oauth-tokens'):
-            if linked(path):
-                raise SubscriptionError('拒绝符号链接目录。')
-        for name in ('operon-cli.db', 'operon-cli.db-wal', 'operon-cli.db-shm'):
-            if linked(source / name):
-                raise SubscriptionError('会话数据库或 WAL 不能是链接，未修改登录。')
-        lineage_path = self.root / 'history.json'
-        lineage = self.json_file(lineage_path, {})
-        # Every successful cross-account switch carries the shared history.
-        # Existing target history is merged into staging, never skipped.
+        if linked(self.native / '.oauth-tokens'):
+            raise SubscriptionError('拒绝符号链接凭据目录。')
+        for path in (source, target):
+            for name in ('operon-cli.db', 'operon-cli.db-wal', 'operon-cli.db-shm'):
+                if linked(path / name):
+                    raise SubscriptionError('会话数据库或 WAL 不能是链接，未修改登录。')
+        # An enrolled account already uses the very same files. A new account
+        # only merges once when it actually has an independent workspace.
         transfer_history = source != target
         target_stamp = tree_stamp(target) if transfer_history and target.exists() else None
-        for name in ('operon-cli.db', 'operon-cli.db-wal', 'operon-cli.db-shm'):
-            if linked(target / name):
-                raise SubscriptionError('目标会话数据库或 WAL 不能是链接，未修改登录。')
         before = self.manager.science_state()
         was_gateway = self.manager.owned(before)
         # Validate the installed client's real credential schema before stopping
@@ -538,7 +539,7 @@ class NativeSwitcher:
         backup = private_dir(private_dir(self.backups) / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]))
         private_write(backup / 'accounts.enc', private_read(self.store.root / 'accounts.enc'))
         private_write(backup / 'active.json', private_read(self.native / 'active-org.json'))
-        operation = {'phase': 'stopping', 'at': time.time(), 'backup': str(backup), 'from': current['account_uuid'], 'to': account['account_uuid'], 'history_transferred': transfer_history}
+        operation = {'phase': 'stopping', 'at': time.time(), 'backup': str(backup), 'from': current['account_uuid'], 'to': account['account_uuid'], 'history_transferred': transfer_history, 'history_shared': True}
         def phase(value):
             operation['phase'] = value
             private_write(self.journal, json.dumps(operation).encode())
@@ -546,8 +547,7 @@ class NativeSwitcher:
         gui = False
         old_slot = None
         installed = False
-        published = False
-        displaced = False
+        sharing_plan = None
         attempted_start = False
         try:
             if hot:
@@ -583,48 +583,15 @@ class NativeSwitcher:
             self.clone(old_slot, backup / 'original-login')
             old_slot = backup / 'original-login'
             target_slot = self.prepare_target(account)
-            if transfer_history:
-                phase('copying')
-                with closing(sqlite3.connect(source / 'operon-cli.db', timeout=3)) as db:
-                    if db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] != 0:
-                        raise SubscriptionError('会话库仍被其他程序占用，未迁移。')
-                original_stamp = tree_stamp(source)
-                verify_database(source / 'operon-cli.db')
-                self.clone(source, backup / 'history-source')
-                if original_stamp != tree_stamp(source) or original_stamp != tree_stamp(backup / 'history-source'):
-                    raise SubscriptionError('停止后仍有程序写入会话目录，未迁移。')
-                stage = backup / 'history-next'
-                self.clone(backup / 'history-source', stage)
-                if file_hash(stage / 'operon-cli.db') != file_hash(source / 'operon-cli.db'):
-                    raise SubscriptionError('会话备份校验失败，原数据保留。')
-                if target.exists():
-                    if tree_stamp(target) != target_stamp:
-                        raise SubscriptionError('目标会话在切换时发生变化，未覆盖。')
-                    if (target / 'operon-cli.db').exists():
-                        with closing(sqlite3.connect(target / 'operon-cli.db', timeout=3)) as db:
-                            if db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] != 0:
-                                raise SubscriptionError('目标会话仍被使用，未合并。')
-                        verify_database(target / 'operon-cli.db')
-                    target_stamp = tree_stamp(target)
-                    self.clone(target, backup / 'history-target-snapshot')
-                    if target_stamp != tree_stamp(target) or target_stamp != tree_stamp(backup / 'history-target-snapshot'):
-                        raise SubscriptionError('目标会话快照校验失败，未覆盖原历史。')
-                    from science_history_merge import merge_database, merge_files
-                    snapshot = backup / 'history-target-snapshot'
-                    operation['merge'] = {**merge_database(snapshot / 'operon-cli.db', stage / 'operon-cli.db'),
-                                          **merge_files(snapshot, stage, self.clone)}
-                operation['counts'] = verify_database(stage / 'operon-cli.db')
-                if tree_stamp(source) != original_stamp:
-                    raise SubscriptionError('合并期间原会话发生变化，未发布切换。')
-                phase('prepared')
-                # Recheck target immediately before publication, including absence.
-                if target.exists():
-                    if tree_stamp(target) != target_stamp:
-                        raise SubscriptionError('目标历史发生变化，未覆盖。')
-                    target.rename(backup / 'history-target-before')
-                    displaced = True
-                stage.rename(target)
-                published = True
+            phase('preparing_history')
+            if transfer_history and (tree_stamp(target) if target.exists() else None) != target_stamp:
+                raise SubscriptionError('目标会话在切换时发生变化，未覆盖。')
+            sharing_plan, operation['counts'] = shared.prepare(
+                current['org_uuid'], account['org_uuid'], backup, self.clone)
+            operation['shared_history'] = sharing_plan
+            # Recovery must know every intended rename/link before publication.
+            phase('prepared')
+            shared.publish(sharing_plan, backup)
             installed = True
             self.install_slot(account['account_uuid'], target_slot)
             with self.store.locked():
@@ -651,16 +618,13 @@ class NativeSwitcher:
             else:
                 self.launch()
             self.verify_login(account)
-            if transfer_history:
-                lineage[source.name] = original_stamp
-                private_write(lineage_path, json.dumps(lineage).encode())
             phase('complete')
             if not hot:
                 (self.store.root / 'science.json').unlink(missing_ok=True)
             self.open_gui()
             return {'message': ('已同步 Science 真实登录邮箱并验证成功，免重启推理切换已重新接入。项目和会话已保留。' if hot else '已切换 Science 真实登录账号并验证成功。原项目与会话已保留；中断会话请点击 Resume 继续。' if transfer_history else
                                 '已更新并验证 Science 官方登录，原项目与会话保持不变。'),
-                    'native_login_verified': True, 'history_transferred': transfer_history, 'counts': operation.get('counts')}
+                    'native_login_verified': True, 'history_transferred': transfer_history, 'history_shared': True, 'counts': operation.get('counts')}
         except Exception as exc:
             # Never roll back an account's rotated token to a stale pre-launch copy.
             # Preserve the target's latest native token before restoring old login.
@@ -677,10 +641,8 @@ class NativeSwitcher:
                     if attempted_start:
                         self.save_slot(self.active())
                     self.install_slot(current['account_uuid'], old_slot)
-                if published:
-                    target.rename(backup / 'history-failed')
-                if displaced:
-                    (backup / 'history-target-before').rename(target)
+                if sharing_plan:
+                    shared.rollback(sharing_plan, backup)
                 # Retain ownership if target reached native startup/refresh.
                 with self.store.locked():
                     restored = state.copy()

@@ -161,6 +161,16 @@ class ManagerTests(unittest.TestCase):
         self.assertTrue(all(args[1] == 'status' for args in self.calls))
         self.assertEqual(self.manager.store.public()['mode'], 'auto')
 
+    def test_priority_does_not_upgrade_a_busy_existing_gateway(self):
+        with self.manager.store.locked():
+            state=self.manager.store.read();state.update(native_mode=True,hot_mode=True);self.manager.store.write(state)
+        self.manager.owned=Mock(return_value=True)
+        self.manager.health.return_value={'active_requests':1,'version':'older-compatible'}
+        result=self.manager.manage('priority',{'id':self.b,'enabled':True})
+        self.assertTrue(result['same_process'])
+        self.manager.ensure_gateway.assert_not_called()
+        self.assertEqual(self.manager.store.public()['preferred_id'],self.b)
+
     def test_priority_switch_off_keeps_fallback_and_does_not_clear_a_newer_choice(self):
         self.manager.manage('priority', {'id': self.a, 'enabled': True})
         self.manager.manage('priority', {'id': self.b, 'enabled': True})
@@ -280,7 +290,8 @@ class GatewayLifecycleTests(unittest.TestCase):
                 second = manager.health()['pid']
                 pids.add(second)
                 self.assertNotEqual(first, second)
-                self.assertEqual(manager.health()['version'], '0.8.30')
+                from subscription_gateway import USER_AGENT
+                self.assertEqual(manager.health()['version'], USER_AGENT.split('/')[-1])
             finally:
                 for pid in pids:
                     try:

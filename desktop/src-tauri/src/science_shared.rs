@@ -400,7 +400,7 @@ pub fn marker(root: &Path) -> PathBuf {
 
 pub fn history_summary(data: &Path) -> Result<serde_json::Value, String> {
     let python = super::proc::find_exe("python3").ok_or("统计历史记录需要 Python 3。")?;
-    let output = crate::platform::command(python).args(["-I", "-c", "import json, sqlite3, sys\nfrom pathlib import Path\nroot = Path(sys.argv[1])\ncounts = dict(projects=0, conversations=0, messages=0)\nfor path in [p for p in [root / 'operon-cli.db', *sorted(root.glob('orgs/*/operon-cli.db'))] if p.is_file()]:\n with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2) as db:\n  counts['projects'] += db.execute('SELECT COUNT(*) FROM projects').fetchone()[0]\n  counts['conversations'] += db.execute('SELECT COUNT(*) FROM frames WHERE parent_frame_id IS NULL').fetchone()[0]\n  counts['messages'] += db.execute('SELECT COUNT(*) FROM frame_messages').fetchone()[0]\nprint(json.dumps(counts))\n"])
+    let output = crate::platform::command(python).args(["-I", "-c", "import json, sqlite3, sys\nfrom pathlib import Path\nroot = Path(sys.argv[1])\ncounts = dict(projects=0, conversations=0, messages=0)\nfor path in [p for p in [root / 'operon-cli.db', *sorted(root.glob('orgs/*/operon-cli.db'))] if p.is_file() and not p.parent.is_symlink() and not (getattr(p.parent.lstat(), 'st_file_attributes', 0) & 0x400)]:\n with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2) as db:\n  counts['projects'] += db.execute('SELECT COUNT(*) FROM projects').fetchone()[0]\n  counts['conversations'] += db.execute('SELECT COUNT(*) FROM frames WHERE parent_frame_id IS NULL').fetchone()[0]\n  counts['messages'] += db.execute('SELECT COUNT(*) FROM frame_messages').fetchone()[0]\nprint(json.dumps(counts))\n"])
         .arg(data).stderr(Stdio::null()).output().map_err(|_| "无法统计本地历史。")?;
     if !output.status.success() {
         return Err("无法只读统计本地历史。".into());
@@ -995,6 +995,34 @@ mod tests {
             "fixture conversation must exist"
         );
         stop(bin, &original).unwrap();
+        // A second native organization can use the same physical workspace.
+        // Synthetic local identities and loopback-only traffic keep this probe
+        // independent of the user's installed login and subscription tokens.
+        let alias_org = "20000000-0000-4000-8000-000000000099";
+        let alias_account = "10000000-0000-4000-8000-000000000099";
+        let alias = f.native().join("orgs").join(alias_org);
+        let original_org = f.native().join("orgs").join(ORG);
+        fs::rename(&original_org, &alias).unwrap();
+        std::os::unix::fs::symlink(alias_org, &original_org).unwrap();
+        super::super::oauth_forge::ensure_history_login(
+            &f.native(), &f.home, &f.base.join("forbidden-auth"),
+            alias_org, Some(alias_account),
+        ).unwrap();
+        launch(&original);
+        let base = login(&original);
+        let identity = request(&base, "/api/auth/status", None);
+        assert!(identity.contains(alias_org) && identity.contains(alias_account));
+        assert!(request(&base, "/api/projects", None).contains("shared-history-fixture"));
+        assert_eq!(request(&base, &frames_path, None), frames_before);
+        request(&base, "/api/projects", Some("{\"name\":\"created-through-shared-alias\"}"));
+        stop(bin, &original).unwrap();
+        // Restore fixture credentials byte-for-byte for the existing checks.
+        fs::remove_file(f.native().join(format!(".oauth-tokens/{alias_account}.enc"))).unwrap();
+        fs::write(f.native().join(format!(".oauth-tokens/{ACCOUNT}.enc")), &oauth).unwrap();
+        fs::write(f.native().join("encryption.key"), &keys).unwrap();
+        fs::write(f.native().join("active-org.json"), &active).unwrap();
+        fs::remove_file(&original_org).unwrap();
+        fs::rename(&alias, &original_org).unwrap();
         let shared = prepare(&f.home, &f.root, port).unwrap();
         save(&f.root, &shared).unwrap();
         launch(&shared);
@@ -1002,6 +1030,7 @@ mod tests {
         let base = login(&shared);
         assert!(request(&base, "/api/auth/status", None).contains("\"authenticated\":true"));
         assert!(request(&base, "/api/projects", None).contains("shared-history-fixture"));
+        assert!(request(&base, "/api/projects", None).contains("created-through-shared-alias"));
         assert_eq!(request(&base, &frames_path, None), frames_before);
         assert_eq!(
             fs::read(f.native().join(format!(".oauth-tokens/{ACCOUNT}.enc"))).unwrap(),

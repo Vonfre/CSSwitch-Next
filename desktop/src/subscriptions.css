@@ -182,6 +182,8 @@ body[data-view="subscriptions"] #pageTitle svg { width:22px; height:22px; stroke
 .subscription-menu-items > button.is-danger:not(:disabled),.subscription-menu-items > button.is-danger:not(:disabled) svg { color:var(--danger); }
 .subscription-menu-items > button:disabled { opacity:.4; cursor:not-allowed; }
 .subscription-row-controls { display:flex; align-items:center; gap:14px; }
+.subscription-account-info .subscription-pause-switch { margin-top:7px; min-height:25px; padding:3px 7px; font-size:11px; }
+.subscription-pause-switch svg { width:12px; height:12px; }
 .subscription-priority-control { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:11px; white-space:nowrap; }
 .subscription-priority-control .switch { width:32px; height:20px; padding:2px; border:0; border-radius:12px; cursor:pointer; }
 .subscription-priority-control .switch span { display:block; width:16px; height:16px; border-radius:50%; background:white; box-shadow:0 1px 3px #0002; transition:transform .15s; }

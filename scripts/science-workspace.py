@@ -21,6 +21,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 
 REPO_DOWNLOAD_CHUNK = 1024 * 1024
@@ -41,6 +42,10 @@ class WorkspaceError(Exception):
 
 def regular(path):
     return not path.is_symlink() and path.is_file()
+
+
+def directory_link(path):
+    return path.is_symlink() or (path.exists() and bool(getattr(path.lstat(), 'st_file_attributes', 0) & 0x400))
 
 
 def read_json(path, default):
@@ -160,7 +165,22 @@ class Workspace:
 
     def databases(self):
         return [p for p in [self.data / 'operon-cli.db', *sorted(self.data.glob('orgs/*/operon-cli.db'))]
-                if regular(p) and not p.parent.is_symlink()]
+                if regular(p) and not directory_link(p.parent)]
+
+    def shared_layout(self):
+        layout = read_json(self.data / '.csswitch-history.json', {})
+        if not layout:
+            return {}
+        try:
+            assert layout['version'] == 1 and isinstance(layout['orgs'], list)
+            for org in [layout['owner'], layout['anchor'], *layout['orgs']]:
+                assert str(uuid.UUID(org)) == org
+            assert layout['owner'] in layout['orgs'] and layout['anchor'] in layout['orgs']
+            owner = self.data / 'orgs' / layout['owner']
+            assert owner.is_dir() and not directory_link(owner)
+        except (KeyError, ValueError, TypeError, AttributeError, AssertionError):
+            raise WorkspaceError('共享会话目录暂不可读，请完成切换或恢复后刷新。') from None
+        return layout
 
     @contextmanager
     def db(self, path):
@@ -174,6 +194,7 @@ class Workspace:
 
     def sessions(self):
         prefs = self.preferences().get('sessions', {})
+        shared = self.shared_layout()
         rows, warnings = [], []
         for path in self.databases():
             try:
@@ -196,6 +217,8 @@ class Workspace:
                         if item.pop('is_hidden', False):
                             continue
                         org = 'local' if path.parent == self.data else path.parent.name
+                        if org == shared.get('owner'):
+                            org = shared['anchor']
                         key = org + ':' + item['id']
                         item.update(key=key, org=org)
                         item.update(prefs.get(key, {}))
@@ -214,6 +237,12 @@ class Workspace:
         if not NAME.fullmatch(org) or not NAME.fullmatch(fid):
             raise WorkspaceError('会话标识无效。')
         path = self.data / 'operon-cli.db' if org == 'local' else self.data / 'orgs' / org / 'operon-cli.db'
+        shared = self.shared_layout()
+        if org in shared.get('orgs', []):
+            owner = self.data / 'orgs' / shared['owner']
+            if path.parent.resolve() != owner.resolve():
+                raise WorkspaceError('共享会话链接已改变，未读取。')
+            path = owner / 'operon-cli.db'
         if path not in self.databases():
             raise WorkspaceError('会话所在数据库不存在。')
         return path, fid

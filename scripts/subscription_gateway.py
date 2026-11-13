@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import socket
 import ssl
@@ -27,7 +28,50 @@ CLIENT_ID = 'a135f8ff-7c18-4143-b5c4-78cf58d0ed17'
 TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
 PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 SCOPES = 'user:inference user:file_upload user:profile user:mcp_servers user:plugins'
-USER_AGENT = 'CSSwitch/0.8.30'
+USER_AGENT = 'CSSwitch/0.9.1'
+
+
+def rejection_detail(exc):
+    """Classify bounded upstream errors without exposing echoed request content."""
+    kind, detail = 'upstream_rejected', '官方拒绝此请求，具体原因未识别'
+    error_type, diagnostic = '', ''
+    try:
+        payload = json.loads(exc.read(16384))
+        error = payload.get('error', {})
+        if isinstance(error, dict):
+            candidate = error.get('type')
+            if candidate in ('invalid_request_error', 'authentication_error', 'permission_error',
+                             'not_found_error', 'request_too_large', 'rate_limit_error', 'api_error', 'overloaded_error'):
+                error_type = candidate
+            upstream_message = str(error.get('message', ''))
+            message = upstream_message.lower()
+            if any(s in message for s in ('safeguard', 'safety', 'content policy', 'reasoning_extraction')):
+                kind, detail = 'safeguards_refusal', '官方安全策略拒绝了请求；不会自动换号或重试'
+            elif 'signature' in message and any(s in message for s in ('invalid', 'mismatch', 'verify', 'verification', 'required')):
+                kind, detail = 'history_signature', '官方未接受历史消息的签名；不能按额度不足处理，历史尚未修改'
+            elif any(s in message for s in ('tool_use_id', 'tool_result', 'tool use', 'tool result')):
+                kind, detail = 'tool_history', '历史工具调用与结果不符合官方请求格式；历史尚未修改'
+            elif any(s in message for s in ('prompt is too long', 'context window', 'too many tokens')):
+                kind, detail = 'context_length', '会话上下文超过模型限制'
+            elif 'model' in message and any(s in message for s in ('not found', 'not available', 'access', 'permission', 'not support')):
+                kind, detail = 'model_access', '所选模型不存在或当前账号无权使用'
+            elif error_type == 'permission_error':
+                kind, detail = 'permission', '官方拒绝了当前账号的请求权限'
+            elif error_type == 'invalid_request_error':
+                kind, detail = 'request_format', '官方判定请求参数或历史内容格式无效'
+                # Retain the validator's explanation when our known categories
+                # do not match. Never retain a request body or opaque credentials.
+                diagnostic = re.sub(r'(?i)(bearer\s+\S+|sk-[\w-]+)', '[redacted]', upstream_message[:2048])
+                diagnostic = re.sub(r'[A-Za-z0-9_+/=-]{80,}', '[opaque value]', diagnostic)
+                diagnostic = re.sub(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[email]', diagnostic)
+                diagnostic = re.sub(r'[\x00-\x1f\x7f]', ' ', diagnostic)[:1024]
+    except Exception:
+        pass
+    request_id = exc.headers.get('request-id', '') if exc.headers else ''
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', request_id): request_id = ''
+    return {'http_status': exc.code, 'kind': kind, 'error_type': error_type,
+            'request_id': request_id, 'diagnostic': diagnostic,
+            'message': f'{detail}（HTTP {exc.code}）；未重发。' + (f' 官方说明：{diagnostic}' if diagnostic else '')}
 
 
 class OAuthLoginError(SubscriptionError):
@@ -120,6 +164,7 @@ class Gateway(ThreadingHTTPServer):
         self.requests = 0
         self.last_account = ''
         self.last_inference = None
+        self.last_failure = None
         # Tests inject a loopback upstream directly into this class, never via CLI.
         self.opener = urllib.request.build_opener(NoRedirect(), urllib.request.ProxyHandler({})) if upstream.startswith('http://127.0.0.1:') else urllib.request.build_opener(NoRedirect())
         super().__init__(address, Handler)
@@ -302,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
             with self.server.lock:
                 return self.send_json(200, {'service': 'csswitch-subscriptions', 'version': USER_AGENT.split('/')[-1], 'pid': os.getpid(),
                     'active_requests': self.server.active, 'requests': self.server.requests, 'last_account': self.server.last_account,
-                    'last_inference': self.server.last_inference})
+                    'last_inference': self.server.last_inference, 'last_failure': self.server.last_failure})
         if route == '/login' and self.command == 'POST':
             return self.send_json(200, {'url': self.server.begin_login()})
         if route == '/shutdown' and self.command == 'POST':
@@ -390,8 +435,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.store.note(ident, revision, exc.code, retry_delay(exc.headers), access_token=token)
                     exc.close()
                     continue
+                detail = rejection_detail(exc)
                 exc.close()
-                return self.error(exc.code if 400 <= exc.code <= 599 else 502, '官方服务拒绝此请求；未重发，请检查模型与账号权限。')
+                with self.server.lock:
+                    self.server.last_failure = {**detail, 'account_id': ident, 'at': time.time(), 'route': route}
+                return self.error(exc.code if 400 <= exc.code <= 599 else 502, detail['message'])
             except (OSError, urllib.error.URLError):
                 return self.error(502, '上游连接中断，执行状态不确定；为避免重复请求未自动重发。')
             with response:

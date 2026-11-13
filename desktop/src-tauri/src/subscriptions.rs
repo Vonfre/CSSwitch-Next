@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::Stdio;
 
 pub fn manage(root: &std::path::Path, operation: &str, params: Value) -> Result<Value, String> {
-    if !["status", "usage", "auto", "priority", "select", "sync_login", "switch", "recover", "delete", "connect", "login", "start", "hot_enable", "hot_disable"].contains(&operation) {
+    if !["status", "usage", "auto", "priority", "select", "sync_login", "pause_switch", "switch", "recover", "delete", "connect", "login", "start", "hot_enable", "hot_disable"].contains(&operation) {
         return Err("未知订阅管理操作。".into());
     }
     let python = super::proc::find_exe("python3")

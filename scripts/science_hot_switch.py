@@ -2,7 +2,9 @@
 from datetime import datetime
 import importlib.util
 import json
+import os
 from pathlib import Path
+import signal
 import time
 
 from subscription_store import SubscriptionError, private_write
@@ -36,7 +38,31 @@ def native_token(store, ident, account):
     return token
 
 
-def configure(manager, enabled=True):
+def stop_gateway(manager, interrupt=False):
+    health = manager.health()
+    if not health:
+        return
+    if health.get('active_requests'):
+        if not interrupt:
+            raise SubscriptionError('当前有请求正在回复，请完成后再更改接入模式，或使用「暂停并切换」。')
+        pid = health.get('pid')
+        if type(pid) is not int or pid <= 1:
+            raise SubscriptionError('无法确认订阅网关进程，未强制停止。')
+        command = manager.run('/bin/ps', ['-p', str(pid), '-o', 'command=']).stdout.strip()
+        expected = str(Path(__file__).with_name('subscription_gateway.py')) + ' --root ' + str(manager.store.root)
+        if not command.endswith(' ' + expected):
+            raise SubscriptionError('无法确认订阅网关归属，未强制停止。')
+        os.kill(pid, signal.SIGTERM)
+    else:
+        manager.gateway_request('/shutdown', post=True)
+    for _ in range(100):
+        if not manager.health():
+            return
+        time.sleep(.1)
+    raise SubscriptionError('旧订阅服务尚未退出，暂停状态已保留。')
+
+
+def configure(manager, enabled=True, pause_active=False):
     if WINDOWS:
         raise SubscriptionError('免重启切换当前仅在本机 macOS 版本验证，Windows 请使用原生切换。')
     from science_native_switch import NativeSwitcher
@@ -44,7 +70,10 @@ def configure(manager, enabled=True):
     state = manager.store.snapshot()
     before = manager.science_state()
     if enabled and state.get('hot_mode') and manager.owned(before):
-        manager.ensure_gateway(allow_native=True)
+        # Reusing a live connection must not turn an account selection into a
+        # gateway upgrade that waits for the very reply the user wants to stop.
+        if not manager.health():
+            manager.ensure_gateway(allow_native=True)
         native.open_gui()
         return {'message': '免重启切换已连接。后续请求使用所选账号，当前请求继续完成。', 'same_process': True}
     pending = native.json_file(native.journal, {})
@@ -62,21 +91,21 @@ def configure(manager, enabled=True):
     # This one-time connection change restarts the app; subsequent route()/auto
     # calls only atomically change selection and never touch the daemon or DB.
     health = manager.health()
-    if health and health.get('active_requests'):
-        raise SubscriptionError('当前有请求正在回复，请完成后再更改接入模式。')
+    if health and health.get('active_requests') and not pause_active:
+        raise SubscriptionError('当前有请求正在回复，请完成后再更改接入模式，或使用「暂停并切换」。')
+    if pause_active and before.get('running'):
+        from science_pause_switch import running_roots
+        if running_roots(native):
+            raise SubscriptionError('会话尚未保存暂停状态，未重启 Science。')
     native.close_gui()
     if manager.science_state().get('running'):
         manager.run(manager.science, ['stop'], timeout=90)
+    if manager.science_state().get('running'):
+        raise SubscriptionError('Science 尚未停止，未中断网关。')
     try:
         if enabled:
             # Upgrade an idle old gateway so it understands native login slots.
-            health = manager.health()
-            if health:
-                manager.gateway_request('/shutdown', post=True)
-                for _ in range(100):
-                    if not manager.health(): break
-                    time.sleep(.1)
-                else: raise SubscriptionError('旧订阅服务尚未退出。')
+            stop_gateway(manager, interrupt=pause_active)
         with manager.store.locked():
             updated = manager.store.read()
             updated['hot_mode'] = enabled
